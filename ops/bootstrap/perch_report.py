@@ -25,6 +25,7 @@ is a change to a file there and the checks are plain functions over it.
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -49,9 +50,11 @@ SAVE_SCENARIO = "save-through-socket"
 STAGE1 = ("portfolio-admitted-before-saves", "canary-has-three-planned-tasks", "show-readback-available",
           "store-has-typed-tasks", "edit-is-persisted", "nothing-runs", "edit-makes-revision", "project-history-keeps-old-revision",
           "stale-save-refused", "store-growth-per-save")
-STAGE2 = ("admit-and-dispatch-ran", "stage2-canary-valid", "admitted-ready-dependency-order",
+STAGE2 = ("admit-and-dispatch-ran", "stage2-canary-valid", "stage2-review-document", "operator-presence-approved",
+          "admitted-ready-dependency-order",
           "unadmitted-revision-refused", "pool-and-manager-reserve-held", "worker-kill-recovery",
           "stage2-store-snapshots", "stage2-census")
+STAGE2_REVIEW_TEXT = "# Plan review\n\nThe PERCH stage-2 canary plan is approved for operator admission and dispatch on staging.\n"
 # The events of a lab run: a save starts none of them.
 RUN_EVENTS = ("lab-created", "turn", "done", "check-passed", "check-failed", "landed", "refused", "lab-deleted")
 # The events a task must show, by how it ends. "lab-created" and "lab-deleted" are the lab's life;
@@ -145,15 +148,51 @@ def cmd_stage2_bundle(args):
         "status.md": "# Status\n\nStaging canary.\n",
         "manager-brief.md": "# Manager brief\n\nDispatch ready admitted tasks from %s at %s and report any owner dispatch failure.\n" % (repo, branch),
         "tasklist.md": "\n".join(rows) + "\n",
+        "reviews/plan-review.md": STAGE2_REVIEW_TEXT,
     }
     for name, content in texts.items():
-        (bundle / name).write_text(content, encoding="utf-8")
+        target = bundle / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
     run = {"run_id": "perch-stage2", "mode": "planning_only",
            "roles": {"coordinator": {"model": "claude-haiku-5-5"},
                      "worker_normal": {"model": "claude-haiku-5-5"}},
            "assessment_accounting": stage.get("run_policy", {}).get("assessment_accounting")}
     (bundle / "run.json").write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
     print(str(bundle))
+
+
+def stage2_review_ref(status, activation, review_text):
+    """Select the exact stored review document reported by the owner."""
+    documents = status.get("documents") if isinstance(status, dict) else None
+    matches = [row for row in documents or [] if row.get("path") == "reviews/plan-review.md"]
+    if len(matches) != 1:
+        raise ValueError("project status must contain exactly one stored reviews/plan-review.md")
+    row = matches[0]
+    expected = hashlib.sha256(review_text.encode("utf-8")).hexdigest()
+    if row.get("stored_text_sha256") != expected:
+        raise ValueError("stored plan review differs from the registered review document")
+    ref = row.get("revision_ref")
+    if (not isinstance(ref, dict) or ref.get("kind") != "dat.content.document"
+            or not isinstance(ref.get("id"), str) or not ref["id"]
+            or not isinstance(ref.get("revision"), str) or not ref["revision"].startswith("rev-")
+            or not isinstance(ref.get("authority"), str) or not ref["authority"]):
+        raise ValueError("plan review has no exact stored document revision")
+    tasks = (((activation or {}).get("activation") or {}).get("steps") or {}).get("tasks") or {}
+    refs = tasks.get("task_refs") or {}
+    if not refs:
+        raise ValueError("activation has no task references to compare with the review")
+    if any(ref["kind"] == task.get("kind") or ref["id"] == task.get("id")
+           for task in refs.values() if isinstance(task, dict)):
+        raise ValueError("plan review must have a different kind and id from every task")
+    return ref
+
+
+def cmd_stage2_review_ref(args):
+    status = read_json(args.status)
+    activation = read_json(args.activation)
+    review_text = (Path(args.bundle) / "reviews" / "plan-review.md").read_text(encoding="utf-8")
+    print(json.dumps(stage2_review_ref(status, activation, review_text), separators=(",", ":")))
 
 
 def cmd_field(args):
@@ -434,6 +473,17 @@ def seed(raw, kind):
         notes = read_json(raw / "notes.json", {}) or {}
         notes["admit-and-dispatch"] = "skipped: seeded scenario omission"
         (raw / "notes.json").write_text(json.dumps(notes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "stage2_review":
+        ref = seeded_read(raw / "stage2-review-ref.json")
+        ref["id"] = "wrong-review-document"
+        (raw / "stage2-review-ref.json").write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind == "admission_presence":
+        path = raw / "stage2-operator-admission.jsonl"
+        lines = [json.loads(line) for line in read_lines(path)]
+        if not lines:
+            raise ValueError("no operator admission log to seed")
+        lines[0]["prover_result"] = "declined"
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
     elif kind in {"admit_order", "unadmitted", "reserve", "worker_kill", "store_snapshot", "stage2_census"}:
         stage2 = read_json(raw / "stage2-observations.json", {}) or {}
         key = {"admit_order": "dispatch", "unadmitted": "unadmitted_refusal", "reserve": "capacity",
@@ -907,6 +957,30 @@ def stage2_failures(raw, config):
             or revision.get("task") not in tasks or not revision.get("revision")):
         found["stage2-canary-valid"].append("canary has no explicit unadmitted task revision")
 
+    status = read_json(raw / "stage2-project-status.json", {}) or {}
+    activation = read_json(raw / "stage2-activation.json", {}) or {}
+    used_review = read_json(raw / "stage2-review-ref.json", {}) or {}
+    try:
+        expected_review = stage2_review_ref(status, activation, STAGE2_REVIEW_TEXT)
+    except (ValueError, TypeError, AttributeError) as exc:
+        expected_review = None
+        found["stage2-review-document"].append(str(exc))
+    if expected_review is not None and used_review != expected_review:
+        found["stage2-review-document"].append("admission did not use the stored plan-review.md revision")
+    try:
+        admission_lines = [json.loads(line) for line in read_lines(raw / "stage2-operator-admission.jsonl")]
+    except ValueError:
+        admission_lines = []
+        found["operator-presence-approved"].append("operator admission log is malformed")
+    task_refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
+    for task in tasks:
+        task_ref = task_refs.get(task) or {}
+        matches = [line for line in admission_lines if isinstance(line, dict) and line.get("task") == task_ref.get("id")]
+        if len(matches) != 1 or matches[0].get("prover_result") != "approved":
+            found["operator-presence-approved"].append("%s admission log lacks one approved prover_result" % task)
+        if expected_review is not None and (len(matches) != 1 or matches[0].get("review") != expected_review["id"]):
+            found["stage2-review-document"].append("%s admission log does not name the stored plan review" % task)
+
     dispatch = observations.get("dispatch") or {}
     records = dispatch.get("records") or []
     if dispatch.get("dispatched") != tasks:
@@ -1062,12 +1136,13 @@ def assertions(raw):
             add(name, found.get(name, []), STAGE1_OK[name], skip=skip)
     if "admit-and-dispatch" in (config.get("scenarios") or []):
         ran = notes.get("admit-and-dispatch") == "ran"
-        found = stage2_failures(raw, config) if ran else {}
-        add("admit-and-dispatch-ran", stage2_failures(raw, config)["admit-and-dispatch-ran"],
+        found = stage2_failures(raw, config)
+        add("admit-and-dispatch-ran", found["admit-and-dispatch-ran"],
             "staging COMPOSEFLEET dispatch scenario ran")
         for name in STAGE2[1:]:
             add(name, found.get(name, []), "staging observation matches the stage-2 contract",
-                skip=None if ran else (notes.get("admit-and-dispatch") or "skipped: scenario did not run"))
+                skip=None if ran or name in {"stage2-review-document", "operator-presence-approved"}
+                else (notes.get("admit-and-dispatch") or "skipped: scenario did not run"))
     return results
 
 
@@ -1248,6 +1323,9 @@ def build_parser():
     p.add_argument("--key", required=True); p.set_defaults(fn=cmd_stage)
     p = sub.add_parser("stage2-bundle"); p.add_argument("--project", required=True); p.add_argument("--out", required=True)
     p.set_defaults(fn=cmd_stage2_bundle)
+    p = sub.add_parser("stage2-review-ref")
+    p.add_argument("--status", required=True); p.add_argument("--activation", required=True)
+    p.add_argument("--bundle", required=True); p.set_defaults(fn=cmd_stage2_review_ref)
     p = sub.add_parser("field"); p.add_argument("--project", required=True); p.add_argument("--key", required=True)
     p.set_defaults(fn=cmd_field)
     p = sub.add_parser("portfolio"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)

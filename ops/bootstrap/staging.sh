@@ -204,9 +204,14 @@ up() {
   cd "$TREE"
   # The Otto itself is started, not through the ottoctl function: a function in the background forks a wrapper
   # shell, so $! would name the wrapper and not the holder that status reports. env execs the Python process.
+  local owner_entry=(-c "$CLI_ENTRY")
+  if [ "${OTTO_STAGING_FAKE_PRESENCE:-0}" = 1 ]; then
+    owner_entry=("$HERE/perch_fake_presence.py")
+  fi
   set -m
-  env -u OTTO_HOST_KIND -u OTTO_MANAGER_IPC -u OTTO_CALLER_SOCKET -u OTTO_HOME PYTHONPATH="$TREE/src" \
-    "$PY" -c "$CLI_ENTRY" --home "$HOME_DIR" service run \
+  env -u OTTO_HOST_KIND -u OTTO_MANAGER_IPC -u OTTO_CALLER_SOCKET -u OTTO_HOME \
+    OTTO_STAGING_ROOT="$STAGE_ROOT" PYTHONPATH="$TREE/src" \
+    "$PY" "${owner_entry[@]}" --home "$HOME_DIR" service run \
     </dev/null >>"$LOG" 2>&1 &
   pid=$!
   set +m

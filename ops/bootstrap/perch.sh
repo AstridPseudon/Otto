@@ -12,7 +12,7 @@
 # restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
 # Stage 1 adds the scenario save-through-socket: the canary saved from its file through the owner socket from a cold
 # shell, read back, one task edited and saved again, then a save from the create's base, which is stale by then.
-# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,canary,readback,typed,edit,nothing,revision,history,stale,growth,stage2_scenario,stage2_canary,admit_order,unadmitted,reserve,worker_kill,store_snapshot,stage2_census
+# PERCH_FAULT=leak,lab,pool,timeline,staging,status,restart,refuse,store,atrest,census,admit,canary,readback,typed,edit,nothing,revision,history,stale,growth,stage2_scenario,stage2_canary,stage2_review,admission_presence,admit_order,unadmitted,reserve,worker_kill,store_snapshot,stage2_census
 # seeds one fault per assertion kind, for a red run; each stage-1 fault is read by its own stage-1 assertion only.
 # Exit 0 when every assertion passes, 1 when one fails (the report is written either way), 2 on usage.
 set -euo pipefail
@@ -69,8 +69,9 @@ stop_hold() { kill "$1" 2>/dev/null || true; pool_mark -1; }
 
 # Restart the staging Otto on the commit under test. A stage that wipes starts on an empty Store: the Otto is
 # brought down, its home and Store are removed, and only then is it started.
-restart_staging() {
-  local t rc=0 ref="$STAGING_REF"
+restart_staging() {  # STAGE
+  local t rc=0 ref="$STAGING_REF" fake_presence=0
+  if [ "$1" = 2 ] && [ -n "$FAKE" ]; then fake_presence=1; fi
   # A seeded staging fault pins a ref that does not exist, so the restart fails before it starts anything.
   has_fault staging && ref="refs/heads/perch-seeded-missing-ref"
   t="$(date +%s)"
@@ -79,7 +80,8 @@ restart_staging() {
       && bash "$STAGING" wipe < /dev/null >> "$RAW/staging-restart.log" 2>&1 || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
-    OTTO_STAGING_REF="$ref" bash "$STAGING" restart < /dev/null >> "$RAW/staging-restart.log" 2>&1 || rc=$?
+    OTTO_STAGING_REF="$ref" OTTO_STAGING_FAKE_PRESENCE="$fake_presence" \
+      bash "$STAGING" restart < /dev/null >> "$RAW/staging-restart.log" 2>&1 || rc=$?
   fi
   phase staging-restart "" "$t"
   RESTART_RC=$rc
@@ -167,6 +169,11 @@ stage2_setup() {
     if cold_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-project-status.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
+    if "$PY" -I "$REPORT_PY" stage2-review-ref --status "$RAW/stage2-project-status.json" \
+        --activation "$RAW/stage2-activation.json" --bundle "$bundle" \
+        > "$RAW/stage2-review-ref.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+  fi
+  if [ "$rc" -eq 0 ]; then
     "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value ran
   else
     "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value "failed: owner CLI setup exited $rc"
@@ -175,8 +182,9 @@ stage2_setup() {
 }
 
 stage2_admit_tasks() {
-  local host task ref rc=0
+  local host task ref review_ref rc=0
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  review_ref="$(cat "$RAW/stage2-review-ref.json")"
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
@@ -184,7 +192,7 @@ stage2_admit_tasks() {
     # owner-local presence proof and verifies the selected exact revision.
     if cold_client --host "$host" service admit --task-ref "$ref" \
         --revision "$("$PY" -I -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<< "$ref")" \
-        --review-ref "$ref" --request-key "perch-stage2-admit-$task" \
+        --review-ref "$review_ref" --request-key "perch-stage2-admit-$task" \
         > "$RAW/stage2-admit-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else
       rc=$?
       "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: owner service admit exited $rc"
@@ -337,7 +345,7 @@ run_stage() {  # STAGE
   set +m
 
   WIPE="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key wipe)"
-  restart_staging
+  restart_staging "$stage"
   STAGING_SHA="$(sed -n 's/.*"sha": "\([0-9a-f]*\)".*/\1/p' "$STAGE_ROOT/run/staging.json" 2>/dev/null | head -n 1 || true)"
   CANON_MAIN_SHA="$(git -C "$OTTO_REPO" rev-parse --short -q --verify 'canon/main^{commit}' || echo none)"
 
@@ -371,6 +379,9 @@ run_stage() {  # STAGE
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
         elif stage2_setup; then
           if stage2_admit_tasks; then
+            if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
+              cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
+            fi
             if stage2_run_manager; then
               "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value ran
               host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
@@ -381,6 +392,9 @@ run_stage() {  # STAGE
               "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: composed manager start/dispatch exited $dispatch_rc"
             fi
           else
+            if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
+              cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
+            fi
             "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: operator task admission did not complete"
           fi
         else
@@ -449,7 +463,7 @@ run_stage() {  # STAGE
   fi
   "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/store-at-rest.json"
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
-  for kind in census store restart admit canary readback typed edit nothing revision history stale growth stage2_scenario stage2_canary admit_order unadmitted reserve worker_kill store_snapshot stage2_census; do
+  for kind in census store restart admit canary readback typed edit nothing revision history stale growth stage2_scenario stage2_canary stage2_review admission_presence admit_order unadmitted reserve worker_kill store_snapshot stage2_census; do
     # A fault whose observation this run does not have is named in seeded.txt, not left to look like a clean run.
     if has_fault "$kind"; then
       "$PY" -I "$REPORT_PY" seed --raw "$RAW" --fault "$kind" \
@@ -488,7 +502,7 @@ else
 fi
 # Stage 1 is owner-lane save/read only and has no worker tasks; it runs without --fake.
 for s in $STAGES; do
-  [ -n "$FAKE" ] || [ "$s" = 0 ] || [ "$s" = 1 ] || die "stage $s needs a real worker, which is not built yet"
+  [ -n "$FAKE" ] || [ "$s" = 0 ] || [ "$s" = 1 ] || [ "$s" = 2 ] || die "stage $s needs a real worker, which is not built yet"
 done
 RC=0
 for s in $STAGES; do

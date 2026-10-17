@@ -5,6 +5,7 @@ each (only that assertion fails). The end-to-end test runs ops/bootstrap/perch.s
 with the lab's committed HEAD as the commit under test; it starts a real staging Otto and stops it.
 """
 import importlib.util
+import hashlib
 import json
 import os
 import shutil
@@ -16,6 +17,8 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch as mock_patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "ops" / "bootstrap"
@@ -96,6 +99,49 @@ def clean_raw(root):
     (raw / "census.up.txt").write_text("4242 4242 0:03 /opt/homebrew/bin/python3.11 -c x --home /x/home\n", encoding="utf-8")
     (raw / "notes.json").write_text(json.dumps({"staging-lifecycle": "ran", "restart_after_kill_rc": 0,
                                                 "refused_start_rc": 3}), encoding="utf-8")
+    return raw
+
+
+def clean_stage2_raw(root):
+    """Stubs for the staging reads that stage-2 assertions consume."""
+    raw = Path(root)
+    raw.mkdir(parents=True, exist_ok=True)
+    tasks = ("A", "B", "C")
+    task_refs = {name: {"authority": "owner", "kind": "work.task", "id": "task-" + name,
+                        "revision": "rev-" + name} for name in tasks}
+    review_ref = {"authority": "owner", "kind": "dat.content.document",
+                  "id": "plan-review-document", "revision": "rev-review"}
+    documents = [{"path": "reviews/plan-review.md", "revision_ref": review_ref,
+                  "stored_text_sha256": hashlib.sha256(perch_report.STAGE2_REVIEW_TEXT.encode()).hexdigest()}]
+    values = {
+        "config.json": {"stage": "2", "scenarios": ["admit-and-dispatch"], "staging_restart": 0,
+                        "tasks": [], "pool_limit": 2, "manager_reserve": 1,
+                        "stage2_tasks": list(tasks), "stage2_admitted": list(tasks),
+                        "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
+                        "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}},
+        "notes.json": {"admit-and-dispatch": "ran"},
+        "stage2-project-status.json": {"documents": documents},
+        "stage2-activation.json": {"activation": {"steps": {"tasks": {"task_refs": task_refs}}}},
+        "stage2-review-ref.json": review_ref,
+        "stage2-observations.json": {
+            "dispatch": {"dispatched": list(tasks), "records": [
+                {"alias": name, "admitted": True, "ready": True} for name in tasks]},
+            "unadmitted_refusal": {"outcome": "refused", "reason": "unadmitted_revision",
+                                     "task": "C", "revision": "rev-unadmitted"},
+            "capacity": {"pool_peak": 2, "manager_reserve_remaining": 1},
+            "worker_kill": {"slot_released": True, "killed_worker_absent": True,
+                            "unrelated_processes_alive": True},
+            "store_snapshots": [{"integrity": "ok"}, {"integrity": "ok", "dispatch_events": 3,
+                                                   "admitted_tasks": list(tasks)}],
+            "census": {"killed_worker_pid": 101, "after_pids": [202], "unrelated_started_pids": [202]},
+        },
+    }
+    for name, value in values.items():
+        (raw / name).write_text(json.dumps(value), encoding="utf-8")
+    log = [{"task": task_refs[name]["id"], "revision": task_refs[name]["revision"],
+            "review": review_ref["id"], "prover_result": "approved", "outcome": "admitted"} for name in tasks]
+    (raw / "stage2-operator-admission.jsonl").write_text(
+        "".join(json.dumps(entry) + "\n" for entry in log), encoding="utf-8")
     return raw
 
 
@@ -245,6 +291,35 @@ class AssertionKindTests(unittest.TestCase):
         self.assertIn("| C | toy | canon/main |", tasklist)
         run = json.loads((out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(run["assessment_accounting"]["scope_mode"], "check-accepted")
+        review = (out / "reviews" / "plan-review.md").read_text(encoding="utf-8")
+        self.assertIn("plan is approved", review)
+
+    def test_stage_two_review_ref_is_the_stored_document_revision(self):
+        raw = clean_stage2_raw(self.tmp / "stage2-review")
+        bundle = self.tmp / "bundle"
+        (bundle / "reviews").mkdir(parents=True)
+        (bundle / "reviews" / "plan-review.md").write_text(perch_report.STAGE2_REVIEW_TEXT, encoding="utf-8")
+        command = [sys.executable, "-I", str(BOOTSTRAP / "perch_report.py"), "stage2-review-ref",
+                   "--status", str(raw / "stage2-project-status.json"), "--activation",
+                   str(raw / "stage2-activation.json"), "--bundle", str(bundle)]
+        selected = json.loads(subprocess.run(command, check=True, capture_output=True, text=True).stdout)
+        self.assertEqual(selected, json.loads((raw / "stage2-review-ref.json").read_text(encoding="utf-8")))
+        self.assertEqual(selected["kind"], "dat.content.document")
+        task_refs = json.loads((raw / "stage2-activation.json").read_text(encoding="utf-8"))[
+            "activation"]["steps"]["tasks"]["task_refs"]
+        for task in task_refs.values():
+            self.assertNotEqual(selected["kind"], task["kind"])
+            self.assertNotEqual(selected["id"], task["id"])
+        patch(raw, "stage2-project-status.json", lambda value: value["documents"][0]["revision_ref"].update(
+            id="task-A"))
+        rejected = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("different kind and id", rejected.stderr)
+        patch(raw, "stage2-project-status.json", lambda value: value["documents"][0].update(
+            revision_ref={"authority": "owner", "kind": "work.task", "id": "task-A", "revision": "rev-A"}))
+        rejected = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("exact stored document revision", rejected.stderr)
 
     def test_composefleet_detection_uses_landed_modules_not_a_marker_string(self):
         stage_root = self.tmp / "staging"
@@ -276,6 +351,8 @@ class AssertionKindTests(unittest.TestCase):
         cases = {
             "stage2_scenario": "admit-and-dispatch-ran",
             "stage2_canary": "stage2-canary-valid",
+            "stage2_review": "stage2-review-document",
+            "admission_presence": "operator-presence-approved",
             "admit_order": "admitted-ready-dependency-order",
             "unadmitted": "unadmitted-revision-refused",
             "reserve": "pool-and-manager-reserve-held",
@@ -285,26 +362,7 @@ class AssertionKindTests(unittest.TestCase):
         }
         for fault, target in cases.items():
             with self.subTest(fault=fault):
-                raw = self.tmp / ("stage2-" + fault)
-                raw.mkdir()
-                (raw / "config.json").write_text(json.dumps({"stage": "2", "scenarios": ["admit-and-dispatch"],
-                    "staging_restart": 0, "tasks": [], "pool_limit": 2, "manager_reserve": 1,
-                    "stage2_tasks": ["A", "B", "C"], "stage2_admitted": ["A", "B", "C"],
-                    "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
-                    "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}}), encoding="utf-8")
-                (raw / "notes.json").write_text(json.dumps({"admit-and-dispatch": "ran"}), encoding="utf-8")
-                (raw / "stage2-observations.json").write_text(json.dumps({
-                    "dispatch": {"dispatched": ["A", "B", "C"], "records": [
-                        {"alias": name, "admitted": True, "ready": True} for name in ("A", "B", "C")]},
-                    "unadmitted_refusal": {"outcome": "refused", "reason": "unadmitted_revision",
-                                            "task": "C", "revision": "rev-unadmitted"},
-                    "capacity": {"pool_peak": 2, "manager_reserve_remaining": 1},
-                    "worker_kill": {"slot_released": True, "killed_worker_absent": True,
-                                    "unrelated_processes_alive": True},
-                    "store_snapshots": [{"integrity": "ok"}, {"integrity": "ok", "dispatch_events": 3,
-                                         "admitted_tasks": ["A", "B", "C"]}],
-                    "census": {"killed_worker_pid": 101, "after_pids": [202], "unrelated_started_pids": [202]},
-                }), encoding="utf-8")
+                raw = clean_stage2_raw(self.tmp / ("stage2-" + fault))
                 green = {row["name"]: row["status"] for row in perch_report.assertions(raw)
                          if row["name"] in perch_report.STAGE2}
                 self.assertEqual(green, {name: "pass" for name in perch_report.STAGE2}, green)
@@ -314,6 +372,45 @@ class AssertionKindTests(unittest.TestCase):
                        if row["name"] in perch_report.STAGE2}
                 self.assertEqual(got[target], "fail", got)
                 self.assertEqual({name for name, status in got.items() if status == "fail"}, {target}, got)
+
+
+class FakePresenceLauncherTests(unittest.TestCase):
+    def test_fake_owner_launcher_injects_approval_before_product_cli(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_presence", BOOTSTRAP / "perch_fake_presence.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        root = Path(tempfile.mkdtemp(prefix="perch-fake-launcher-")).resolve()
+        self.addCleanup(shutil.rmtree, root, True)
+        home = root / "home"
+        observed = []
+        otto = ModuleType("otto"); otto.__path__ = []
+        hostctl = ModuleType("otto.hostctl"); hostctl.__path__ = []
+        presence = ModuleType("otto.hostctl.presence")
+        presence.PresenceResult = lambda status: SimpleNamespace(status=status)
+        presence.LocalAuthenticationProver = type("RealPresence", (), {})
+        cli = ModuleType("otto.hostctl.cli")
+
+        def cli_main(argv):
+            observed.append((argv, presence.LocalAuthenticationProver().prove(
+                reason="Admit task", timeout_seconds=30).status))
+            return 0
+
+        cli.main = cli_main
+        otto.hostctl = hostctl
+        hostctl.presence = presence
+        hostctl.cli = cli
+        modules = {"otto": otto, "otto.hostctl": hostctl,
+                   "otto.hostctl.presence": presence, "otto.hostctl.cli": cli}
+        args = ["--home", str(home), "service", "run"]
+        with mock_patch.dict(sys.modules, modules), mock_patch.dict(os.environ, {
+                "OTTO_STAGING_ROOT": str(root), "OTTO_STAGING_FAKE_PRESENCE": "1"}):
+            self.assertEqual(launcher.main(args), 0)
+            self.assertEqual(observed, [(args, "approved")])
+            with self.assertRaises(SystemExit):
+                launcher.main(["--home", str(home), "service", "status"])
+        with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root), "OTTO_STAGING_FAKE_PRESENCE": "0"}):
+            with self.assertRaises(SystemExit):
+                launcher.main(args)
 
 
 class RenderTests(unittest.TestCase):
