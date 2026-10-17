@@ -532,6 +532,32 @@ class GatedStages(Scratch):
         self.assertEqual(args, ["0 --fake"])
 
 
+class RunbookContract(unittest.TestCase):
+    def test_runbook_matches_stage_selection_and_keeps_fake_and_real_evidence_distinct(self):
+        runbook = (ROOT / "RUNBOOK.md").read_text()
+        land = (ROOT / "ops" / "bootstrap" / "land.sh").read_text()
+        perch = (ROOT / "ops" / "bootstrap" / "perch.sh").read_text()
+
+        self.assertIn('GATED="$(cat "$OPS_DIR/stages-gated" 2>/dev/null || echo "0 1")"', land)
+        self.assertIn("for stage in $GATED; do", land)
+        self.assertIn('bash "$ST/perch.sh" "$stage" --fake', land)
+        self.assertIn("if [ \"$STAGE\" = all ]; then", perch)
+        self.assertIn('[ -n "$FAKE" ] || [ "$s" = 0 ] || [ "$s" = 1 ] || [ "$s" = 2 ] || die "stage $s needs a real worker', perch)
+
+        self.assertIn("`$OPS_DIR/stages-gated`", runbook)
+        self.assertIn("defaults to stages `0 1`", runbook)
+        self.assertIn("It does not run `all` or\nevery stage automatically.", runbook)
+        self.assertIn("`perch.sh <stage> --fake`", runbook)
+        self.assertIn("fake diagnostic `stage-run`", runbook)
+        self.assertIn("separately required real-model stage review", runbook)
+        self.assertIn("a passing fake diagnostic cannot stand in for that review", runbook)
+        self.assertIn("Keep the real-worker requirement", runbook)
+        self.assertIn("`--fake` exercises the diagnostic harness, not a real worker", runbook)
+
+        self.assertNotIn("all stages at every landing", runbook.lower())
+        self.assertNotIn("fake diagnostic satisfies real-worker review", runbook.lower())
+
+
 class CheckPreexistingReds(Scratch):
     """A check that fails only on a test canon also fails lands, logging it as pre-existing; a check
     failure canon doesn't share still refuses (16 Oct: canon's manager-loop red refused three landings)."""
