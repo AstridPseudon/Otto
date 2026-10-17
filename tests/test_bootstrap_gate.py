@@ -450,6 +450,31 @@ class RunTaskRoute(Scratch):
         self.assertIn("sweep tests/test_named.py run 1/2: 0 failing (the check's run)", log)
         self.assertIn("sweep tests/test_named.py run 2/2", log)
 
+    def test_changed_bootstrap_owner_selects_perch_test_and_runs_it_twice_alone(self):
+        # Keep the caller test on BASE so selection must come from the changed ops file, not from
+        # the touched-test-file list. It names the bootstrap script both ways used by its callers.
+        self.write(self.repo, "tests/test_perch.py", textwrap.dedent("""\
+            import sys
+
+            OWNER_MODULE = "perch_stage2_owner"
+            OWNER_FILE = "ops/bootstrap/perch_stage2_owner.py"
+
+            def test_bootstrap_owner_reference_is_present():
+                assert OWNER_MODULE and OWNER_FILE
+                # The sweep must run this caller by itself, not as part of a wider test collection.
+                assert sys.argv[-1] == "tests/test_perch.py"
+        """))
+        self.commit(self.repo, "add perch bootstrap caller test")
+        self.start()
+
+        self.lab("T28", {"ops/bootstrap/perch_stage2_owner.py": "# doctored owner implementation\n"})
+        r = self.land("T28")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.log("T28")
+        self.assertIn("sweep tests/test_perch.py run 1/2: 0 failing", log)
+        self.assertIn("sweep tests/test_perch.py run 2/2: 0 failing", log)
+        self.assertEqual(log.count("sweep tests/test_perch.py run "), 2)
+
 
 class GatedStages(Scratch):
     """The gate runs only the stages in $OPS_DIR/stages-gated (default "0 1"), not "all": a stage
