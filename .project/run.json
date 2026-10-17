@@ -49,9 +49,9 @@
     },
     {
       "stage": "whole-project Astra final review",
-      "status": "pending",
+      "status": "complete",
       "owner": "manager",
-      "notes": "First pass defects (PL4 census-gap persistence and PL5 transport-refusal next_action) were fixed in 4e195a1 and 7209c93; fresh final review is pending."
+      "notes": "Reviewed git diff eb9b6cd...proj/proclife at deea8ca after fixes 4e195a1 and 7209c93. No remaining evidence-backed defects; D19, G1/G2, inventory, 31 files +2077/-204, 44/99 deletion accounting and gate disclosures confirmed. Reviewer ran no tests."
     },
     {
       "stage": "installed owner and external gates",
