@@ -33,6 +33,22 @@ ROLE_PACK_PIN_FIELDS = frozenset({"pack_id", "pack_version", "source_revision",
     "source_inventory_identity", "resource_path", "resource_digest"})
 
 
+class RegistrationPinError(ValueError):
+    """A registration pin cannot be trusted; retain ValueError's public code."""
+
+    next_action = ("Inspect the run's role/profile pack pin against the installed pack revision, "
+                   "correct the stale or malformed pin, then retry registration or activation.")
+
+
+def refusal_result(exc: Exception) -> dict[str, Any]:
+    """Serialize registration pin refusals without changing their public ValueError code."""
+    result = {"outcome": "error", "error": {"code": "ValueError", "message": str(exc)},
+              "provider_called": False}
+    if isinstance(exc, RegistrationPinError):
+        result["next_action"] = exc.next_action
+    return result
+
+
 def _is_exact_role_pack_pin(value: Any) -> bool:
     return isinstance(value, Mapping) and set(value) == ROLE_PACK_PIN_FIELDS
 
@@ -83,12 +99,12 @@ def _role_pack_pin(run: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve an exact role selection without changing an adopted configuration."""
     from otto.portfolio.role_context import RoleContextError, _role_pack
     if "role_pack" in run and run["role_pack"] is None:
-        raise ValueError("selected run role pack pin must be an exact object")
+        raise RegistrationPinError("selected run role pack pin must be an exact object")
     selection = {"content": {"role_pack": run["role_pack"]}} if "role_pack" in run else None
     try:
         return _role_pack(selection, "manager")[0]["pin"]
     except RoleContextError as exc:
-        raise ValueError("selected run role pack pin is stale or inconsistent") from exc
+        raise RegistrationPinError("selected run role pack pin is stale or inconsistent") from exc
 
 
 def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: str,
@@ -116,7 +132,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     if run.get("profile_pack") is not None:
         from otto.agents.host_profiles import profile_pin_matches
         if not profile_pin_matches(run["profile_pack"], profile.get("pin") or {}):
-            raise ValueError("selected run profile pack pin is stale or inconsistent")
+            raise RegistrationPinError("selected run profile pack pin is stale or inconsistent")
     role_pack_pin = _role_pack_pin(run)
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
@@ -237,9 +253,9 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     if not isinstance(selection, Mapping) or selection.get("schema") != "otto.profile-selection.v1":
         raise ValueError("registered profile selection is missing; re-register the pending run")
     if "role_pack" not in selection:
-        raise ValueError("registered role pack pin is missing; migrate the inert pending selection")
+        raise RegistrationPinError("registered role pack pin is missing; migrate the inert pending selection")
     if not _is_exact_role_pack_pin(selection["role_pack"]):
-        raise ValueError("registered role pack pin is malformed")
+        raise RegistrationPinError("registered role pack pin is malformed")
     if isinstance(bundle_source, (str, Path)):
         bundle = read_bundle(bundle_source)
     else:
@@ -254,7 +270,7 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     if run.get("profile_pack") is not None:
         from otto.agents.host_profiles import profile_pin_matches
         if not profile_pin_matches(run["profile_pack"], selection.get("pin") or {}):
-            raise ValueError("registered profile pack pin is stale or inconsistent")
+            raise RegistrationPinError("registered profile pack pin is stale or inconsistent")
     kind = host.get("kind")
     adapter = selection.get("adapter")
     host_settings = (host.get("adapters") or {}).get(adapter)
@@ -277,7 +293,7 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     computed = plan(bundle, profile=retained_profile, manager_principal=manager_principal,
                     worktree=worktree, tool_entrypoint=tool_entrypoint)
     if selection["role_pack"] != computed["configuration"]["role_pack"]:
-        raise ValueError("registered role pack pin is stale or inconsistent")
+        raise RegistrationPinError("registered role pack pin is stale or inconsistent")
     if computed["configuration"]["roles"] != selection.get("resolved_roles"):
         raise ValueError("registered run role bindings differ from retained selection")
     return computed
@@ -296,7 +312,7 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
     existing = facts.get("profile_selection")
     if isinstance(existing, Mapping) and "role_pack" in existing:
         if not _is_exact_role_pack_pin(existing["role_pack"]):
-            raise ValueError("registered role pack pin is malformed")
+            raise RegistrationPinError("registered role pack pin is malformed")
         return record, facts
     lifecycle = getattr(getattr(record, "lifecycle", None), "value", None)
     if (lifecycle != "pending" or record.payload.get("tasks")

@@ -36,6 +36,14 @@ from .owner import HostSession, json_out
 EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE = 0, 1, 3
 
 
+def _cli_exception_result(exc: Exception) -> dict[str, Any]:
+    """Build the direct CLI error envelope for a command exception."""
+    from .register import RegistrationPinError, refusal_result
+    return (refusal_result(exc) if isinstance(exc, RegistrationPinError) else
+            {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
+             "provider_called": False})
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ottoctl", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1118,8 +1126,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json_out({"outcome": "unavailable", "error": {"code": "host_unavailable", "message": str(exc)}}))
         return EXIT_UNAVAILABLE
     except Exception as exc:
-        print(json_out({"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
-                        "provider_called": False}))
+        result = _cli_exception_result(exc)
+        print(json_out(result))
         return EXIT_ERROR
     if key == ("portfolio", None) and args.portfolio_args and args.portfolio_args[0] == "apply":
         from .portfolio import parser as portfolio_parser
