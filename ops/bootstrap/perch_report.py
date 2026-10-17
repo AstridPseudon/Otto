@@ -221,6 +221,10 @@ def cmd_stage2_review_ref(args):
 
 
 def stage2_admission_check(response, task_ref):
+    if (not isinstance(task_ref, dict) or task_ref.get("kind") != "work.task"
+            or any(not isinstance(task_ref.get(key), str) or not task_ref[key]
+                   for key in ("authority", "id", "revision"))):
+        raise ValueError("activation has no exact canary work task revision")
     if response.get("outcome") not in {"admitted", "already-admitted"}:
         raise ValueError("operator admission did not admit the task: " + repr(response))
     if response.get("admitted_revision") != task_ref.get("revision"):
@@ -235,14 +239,15 @@ def stage2_dispatch_check(status, activation, admission, alias):
     task_refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
     expected = task_refs.get(alias) or {}
     stage2_admission_check(admission, expected)
-    worker = (status.get("workers") or {}).get(alias)
-    if not isinstance(worker, dict) or worker.get("automatic") is not True:
-        raise ValueError("owner has no retained automatic dispatch for " + alias)
-    if worker.get("automatic_revision") != expected.get("revision"):
-        raise ValueError("owner dispatched a different revision for " + alias)
-    if not isinstance(worker.get("assignment_ref"), dict) or not worker.get("schedule_id"):
-        raise ValueError("owner dispatch has no retained assignment and schedule for " + alias)
-    return worker
+    task = stage2_status_task(status, alias)
+    dispatch = task["dispatch"]
+    if dispatch["state"] not in {"launched", "landed"}:
+        raise ValueError("owner has no retained launched dispatch for " + alias)
+    if dispatch.get("reason") is not None:
+        raise ValueError("owner dispatched %s with a failure reason: %s" % (alias, dispatch["reason"]))
+    if task.get("repo") != "toy" or task.get("branch") != "canon/main":
+        raise ValueError("owner dispatched %s outside the registered toy repository" % alias)
+    return task
 
 
 def cmd_stage2_dispatch_check(args):
@@ -250,13 +255,23 @@ def cmd_stage2_dispatch_check(args):
                           read_json(args.admission, {}) or {}, args.task)
 
 
+def stage2_status_task(status, alias):
+    if status.get("outcome") != "read" or not isinstance(status.get("tasks"), list):
+        raise ValueError("staging project status lacks the product task dispatch state")
+    matches = [task for task in status["tasks"] if isinstance(task, dict) and task.get("id") == alias]
+    if len(matches) != 1 or not isinstance(matches[0].get("dispatch"), dict):
+        raise ValueError("staging project status lacks one task dispatch state for " + alias)
+    if (matches[0]["dispatch"].get("state") not in {"admitted", "launched", "landed", "failed"}
+            or "reason" not in matches[0]["dispatch"]):
+        raise ValueError("staging project status has no recognized dispatch state for " + alias)
+    return matches[0]
+
+
 def stage2_dispatch_no_failure(status, alias):
-    if (status.get("outcome") != "read" or not isinstance(status.get("workers"), dict)
-            or not isinstance(status.get("automatic_dispatch_failures"), dict)):
-        raise ValueError("staging project status lacks the owner's retained dispatch state")
-    failure = status["automatic_dispatch_failures"].get(alias)
-    if failure is not None:
-        raise ValueError("owner automatic dispatch failed for %s: %s" % (alias, failure))
+    task = stage2_status_task(status, alias)
+    if task["dispatch"]["state"] == "failed":
+        raise ValueError("owner automatic dispatch failed for %s: %s" %
+                         (alias, task["dispatch"].get("reason") or "no reason retained"))
 
 
 def cmd_stage2_dispatch_no_failure(args):
@@ -335,12 +350,11 @@ def stage2_observations(raw):
         by_alias = {task.get("id"): task for task in project.get("tasks") or []}
         prerequisites = {"A": (), "B": ("A",), "C": ("B",)}[alias]
         try:
-            worker = stage2_dispatch_check(status, activation, admission, alias)
+            task = stage2_dispatch_check(status, activation, admission, alias)
             records.append({"alias": alias, "admitted": True,
                             "ready": all(by_alias.get(prereq, {}).get("lifecycle") == "completed"
                                          for prereq in prerequisites),
-                            "assignment_ref": worker["assignment_ref"],
-                            "schedule_id": worker["schedule_id"]})
+                            "dispatch_state": task["dispatch"]["state"]})
         except (ValueError, KeyError):
             continue
         owner_reads.append(read_json(raw / ("stage2-owner-" + alias + ".json"), {}) or {})
@@ -374,12 +388,21 @@ def stage2_observations(raw):
                                             "owner_error": response.get("error")}
     before = read_json(raw / "stage2-store-before.json", {}) or {}
     after = read_json(raw / "stage2-store-after.json", {}) or {}
-    assignments = {row.get("task_id"): row for row in timeline.get("tasks") or []}
-    dispatch_in_store = sum(any(event.get("stream") == "dispatch:" + assignment_id
-                                and event.get("event_type") == "work.assignment.dispatched"
-                                for event in (assignments.get(assignment_id) or {}).get("events") or [])
-                            for assignment_id in (row.get("assignment_ref", {}).get("id") for row in records)
-                            if isinstance(assignment_id, str))
+    # Link each public task dispatch to its assignment's actual Store stream.
+    # Project status owns the task-level state; the Store proves the matching
+    # dispatch event instead of relying on a private service-state projection.
+    dispatch_in_store = 0
+    for row in records:
+        task_id = (refs.get(row["alias"]) or {}).get("id")
+        matching = [assignment for assignment in timeline.get("tasks") or []
+                    if isinstance(task_id, str) and isinstance(assignment.get("task_id"), str)
+                    and assignment.get("scope_task_id") == task_id and any(
+                        event.get("stream") == "dispatch:" + assignment["task_id"]
+                        and event.get("event_type") == "work.assignment.dispatched"
+                        for event in assignment.get("events") or [])]
+        if len(matching) == 1:
+            row["assignment_id"] = matching[0]["task_id"]
+            dispatch_in_store += 1
     admitted = sorted(row["alias"] for row in timeline.get("work_tasks") or []
                       if row.get("admitted_revision"))
     observed["store_snapshots"] = [
@@ -763,9 +786,17 @@ def cmd_timeline(args):
                 result["work_tasks"].append({"alias": task.payload.get("alias"),
                                              "id": task.ref.id,
                                              "admitted_revision": admitted_revision(task.payload)})
+            assignment_page = store.consumer().read_identity_page(kind="wrk.assignment", limit=100)
+            if assignment_page["next_cursor"] is not None or assignment_page["held"]:
+                raise ValueError("the Store has more than 100 or unreadable assignments")
+            assignment_scopes = {row.ref.id: row.payload.get("scope")
+                                 for row in assignment_page["records"]}
             for timeline in timelines(store):
+                scope = assignment_scopes.get(timeline.task_id)
                 result["tasks"].append({
                     "task_id": timeline.task_id,
+                    "scope_task_id": scope.get("id") if isinstance(scope, dict)
+                                     and scope.get("kind") == "work.task" else None,
                     "complete": timeline.complete,
                     "gaps": [[g.stream, g.gap_from, g.gap_to] for g in timeline.gaps],
                     "events": [{"stream": e.stream, "sequence": e.sequence, "event_type": e.event_type,
@@ -1195,24 +1226,44 @@ def stage2_failures(raw, config):
         found["stage2-canary-valid"].append("plan save does not name exactly three tasks")
     if any((save.get("task_refs") or {}).get(alias) != task_refs.get(alias) for alias in tasks):
         found["stage2-canary-valid"].append("activation did not retain the saved canary task revisions")
-    seeded = activation.get("bootstrap_assessment") or {}
-    criteria = seeded.get("criterion_refs") or {}
-    if ((seeded.get("policy_scope_ref") or {}).get("kind") != "assessment.scope"
-            or set(criteria) != set(tasks)
-            or any((criteria.get(alias) or {}).get("kind") != "assessment.criterion" for alias in tasks)):
-        found["stage2-canary-valid"].append("staging owner did not declare three canary policy criteria")
-    for alias in tasks:
-        admission = read_json(raw / ("stage2-admit-" + alias + ".json"), {}) or {}
-        scoped = admission.get("bootstrap_assessment") or {}
-        if (scoped.get("task_ref", {}).get("id") != task_refs.get(alias, {}).get("id")
-                or not scoped.get("task_ref", {}).get("revision")
-                or scoped.get("task_ref", {}).get("revision") == task_refs.get(alias, {}).get("revision")
-                or scoped.get("criterion_ref") != criteria.get(alias)
-                or (scoped.get("scope_ref") or {}).get("kind") != "assessment.scope"
-                or not (scoped.get("scope_ref") or {}).get("revision")):
-            found["stage2-canary-valid"].append(alias + " admission did not declare its current check-accepted scope")
-
     status = read_json(raw / "stage2-project-status.json", {}) or {}
+    status_tasks = status.get("tasks") or []
+    if (status.get("outcome") != "read" or len(status_tasks) != len(tasks)
+            or {row.get("id") for row in status_tasks if isinstance(row, dict)} != set(tasks)):
+        found["stage2-canary-valid"].append("product project status did not read exactly three canary tasks")
+    scopes = ((activation.get("activation") or {}).get("steps") or {}).get("assessment_scopes") or []
+    if len(scopes) != len(tasks):
+        found["stage2-canary-valid"].append("product activation did not declare three required task scopes")
+    for alias in tasks:
+        expected = task_refs.get(alias) or {}
+        declared = [row for row in scopes if isinstance(row, dict) and row.get("task_ref") == expected]
+        shown = [row for row in status_tasks if isinstance(row, dict) and row.get("id") == alias]
+        scope = declared[0] if len(declared) == 1 else {}
+        required = shown[0].get("required_assessment_scopes") if len(shown) == 1 else None
+        shown_scope = required[0] if isinstance(required, list) and len(required) == 1 \
+            and isinstance(required[0], dict) else {}
+        criterion_refs = scope.get("criterion_refs")
+        criterion = criterion_refs[0] if isinstance(criterion_refs, list) and len(criterion_refs) == 1 \
+            and isinstance(criterion_refs[0], dict) else {}
+        if (len(declared) != 1 or not shown_scope
+                or (scope.get("scope_ref") or {}).get("kind") != "assessment.scope"
+                or not (scope.get("scope_ref") or {}).get("revision")
+                or criterion.get("kind") != "assessment.criterion" or not criterion.get("revision")
+                or shown_scope.get("ref") != scope.get("scope_ref")
+                or shown_scope.get("criteria") != criterion_refs
+                or shown_scope.get("criterion_definitions") != [{"id": criterion.get("id"),
+                    "source_alias": "C-" + alias, "definition": "accepted check passes"}]):
+            found["stage2-canary-valid"].append(alias + " lacks its product-declared required check criterion")
+        admission = read_json(raw / ("stage2-admit-" + alias + ".json"), {}) or {}
+        admitted_ref = admission.get("task_ref") or {}
+        if (admission.get("outcome") not in {"admitted", "already-admitted"}
+                or admission.get("admitted_revision") != expected.get("revision")
+                or any(admitted_ref.get(key) != expected.get(key)
+                       for key in ("authority", "kind", "id"))
+                or not admitted_ref.get("revision")
+                or admitted_ref.get("revision") == expected.get("revision")):
+            found["stage2-canary-valid"].append(alias + " lacks its exact operator-admitted task revision")
+
     used_review = read_json(raw / "stage2-review-ref.json", {}) or {}
     try:
         expected_review = stage2_review_ref(status, activation, STAGE2_REVIEW_TEXT)

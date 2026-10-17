@@ -119,10 +119,17 @@ def clean_stage2_raw(root):
                   for name in tasks]
     criteria = {name: {"authority": "owner", "kind": "assessment.criterion",
                        "id": "criterion-" + name, "revision": "rev-1"} for name in tasks}
-    scopes = {name: {"task_ref": {**task_refs[name], "revision": "rev-admitted-" + name},
+    scopes = {name: {"task_ref": task_refs[name],
                      "scope_ref": {"authority": "owner", "kind": "assessment.scope",
                                    "id": "scope-" + name, "revision": "rev-1"},
-                     "criterion_ref": criteria[name]} for name in tasks}
+                     "criterion_refs": [criteria[name]]} for name in tasks}
+    status_tasks = [{"id": name, "repo": "toy", "branch": "canon/main",
+                     "dispatch": {"state": "admitted", "reason": None},
+                     "required_assessment_scopes": [{"ref": scopes[name]["scope_ref"],
+                         "criteria": scopes[name]["criterion_refs"],
+                         "criterion_definitions": [{"id": criteria[name]["id"],
+                             "source_alias": "C-" + name, "definition": "accepted check passes"}]}]}
+                    for name in tasks]
     values = {
         "config.json": {"stage": "2", "scenarios": ["admit-and-dispatch"], "staging_restart": 0,
                         "tasks": [], "pool_limit": 2, "manager_reserve": 1,
@@ -130,14 +137,11 @@ def clean_stage2_raw(root):
                         "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
                         "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}},
         "notes.json": {"admit-and-dispatch": "ran"},
-        "stage2-project-status.json": {"documents": documents},
+        "stage2-project-status.json": {"outcome": "read", "documents": documents, "tasks": status_tasks},
         "stage2-plan-save.input.json": {"tasks": plan_tasks},
         "stage2-plan-save.json": {"outcome": "saved", "task_refs": task_refs},
-        "stage2-activation.json": {"activation": {"steps": {"tasks": {"task_refs": task_refs}}},
-                                   "bootstrap_assessment": {"policy_scope_ref": {
-                                       "authority": "owner", "kind": "assessment.scope",
-                                       "id": "policy-scope", "revision": "rev-1"},
-                                       "criterion_refs": criteria}},
+        "stage2-activation.json": {"activation": {"steps": {"tasks": {"task_refs": task_refs},
+                                         "assessment_scopes": list(scopes.values())}}},
         "stage2-review-ref.json": review_ref,
         "stage2-observations.json": {
             "dispatch": {"dispatched": list(tasks), "records": [
@@ -157,7 +161,7 @@ def clean_stage2_raw(root):
     for name in tasks:
         (raw / ("stage2-admit-" + name + ".json")).write_text(json.dumps({
             "outcome": "admitted", "admitted_revision": task_refs[name]["revision"],
-            "bootstrap_assessment": scopes[name]}), encoding="utf-8")
+            "task_ref": {**task_refs[name], "revision": "rev-admitted-" + name}}), encoding="utf-8")
     log = [{"task": task_refs[name]["id"], "revision": task_refs[name]["revision"],
             "review": review_ref["id"], "prover_result": "approved", "outcome": "admitted"} for name in tasks]
     (raw / "stage2-operator-admission.jsonl").write_text(
@@ -386,13 +390,18 @@ class AssertionKindTests(unittest.TestCase):
         patch(raw, "stage2-plan-save.input.json", lambda value: value["tasks"][0]["fields"].pop("check"))
         self.assertEqual(statuses(raw)["stage2-canary-valid"], "fail")
 
-    def test_stage_two_scope_must_pin_the_post_admission_task_revision(self):
+    def test_stage_two_product_scope_and_operator_admission_keep_exact_task_pins(self):
         raw = clean_stage2_raw(self.tmp / "stage2-scope-fault")
         self.assertEqual(statuses(raw)["stage2-canary-valid"], "pass")
-        activated = json.loads((raw / "stage2-activation.json").read_text(encoding="utf-8"))
-        old = activated["activation"]["steps"]["tasks"]["task_refs"]["A"]["revision"]
-        patch(raw, "stage2-admit-A.json", lambda value: value["bootstrap_assessment"]["task_ref"].update(
-            revision=old))
+        patch(raw, "stage2-activation.json", lambda value: value["activation"]["steps"][
+            "assessment_scopes"][0]["task_ref"].update(id="another-task"))
+        self.assertEqual(statuses(raw)["stage2-canary-valid"], "fail")
+        raw = clean_stage2_raw(self.tmp / "stage2-status-scope-fault")
+        patch(raw, "stage2-project-status.json", lambda value: value["tasks"][0][
+            "required_assessment_scopes"][0]["criteria"][0].update(id="another-criterion"))
+        self.assertEqual(statuses(raw)["stage2-canary-valid"], "fail")
+        raw = clean_stage2_raw(self.tmp / "stage2-admission-pin-fault")
+        patch(raw, "stage2-admit-A.json", lambda value: value["task_ref"].update(id="another-task"))
         self.assertEqual(statuses(raw)["stage2-canary-valid"], "fail")
 
     def test_stage_two_host_commands_use_the_admitted_client_home(self):
@@ -572,13 +581,11 @@ class AssertionKindTests(unittest.TestCase):
         refs = json.loads((raw / "stage2-activation.json").read_text(encoding="utf-8"))[
             "activation"]["steps"]["tasks"]["task_refs"]
         for alias in ("A", "B", "C"):
-            assignment = {"authority": "owner", "kind": "assignment", "id": "assignment-" + alias,
-                          "revision": "rev-1"}
             (raw / ("stage2-admit-" + alias + ".json")).write_text(json.dumps(
                 {"outcome": "admitted", "admitted_revision": refs[alias]["revision"]}), encoding="utf-8")
-            (raw / ("stage2-dispatch-" + alias + ".json")).write_text(json.dumps({"workers": {
-                alias: {"automatic": True, "automatic_revision": refs[alias]["revision"],
-                        "assignment_ref": assignment, "schedule_id": "schedule-" + alias}}}), encoding="utf-8")
+            (raw / ("stage2-dispatch-" + alias + ".json")).write_text(json.dumps({
+                "outcome": "read", "tasks": [{"id": alias, "repo": "toy", "branch": "canon/main",
+                    "dispatch": {"state": "launched", "reason": None}}]}), encoding="utf-8")
             lifecycle = {"A": "completed" if alias != "A" else "active",
                          "B": "completed" if alias == "C" else "active", "C": "active"}
             (raw / ("stage2-dispatch-" + alias + "-project.json")).write_text(json.dumps(
@@ -597,7 +604,7 @@ class AssertionKindTests(unittest.TestCase):
             (raw / ("stage2-store-" + name + ".json")).write_text(json.dumps({
                 "integrity": "ok", "rows": {"events": 6}}), encoding="utf-8")
         (raw / "timeline.json").write_text(json.dumps({
-            "tasks": [{"task_id": "assignment-" + alias,
+            "tasks": [{"task_id": "assignment-" + alias, "scope_task_id": refs[alias]["id"],
                        "events": [{"stream": "dispatch:assignment-" + alias,
                                    "event_type": "work.assignment.dispatched"}]}
                       for alias in ("A", "B", "C")],
@@ -608,10 +615,24 @@ class AssertionKindTests(unittest.TestCase):
         self.assertTrue(all(row["ready"] for row in projected["dispatch"]["records"]))
         self.assertEqual(projected["store_snapshots"][-1]["dispatch_events"], 3)
         self.assertEqual(projected["unadmitted_refusal"]["reason"], "unadmitted_revision")
-        patch(raw, "stage2-dispatch-B.json", lambda value: value["workers"]["B"].update(automatic=False))
+        patch(raw, "stage2-dispatch-B.json", lambda value: value["tasks"][0]["dispatch"].update(
+            state="failed", reason="repo unavailable"))
         red = perch_report.stage2_observations(raw)
         self.assertEqual(red["dispatch"]["dispatched"], ["A", "C"])
         self.assertLess(red["store_snapshots"][-1]["dispatch_events"], 3)
+        raw = clean_stage2_raw(self.tmp / "stage2-unlinked-store-dispatch")
+        (raw / "stage2-observations.json").unlink()
+        for alias in ("A", "B", "C"):
+            (raw / ("stage2-dispatch-" + alias + ".json")).write_text(json.dumps({
+                "outcome": "read", "tasks": [{"id": alias, "repo": "toy", "branch": "canon/main",
+                    "dispatch": {"state": "launched", "reason": None}}]}), encoding="utf-8")
+            (raw / ("stage2-dispatch-" + alias + "-project.json")).write_text(json.dumps({
+                "tasks": [{"id": prereq, "lifecycle": "completed"} for prereq in ("A", "B")]}),
+                encoding="utf-8")
+        (raw / "timeline.json").write_text(json.dumps({"tasks": [{"task_id": "assignment-X",
+            "scope_task_id": "unrelated-task", "events": [{"stream": "dispatch:assignment-X",
+                "event_type": "work.assignment.dispatched"}]}]}), encoding="utf-8")
+        self.assertEqual(perch_report.stage2_observations(raw)["store_snapshots"][-1]["dispatch_events"], 0)
 
     def test_stage_two_kill_evidence_requires_slot_release_and_owner_survival(self):
         raw = self.tmp / "stage2-kill"
@@ -744,415 +765,33 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.launcher)
 
-    def test_staging_scopes_are_declared_for_exact_tasks(self):
-        calls = []
-
-        class Ref:
-            def __init__(self, value, kind=None, ident=None, revision=None):
-                self.value = value if isinstance(value, dict) else {
-                    "authority": value, "kind": kind, "id": ident, "revision": revision}
-                self.authority = self.value.get("authority")
-                self.kind = self.value["kind"]
-                self.id = self.value.get("id")
-                self.revision = self.value.get("revision")
-
-            @classmethod
-            def from_dict(cls, value):
-                return cls(value)
-
-            def to_dict(self):
-                return self.value
-
-        class Session:
-            store = object()
-            owner = SimpleNamespace(owner_actor=SimpleNamespace(actor="owner", authority="owner"),
-                                    evidence_payload_resolver=object())
-
-            class Graph:
-                def current(self, ref):
-                    if ref.kind == "work.task":
-                        return SimpleNamespace(ref=Ref({"authority": "owner", "kind": "work.task",
-                                                        "id": ref.id, "revision": "rev-admitted"}),
-                                               payload={"alias": ref.id.split("-")[-1],
-                                                        "project_ref": {"authority": "owner", "kind": "work.project",
-                                                                        "id": "project", "revision": "rev-4"}})
-                    return SimpleNamespace(ref=Ref({"authority": "owner", "kind": "work.project",
-                                                    "id": "project", "revision": "rev-4"}),
-                                           payload={"custom": {"otto_host_registration": {"run_id": "perch-stage2"}}})
-
-            owner.graph = Graph()
-
-            def __init__(self, config, host=None):
-                self.host = host
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return None
-
-        class Assessment:
-            def __init__(self, store, **kwargs):
-                pass
-
-            def declare_scope(self, key, **kwargs):
-                calls.append((key, kwargs))
-                aliases = ("A", "B", "C") if key == "perch-stage2-policy-criteria" else (key.rsplit("-", 1)[-1],)
-                return SimpleNamespace(ref=Ref({"kind": "assessment.scope", "id": key, "revision": "rev-1"}),
-                                       criterion_refs=[Ref({"kind": "assessment.criterion",
-                                                            "id": "C-" + alias, "revision": "rev-1"})
-                                                       for alias in aliases])
-
-            def get_scope(self, ref):
-                return SimpleNamespace(criterion_refs=[Ref({"kind": "assessment.criterion",
-                                                          "id": "C-" + alias, "revision": "rev-1"})
-                                                       for alias in ("A", "B", "C")])
-
-        modules = {
-            "herzchen": ModuleType("herzchen"),
-            "herzchen.contracts": ModuleType("herzchen.contracts"),
-            "herzchen.domains": ModuleType("herzchen.domains"),
-            "herzchen.domains.assessment": ModuleType("herzchen.domains.assessment"),
-            "otto": ModuleType("otto"),
-            "otto.hostctl": ModuleType("otto.hostctl"),
-            "otto.hostctl.owner": ModuleType("otto.hostctl.owner"),
-        }
-        modules["herzchen.contracts"].ResourceRef = Ref
-        modules["herzchen.domains.assessment"].AssessmentModule = Assessment
-        modules["otto.hostctl.owner"].HostSession = Session
-        modules["otto.hostctl.owner"].service_store = lambda store: contextlib.nullcontext()
-        refs = {name: {"authority": "owner", "kind": "work.task", "id": "task-" + name, "revision": "rev-1"}
-                for name in ("A", "B", "C")}
-        service = SimpleNamespace(config={"hosts": {"claude-code": {"principal": "canary"}}}, store=object())
-        with mock_patch.dict(sys.modules, modules):
-            result = self.launcher._seed_scopes(service, refs)
-            self.assertEqual(set(result["criterion_refs"]), {"A", "B", "C"})
-            self.assertEqual([row["source_alias"] for row in calls[0][1]["criteria"]],
-                             ["C-A", "C-B", "C-C"])
-            scoped = self.launcher._seed_admitted_scope(service, refs["A"])
-            self.assertEqual(scoped["task_ref"]["revision"], "rev-admitted")
-            self.assertEqual(scoped["criterion_ref"]["id"], "C-A")
-            self.assertEqual(calls[1][1]["protocol"], "check-accepted")
-            self.assertEqual(calls[1][1]["designated_approver"], "perch-stage2-manager")
-            self.assertTrue(calls[1][1]["allow_no_review"])
-            with self.assertRaisesRegex(RuntimeError, "exactly A, B and C"):
-                self.launcher._seed_scopes(service, {"A": refs["A"]})
-
-    def test_scope_setup_runs_between_activation_and_composed_view(self):
-        order = []
-        refs = {name: {"kind": "work.task", "id": "task-" + name, "revision": "rev-1"}
-                for name in ("A", "B", "C")}
-
-        class OwnerService:
-            def _run_operation(self, handler, namespace, operation):
-                order.append("activate")
-                return {"outcome": "prepared", "activation": {"steps": {"tasks": {"task_refs": refs}}}}
-
-            def _admit_revision(self, args):
-                order.append("admit")
-                return {"outcome": "admitted", "task_ref": args["task_ref"]}
-
-        class ProjectOwnerService(OwnerService):
-            def _run_operation(self, handler, namespace, operation):
-                order.append("original")
-                if operation == ("project", "status"):
-                    return {"outcome": "read", "project_ref": {"id": "project"}}
-                return {"outcome": "original"}
-
-        project = ModuleType("otto.hostctl.project_service")
-        project.ProjectOwnerService = ProjectOwnerService
-        service = ModuleType("otto.hostctl.service")
-        service.OwnerService = OwnerService
-        modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
-                   "otto.hostctl.project_service": project, "otto.hostctl.service": service}
-        with mock_patch.dict(sys.modules, modules), mock_patch.object(self.launcher, "_seed_scopes",
-                  side_effect=lambda _, value: order.append("scopes") or {"criterion_refs": {}}), \
-                mock_patch.object(self.launcher, "_seed_admitted_scope",
-                  side_effect=lambda _, value: order.append("task_scope") or {"task_ref": value}), \
-                mock_patch.object(self.launcher, "_refresh_manager_setup",
-                  side_effect=lambda _, value: order.append("manager_setup") or {"task_ref": value}):
-            self.launcher.install_scope_setup()
-            owner = ProjectOwnerService()
-            owner._build_activated_view = lambda name: order.append("view")
-            result = owner._run_operation(None, SimpleNamespace(project="perch-stage2"), ("project", "activate"))
-            self.assertEqual(order, ["activate", "scopes", "view"])
-            self.assertIn("bootstrap_assessment", result)
-            admitted = owner._admit_revision({"task_ref": refs["A"]})
-            self.assertEqual(order, ["activate", "scopes", "view", "admit", "task_scope", "manager_setup"])
-            self.assertEqual(admitted["bootstrap_assessment"]["task_ref"], refs["A"])
-            self.assertEqual(admitted["bootstrap_manager_setup"]["task_ref"], refs["A"])
-            self.assertEqual(owner._run_operation(None, SimpleNamespace(project="other"),
-                                                  ("project", "activate"))["outcome"], "original")
-            owner.router = SimpleNamespace(services={"project": SimpleNamespace(server=SimpleNamespace(
-                run_id="perch-stage2", state={"project_ref": {"id": "project"},
-                                              "workers": {"A": {"automatic": True}},
-                                              "automatic_dispatch_failures": {}}))})
-            status = owner._run_operation(None, SimpleNamespace(project="perch-stage2"), ("project", "status"))
-            self.assertTrue(status["workers"]["A"]["automatic"])
-            self.assertEqual(status["automatic_dispatch_failures"], {})
-
-    def test_project_status_exposes_retained_dispatch_without_manager_identity(self):
-        import re
+    def test_product_project_status_is_the_only_dispatch_read(self):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
-        wait = re.search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        wait = __import__("re").search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(wait)
         self.assertIn('project status --project perch-stage2', wait.group())
         self.assertNotIn('manager --project perch-stage2 status', wait.group())
+        source = (BOOTSTRAP / "perch_stage2_owner.py").read_text(encoding="utf-8")
+        for removed in ("install_scope_setup", "_seed_scopes", "_seed_admitted_scope",
+                        "_refresh_manager_setup", "_status_with_dispatch"):
+            self.assertNotIn(removed, source)
 
-        project_ref = {"authority": "owner", "kind": "work.project", "id": "project", "revision": "rev-1"}
-        worker = {"A": {"automatic": True, "automatic_revision": "rev-1",
-                        "assignment_ref": {"kind": "wrk.assignment", "id": "assignment-A"},
-                        "schedule_id": "schedule-A"}}
-        state = {"project_ref": project_ref, "workers": worker,
-                 "automatic_dispatch_failures": {}}
-        view = SimpleNamespace(server=SimpleNamespace(run_id="perch-stage2", state=state))
-        owner = SimpleNamespace(router=SimpleNamespace(services={"project": view}))
-        read = {"outcome": "read", "project_ref": project_ref}
-        observed = self.launcher._status_with_dispatch(owner, read)
-        self.assertEqual(observed["workers"], worker)
-        self.assertEqual(observed["automatic_dispatch_failures"], {})
-        worker["A"]["automatic"] = False
-        self.assertTrue(observed["workers"]["A"]["automatic"])
-        perch_report.stage2_dispatch_no_failure(observed, "A")
-        # Seed the owner's retained pre-effect refusal. The wait turns red
-        # with the actual reason instead of waiting on a protected command.
-        observed["automatic_dispatch_failures"]["A"] = {"reason": "repo unavailable"}
+        task_ref = {"authority": "owner", "kind": "work.task", "id": "task-A", "revision": "rev-1"}
+        activation = {"activation": {"steps": {"tasks": {"task_refs": {"A": task_ref}}}}}
+        admission = {"outcome": "admitted", "admitted_revision": "rev-1"}
+        status = {"outcome": "read", "tasks": [{"id": "A", "repo": "toy", "branch": "canon/main",
+                    "dispatch": {"state": "launched", "reason": None}}]}
+        self.assertEqual(perch_report.stage2_dispatch_check(status, activation, admission, "A"),
+                         status["tasks"][0])
+        perch_report.stage2_dispatch_no_failure(status, "A")
+        status["tasks"][0]["dispatch"] = {"state": "failed", "reason": "repo unavailable"}
         with self.assertRaisesRegex(ValueError, "repo unavailable"):
-            perch_report.stage2_dispatch_no_failure(observed, "A")
-        del observed["workers"]
-        with self.assertRaisesRegex(ValueError, "lacks the owner's retained dispatch state"):
-            perch_report.stage2_dispatch_no_failure(observed, "A")
-
-    def test_admitted_task_rebinds_unstarted_manager_due_and_preserves_setup(self):
-        from dataclasses import dataclass
-
-        class Ref:
-            def __init__(self, value, kind=None, ident=None, revision=None):
-                self.value = value if isinstance(value, dict) else {
-                    "authority": value, "kind": kind, "id": ident, "revision": revision}
-                self.authority, self.kind = self.value["authority"], self.value["kind"]
-                self.id, self.revision = self.value["id"], self.value["revision"]
-
-            @classmethod
-            def from_dict(cls, value):
-                return cls(value)
-
-            def to_dict(self):
-                return self.value
-
-            def __eq__(self, other):
-                return isinstance(other, Ref) and self.value == other.value
-
-        def ref(kind, ident, revision):
-            return {"authority": "owner", "kind": kind, "id": ident, "revision": revision}
-
-        task = ref("work.task", "task-A", "rev-2")
-        project = ref("work.project", "project", "rev-5")
-        assignment = ref("wrk.assignment", "manager", "rev-2")
-        old_mandate = ref("dat.content.document", "old-mandate", "rev-1")
-        new_mandate = ref("dat.content.document", "new-mandate", "rev-1")
-        setup_ref = ref("dat.content.document", "setup", "rev-1")
-        old_task = ref("work.task", "task-A", "rev-1")
-        old_content = {"role": "manager", "task_ref": old_task,
-                       "instruction_contract": {"task_ref": old_task, "authority": {"source": "canonical_owner"}}}
-        events = []
-        current_task = [task]
-
-        class Graph:
-            def current(self, value):
-                if value.kind == "work.task":
-                    return SimpleNamespace(ref=Ref(current_task[0]), payload={
-                        "alias": "B" if current_task[0]["id"] == "task-B" else "A"})
-                return SimpleNamespace(ref=Ref(project))
-
-        due = {"old": {"role": "manager", "assignment_ref": assignment,
-                       "execution_mode": "fresh_manager", "stop_state": "active",
-                       "completion_state": "none", "host_evidence": {}, "version": 2,
-                       "context_refs": [old_mandate],
-                       "target": {"task_ref": old_task, "mandate_ref": old_mandate}}}
-
-        @dataclass
-        class StubDue:
-            version: int
-            target: dict
-            context_refs: tuple
-
-            @classmethod
-            def from_dict(cls, value):
-                return cls(value["version"], value["target"], tuple(value["context_refs"]))
-
-            def to_dict(self):
-                return {**due["old"], "version": self.version,
-                        "target": self.target, "context_refs": self.context_refs}
-
-        def save_due(schedule, value, *, request_id, expected_version):
-            self.assertEqual(schedule, "old")
-            self.assertEqual(expected_version, 2)
-            events.append(("due", value, request_id))
-            due[schedule] = {**value, "version": expected_version + 1}
-            return due[schedule]
-
-        class App:
-            actor = "owner"
-            runtime = object()
-
-            def __init__(self):
-                self.portfolio = SimpleNamespace(create_document=self.create_document)
-
-            def read_operating_setup(self, *, project_ref):
-                self.assert_project(project_ref)
-                return {"setup_ref": setup_ref, "setup": {"mode": "manual", "roles": {"manager": "old"},
-                        "advisor_policy": {"mode": "disabled", "reason": "manual"}, "acceptance_tasks": []}}
-
-            def assert_project(self, value):
-                if value != project:
-                    raise AssertionError("wrong project")
-
-            def create_document(self, project_ref, **kwargs):
-                self.assert_project(project_ref)
-                events.append(("mandate", kwargs))
-                return {"record": {"payload": {"current_revision": new_mandate}}}
-
-            def _document_revision(self, response, field):
-                return response["record"]["payload"]["current_revision"]
-
-        app = App()
-        state = {"project_ref": project, "task_refs": {"A": old_task}, "manager": "manager",
-                 "assignment_ref": assignment, "manager_generation": 1,
-                 "requested_model": "claude-haiku-5-5", "requested_reasoning": "medium",
-                 "schedule_id": None}
-        owner = SimpleNamespace(graph=Graph(), content=SimpleNamespace(
-            read=lambda value: {"content": old_content}))
-        server = SimpleNamespace(run_id="perch-stage2", state=state, owner=owner,
-                                 due_port=SimpleNamespace(read_due=lambda schedule: due.get(schedule),
-                                                          save_due=save_due),
-                                 _save_state=lambda: events.append(("saved", dict(state))))
-        view = SimpleNamespace(server=server, _execution=lambda **kwargs: app)
-        service = SimpleNamespace(router=SimpleNamespace(services={"project": view}))
-        module = ModuleType("herzchen.contracts")
-        module.ResourceRef = Ref
-        attention = ModuleType("otto.attention")
-        attention.DueRecord = StubDue
-        operating = ModuleType("otto.portfolio.operating_setup")
-        operating.evaluate_setup = lambda runtime, project_ref, setup: {
-            "ready": due["old"]["target"]["task_ref"] == task, "blockers": []}
-        with mock_patch.dict(sys.modules, {"herzchen": ModuleType("herzchen"),
-                                          "herzchen.contracts": module,
-                                          "otto": ModuleType("otto"),
-                                          "otto.attention": attention,
-                                          "otto.portfolio": ModuleType("otto.portfolio"),
-                                          "otto.portfolio.operating_setup": operating}):
-            updated = self.launcher._refresh_manager_setup(service, task)
-            self.assertEqual(updated["outcome"], "rebound")
-            self.assertEqual(updated["task_ref"], task)
-            self.assertEqual(events[0][1]["content"]["task_ref"], task)
-            self.assertEqual(events[0][1]["content"]["instruction_contract"]["task_ref"], task)
-            self.assertEqual(old_content["task_ref"], old_task)
-            self.assertEqual(events[1][0], "due")
-            self.assertEqual(events[1][1]["target"]["task_ref"], task)
-            self.assertEqual(events[1][1]["target"]["mandate_ref"], new_mandate)
-            self.assertEqual(events[1][1]["context_refs"], (new_mandate,))
-            self.assertEqual(updated["setup_ref"], setup_ref)
-            self.assertIsNone(state["schedule_id"], "a prepared manager is not a started manager")
-            self.assertEqual(state["mandate_ref"], new_mandate)
-            self.assertEqual(events[-1][0], "saved")
-            replay = self.launcher._refresh_manager_setup(service, task)
-            self.assertEqual(replay["outcome"], "already-current")
-            self.assertEqual([event[0] for event in events].count("due"), 1)
-            state["schedule_id"] = "foreign-manager"
-            before = len(events)
-            with self.assertRaisesRegex(RuntimeError, "no exact adopted operating setup"):
-                self.launcher._refresh_manager_setup(service, task)
-            self.assertEqual(len(events), before)
-            state["schedule_id"] = None
-            # Admission of B does not move the manager off its selected A task.
-            b_task = ref("work.task", "task-B", "rev-2")
-            state["task_refs"]["B"] = ref("work.task", "task-B", "rev-1")
-            current_task[0] = b_task
-            before = len(events)
-            self.assertIsNone(self.launcher._refresh_manager_setup(service, b_task))
-            self.assertEqual(len(events), before)
-            # Seed the gate's stale canonical task: setup must go red before
-            # publishing another mandate or claiming a refreshed binding.
-            current_task[0] = old_task
-            before = len(events)
-            with self.assertRaisesRegex(RuntimeError, "exact admitted task revision"):
-                self.launcher._refresh_manager_setup(service, task)
-            self.assertEqual(len(events), before)
-            current_task[0] = task
-            due["old"]["target"] = {"task_ref": old_task, "mandate_ref": old_mandate}
-            due["old"]["host_evidence"] = {"gateway_attempt": {"state": "started"}}
-            with self.assertRaisesRegex(RuntimeError, "already begun a native effect"):
-                self.launcher._refresh_manager_setup(service, task)
-            self.assertEqual(len(events), before)
-
-    def test_real_due_port_rebind_is_ready_without_a_second_manager_occurrence(self):
-        src = str(ROOT / "src")
-        if src not in sys.path:
-            sys.path.insert(0, src)
-            self.addCleanup(sys.path.remove, src)
-        from tests.test_execution_application import ExecutionApplicationTests
-        from otto.portfolio.operating_setup import evaluate_setup
-
-        fixture = ExecutionApplicationTests()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        manager, _, mandate = fixture.role_handles("manager", "manager", None)
-        project = fixture.project.ref.to_dict()
-        task = fixture.task.ref.to_dict()
-        composition = {
-            "schema": "otto.operating-composition.v1", "mode": "manual",
-            "defaults": {"model": "gpt-test", "reasoning": "high"},
-            "roles": {"manager": {"assignment_ref": manager.ref.to_dict(), "generation": 1,
-                                  "task_ref": task, "mandate_ref": mandate, "fresh_manager": True}},
-            "advisor_policy": {"mode": "disabled", "reason": "canary fixture"},
-            "acceptance_tasks": [],
-        }
-        applied = fixture.app.compose_operating_setup(
-            project_ref=project, operation="apply", setup=composition, request_key="canary-setup")
-        self.assertEqual(applied["outcome"], "applied", applied)
-        schedule = applied["setup"]["roles"]["manager"]
-        admitted = fixture.owner.graph.revise(
-            fixture.task.ref, title="Admitted canary task", logical_request_key="canary-admitted").ref.to_dict()
-        graph = fixture.owner.graph
-        observed = [task]
-
-        class CanaryGraph:
-            def current(self, ref):
-                record = graph.current(ref)
-                if ref.kind == "work.task":
-                    return SimpleNamespace(ref=type(record.ref).from_dict(observed[0]),
-                                           payload={"alias": "A"})
-                return record
-
-        state = {"project_ref": project, "task_refs": {"A": task}, "manager": "manager",
-                 "assignment_ref": manager.ref.to_dict(), "manager_generation": 1,
-                 "requested_model": "gpt-test", "requested_reasoning": "high", "schedule_id": None}
-        saved = []
-        server = SimpleNamespace(run_id="perch-stage2", state=state,
-                                 owner=SimpleNamespace(graph=CanaryGraph(), content=fixture.owner.content),
-                                 due_port=fixture.port, _save_state=lambda: saved.append(dict(state)))
-        view = SimpleNamespace(server=server, _execution=lambda **kwargs: fixture.app)
-        service = SimpleNamespace(router=SimpleNamespace(services={"project": view}))
-        counts = fixture.store.consumer().snapshot_counts()
-        with self.assertRaisesRegex(RuntimeError, "exact admitted task revision"):
-            self.launcher._refresh_manager_setup(service, admitted)
-        self.assertEqual(fixture.store.consumer().snapshot_counts(), counts)
-        observed[0] = admitted
-        rebound = self.launcher._refresh_manager_setup(service, admitted)
-        self.assertEqual(rebound["outcome"], "rebound")
-        self.assertEqual(rebound["schedule_id"], schedule)
-        self.assertIsNone(state["schedule_id"], "rebind must not claim a manager launch")
-        self.assertEqual(rebound["setup_ref"], applied["setup_ref"])
-        due = fixture.port.read_due(schedule)
-        self.assertEqual(due["target"]["task_ref"], admitted)
-        self.assertEqual(due["target"]["mandate_ref"], state["mandate_ref"])
-        self.assertEqual(due["context_refs"].count(state["mandate_ref"]), 1)
-        self.assertTrue(evaluate_setup(fixture.app.runtime, project, applied["setup"])["ready"])
-        self.assertEqual(self.launcher._refresh_manager_setup(service, admitted)["outcome"], "already-current")
-        self.assertEqual(len(saved), 2)
-        started = fixture.app.start(schedule_id=schedule)
-        self.assertEqual(started["outcome"], "succeeded", started)
+            perch_report.stage2_dispatch_no_failure(status, "A")
+        with self.assertRaisesRegex(ValueError, "no retained launched dispatch"):
+            perch_report.stage2_dispatch_check(status, activation, admission, "A")
+        private_only = {"outcome": "read", "workers": {"A": {"automatic": True}}}
+        with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
+            perch_report.stage2_dispatch_no_failure(private_only, "A")
 
     def test_stage_two_preserves_operator_log_and_copies_raw_evidence(self):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
@@ -1172,7 +811,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
                    "otto.hostctl.cli": cli, "perch_fake_presence": fake}
         args = ["--home", str(root / "home"), "service", "run"]
-        with mock_patch.dict(sys.modules, modules), mock_patch.object(self.launcher, "install_scope_setup") as setup, \
+        with mock_patch.dict(sys.modules, modules), \
                 mock_patch.object(self.launcher, "defer_fake_lab_cleanup") as defer, \
                 mock_patch.object(self.launcher, "install_fake_completion") as complete:
             for mode in ("0", "1"):
@@ -1180,7 +819,6 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                          "OTTO_STAGING_STAGE2_SETUP": "1", "OTTO_STAGING_FAKE_PRESENCE": mode}):
                     self.assertEqual(self.launcher.main(args), 0)
             self.assertEqual([item[0] for item in calls], ["real", "fake"])
-            self.assertEqual(setup.call_count, 2)
             self.assertEqual(defer.call_count, 1)
             self.assertEqual(complete.call_count, 1)
             with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root),

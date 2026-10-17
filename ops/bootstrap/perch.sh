@@ -238,8 +238,8 @@ stage2_admit_tasks() {
 }
 
 # Owner automatic dispatch is the scenario's dispatch path. The admitted host
-# reads project status; the staging owner includes a copy of its retained
-# worker record in that read. Manager status requires a native manager caller.
+# reads each task's retained dispatch state through product project status.
+# Manager status requires a native manager caller.
 stage2_wait_worker() {  # HOST TASK
   local host="$1" task="$2" saw_dispatch="" deadline=$(( $(date +%s) + 180 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
