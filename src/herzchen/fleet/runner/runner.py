@@ -67,6 +67,7 @@ class Runner:
         self._queue: list[Entry] = []
         self._queued: dict[str, dict[str, Any]] = {}
         self._leases: dict[str, Lease] = {}
+        self._started = False
         self._stopped = False
         self._halt = threading.Event()
         self._ticker: threading.Thread | None = None
@@ -217,9 +218,13 @@ class Runner:
 
     def start(self) -> None:
         """Begin admitting queued runs, and keep pumping while any wait."""
-        self.pump()
-        self._ticker = threading.Thread(target=self._tick, name="runner-ticker", daemon=True)
-        self._ticker.start()
+        with self._cond:
+            if self._stopped or self._started:
+                return
+            self._started = True
+            self.pump()
+            self._ticker = threading.Thread(target=self._tick, name="runner-ticker", daemon=True)
+            self._ticker.start()
 
     def stop(self) -> None:
         """Stop admitting, interrupt every live run, and settle each one unknown/interrupted."""
@@ -237,7 +242,7 @@ class Runner:
     def pump(self) -> None:
         """Start queued runs in arrival order, backfilling where admission allows, until nothing more fits."""
         with self._cond:
-            if self._stopped:
+            if self._stopped or not self._started:
                 return
             self._pool.prune_dead_heavy()
             while True:

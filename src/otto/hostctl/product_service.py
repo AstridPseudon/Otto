@@ -6,14 +6,17 @@ the supported owner APIs only: ONE open Store, ONE shared bounded
 behind the ``ProjectServices`` router, the router's startup settlement BEFORE
 the host starts, the dispatch hold, a startup-refusal record with exit 78, and
 a close that releases the host and the Store before the status reads closed.
-Nothing here calls a provider or starts a Due.
+Retained runner commands are admitted only after recovery and host custody.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
+import errno
+import fcntl
 import hashlib
+import json
 import subprocess
 import threading
 import os
@@ -52,6 +55,8 @@ def _start_owner_host(owner: Any) -> None:
     owner.host.start()
     if owner.host._owns_owner_file and owner.fleet_registry is not None:
         owner.fleet_registry.startup_landed_sweep = owner.fleet_registry.sweep_landed_at_start()
+    if not owner.hold_dispatch:
+        owner.runner.start()
 
 
 def capacity_policy(config: Mapping[str, Any]) -> CapacityPolicy:
@@ -1221,7 +1226,6 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         runner_policy = capacity_policy(config)
         runner_core = Runner(CapacityPool(CapacityPolicy(heavy_headroom=runner_policy.heavy_headroom)),
                              result_store, state_dir=home / "runner-state")
-        runner_core.start()
         runner = _DirectRunnerClient(runner_core)
         fleet_registry = OwnerFleetRegistry(owner, config, home, result_store,
                                             checkpoint=commit_local_checkpoint,
@@ -1408,11 +1412,43 @@ def close_store(store: Any, *, seal: bool, trace: Optional[dict[str, Any]] = Non
             sealed=getattr(store, 'admission_report', {}).get('seal') == 'written')
 
 
+@contextmanager
+def _home_custody(home: Path):
+    """Hold the stable home lock across composition, host ownership, and cleanup."""
+    from herzchen.kernel.store import WriterBusyError
+
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(home / '.owner-service.lock', flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            raise PermissionError('owner home lock must be a regular file owned by this account')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                raise
+            raise WriterBusyError('another owner holds the home lock') from error
+        yield
+    finally:
+        os.close(fd)
+
+
 def run_product_service(config: Mapping[str, Any], *, emit: Callable[[Mapping[str, Any]], None],
                         hold_dispatch: bool = False, project: Optional[str] = None,
                         adapter_factory: Optional[Callable[..., Any]] = None,
                         requested_manager_limit: Optional[int] = None) -> dict[str, Any]:
-    """What ``ottoctl service run`` calls: compose, serve until stopped, then close in order."""
+    """What ``ottoctl service run`` calls: hold home custody through all owner cleanup."""
+    with _home_custody(Path(config['home'])):
+        return _run_product_service_locked(
+            config, emit=emit, hold_dispatch=hold_dispatch, project=project,
+            adapter_factory=adapter_factory, requested_manager_limit=requested_manager_limit)
+
+
+def _run_product_service_locked(config: Mapping[str, Any], *, emit: Callable[[Mapping[str, Any]], None],
+                                hold_dispatch: bool = False, project: Optional[str] = None,
+                                adapter_factory: Optional[Callable[..., Any]] = None,
+                                requested_manager_limit: Optional[int] = None) -> dict[str, Any]:
     from herzchen.kernel.store import AdmissionStopped
     from .cli import _writer_busy
 
