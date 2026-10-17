@@ -268,7 +268,8 @@ class HostSessionWiringTests(CleanCloseFixture):
         from otto.hostctl import config as host_config
         from otto.hostctl.owner import HostSession, create_store
         config = host_config.new_installation(self.dir / 'home', store_path=str(self.dir / 'host.sqlite'), authority='owner',
-                                              owner_actor='owner', credential_ref='credential', python='python3')
+                                              owner_actor='owner', operator_actor='human-operator',
+                                              credential_ref='credential', python='python3')
         with HostSession(create_store(config)) as session:
             self.assertIsInstance(session.clean_close, CleanClose)
             self.assertEqual(session.owner.on_project_finished, session.clean_close.on_finished)

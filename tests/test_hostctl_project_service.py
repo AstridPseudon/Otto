@@ -21,7 +21,8 @@ class SharedHostAdmissionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             config = host_config.new_installation(home, store_path=str(home/'owner.sqlite'),
-                authority='shared-test', owner_actor='owner', credential_ref='owner-credential', python='/usr/bin/python3')
+                authority='shared-test', owner_actor='owner', operator_actor='human-operator',
+                credential_ref='owner-credential', python='/usr/bin/python3')
             config['max_active_manager_turns'] = 3
             created = create_store(config)
             host_config.write(home, config)

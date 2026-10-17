@@ -235,6 +235,18 @@ class ClaudeRuntimeFlags(Workspace):
         self.assertEqual(self.flat([worker.wrap(["/bin/x"], initializer=True)[2]]),
                          [self._policy("worker") + EXEC_RULE + INITIALIZER_RULE])
 
+    def test_mac_write_scope_rejects_relative_exec_allowance(self):
+        from otto.agents.claude_cli import ClaudeBindingError, MacWriteScope
+        relative = Path(self.tmp.name) / "relative-tool"
+        relative.write_text("#!/bin/sh\nexit 0\n")
+        prior = Path.cwd()
+        try:
+            os.chdir(self.tmp.name)
+            with self.assertRaisesRegex(ClaudeBindingError, "absolute"):
+                MacWriteScope(self.root, self.state, exec_allow=("relative-tool",))
+        finally:
+            os.chdir(prior)
+
     @staticmethod
     def _policy(name):
         return CLAUDE_FENCE_GOLDEN[name]

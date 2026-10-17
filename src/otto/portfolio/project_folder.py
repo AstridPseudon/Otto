@@ -128,6 +128,12 @@ def validate_operation_files(files: Mapping[str, str]) -> dict[str, str]:
 class ProjectFolderOwner:
     """Owner bridge mixin; uses only the already composed public domain ports."""
 
+    def _operator_actor(self):
+        operator = getattr(self, 'operator_actor', None)
+        if operator is None:
+            raise ValueError('authenticated operator identity is required to create a project')
+        return operator
+
     def _folder_context(self, operation, target, actor, key, payload, base=None, new=False):
         context = TransactionContext(actor, key, '0' * 64, expected_revision=base,
                                      expected_version=0 if new else None)
@@ -244,9 +250,10 @@ class ProjectFolderOwner:
                 f"{transport['measured_request_limit']} bytes before creation: {paths}", transport
             )
         digest = sha256(canonical_json({'project_json': edit, 'files': files}).encode()).hexdigest()
+        operator_actor = self._operator_actor()
         created = self.sheet.create_pending(title=edit['title'], outcome=edit.get('outcome', ''),
             metadata={'raw_folder': {'input_sha256': digest, 'canonical_transfer': False}},
-            creator=getattr(self, 'operator_actor', None) or actor, curator=actor,
+            creator=operator_actor, curator=actor,
             actor=actor, logical_request_key=request_id + ':project')
         ref = created.receipt.result_ref
         # Remaining fields still use the shared sheet path, before documents.
