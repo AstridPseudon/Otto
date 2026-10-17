@@ -141,6 +141,67 @@ def test_a_detached_grandchild_is_stopped_when_the_job_ends(tmp_path):
     assert "leftover" in err
 
 
+def test_same_group_child_is_stopped_after_root_exits_before_first_census(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+    from otto.portfolio.native_caller_ingress import process_identity
+
+    monkeypatch.setenv("OTTO_HEAVY_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("OTTO_HEAVY_CAPACITY", "1")
+    monkeypatch.setenv("PYTHONPATH", str(SRC))
+    monkeypatch.delenv("OTTO_HEAVY_LEASE", raising=False)
+    pidfile, orphaned = tmp_path / "same-group.pid", tmp_path / "root-exited"
+    command = py(f"""
+import os, time
+from pathlib import Path
+pid = os.fork()
+if pid == 0:
+    root = os.getppid()
+    Path({str(pidfile)!r}).write_text(str(os.getpid()))
+    while os.getppid() == root:
+        time.sleep(0.01)
+    Path({str(orphaned)!r}).touch()
+    time.sleep(60)
+    os._exit(0)
+while not Path({str(pidfile)!r}).exists():
+    time.sleep(0.01)
+os._exit(0)
+""")
+    original = module._processes
+    first = True
+    child_birth = None
+
+    def after_root_exit():
+        nonlocal first, child_birth
+        if first:
+            first = False
+            deadline = time.monotonic() + 10
+            while not orphaned.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert orphaned.exists(), "the test command did not exit before census"
+            record = json.loads(next((tmp_path / "state" / "holders").glob("*.json")).read_text())
+            anchor = record.get("group_anchor")
+            assert anchor and record["processes"][str(anchor)]["birth"], "no durable group anchor"
+            child_birth = list(process_identity(int(pidfile.read_text())).birth)
+        return original()
+
+    monkeypatch.setattr(module, "_processes", after_root_exit)
+    try:
+        assert module.run(command, weight=1, purpose="same-group", max_minutes=1,
+                          wait=True, owner="test") == 0
+        assert wait_gone(int(pidfile.read_text())), "same-group child outlived its lease"
+        assert not list((tmp_path / "state" / "holders").glob("*.json"))
+    finally:
+        if pidfile.exists() and child_birth is not None:
+            try:
+                pid = int(pidfile.read_text())
+                if list(process_identity(pid).birth) == child_birth:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                pass
+
+
 def test_a_self_paused_grandchild_is_stopped_too(tmp_path):
     # Today's custody leak: children suspended at spawn and never resumed or killed.
     pidfile = tmp_path / "paused.pid"
@@ -216,6 +277,101 @@ def test_reused_pid_with_same_display_start_is_not_signalled(monkeypatch):
     monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("reused PID was signalled"))
     monkeypatch.setattr(module.os, "killpg", lambda *_args: pytest.fail("reused group was signalled"))
     assert module.stop_lease(record)["reaped"] == []
+
+
+def test_persisted_anchor_adopts_same_group_child_after_root_exit(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 100, "pgid": 100, "group_anchor": 101,
+              "processes": {"100": {"birth": [1], "pgid": 100},
+                            "101": {"birth": [2], "pgid": 100}}}
+    present = {101: {"ppid": 1, "pgid": 100, "birth": [2]},
+               102: {"ppid": 1, "pgid": 100, "birth": [3]}}
+    signals = []
+    monkeypatch.setattr(module, "_processes", lambda: dict(present))
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: bool(present))
+    monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("individual PID signal"))
+
+    def kill_group(pgid, sig):
+        assert pgid == 100
+        signals.append(sig)
+        if sig == signal.SIGTERM:
+            present.pop(102)
+        elif sig == signal.SIGKILL:
+            present.clear()
+
+    monkeypatch.setattr(module.os, "killpg", kill_group)
+    result = module.stop_lease(record)
+    assert 102 in result["reaped"] and result["remaining"] == []
+    assert record["processes"]["102"] == {"birth": [3], "pgid": 100}
+    assert signal.SIGTERM in signals and signal.SIGKILL in signals
+
+
+def test_recycled_group_with_dead_anchor_is_not_signalled(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 100, "pgid": 100, "group_anchor": 101,
+              "processes": {"100": {"birth": [1], "pgid": 100},
+                            "101": {"birth": [2], "pgid": 100}}}
+    monkeypatch.setattr(module, "_processes", lambda: {
+        101: {"ppid": 1, "pgid": 100, "birth": [4]},
+        102: {"ppid": 101, "pgid": 100, "birth": [5]}})
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: True)
+    monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("reused PID was signalled"))
+    monkeypatch.setattr(module.os, "killpg", lambda *_args: pytest.fail("reused group was signalled"))
+    result = module.stop_lease(record)
+    assert result["reaped"] == [] and result["remaining"] == ["group:100"]
+    assert "102" not in record["processes"]
+
+
+def test_anchor_reuse_between_census_and_signal_blocks_group_kill(monkeypatch):
+    from otto.hostctl import heavy as module
+
+    record = {"pid": 100, "pgid": 100, "group_anchor": 101,
+              "processes": {"101": {"birth": [2], "pgid": 100}}}
+    valid = {101: {"ppid": 1, "pgid": 100, "birth": [2]}}
+    reused = {101: {"ppid": 1, "pgid": 100, "birth": [4]}}
+    scans = iter((valid, valid))
+    monkeypatch.setattr(module, "_processes", lambda: next(scans, reused))
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    monkeypatch.setattr(module.os, "kill", lambda *_args: pytest.fail("reused PID was signalled"))
+    monkeypatch.setattr(module.os, "killpg", lambda *_args: pytest.fail("reused group was signalled"))
+    assert module.stop_lease(record)["remaining"] == []
+
+
+def test_dead_holder_restart_stops_unseen_same_group_child(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    (directory / "holders").mkdir(parents=True)
+    path = directory / "holders" / "lease.json"
+    path.write_text(json.dumps({"lease_id": "lease", "holder_pid": 99999999,
+                                "weight": 1, "pid": 100, "pgid": 100, "group_anchor": 101,
+                                "processes": {"100": {"birth": [1], "pgid": 100},
+                                              "101": {"birth": [2], "pgid": 100}}}))
+    present = {101: {"ppid": 1, "pgid": 100, "birth": [2]},
+               102: {"ppid": 1, "pgid": 100, "birth": [3]}}
+    monkeypatch.setattr(module, "_processes", lambda: dict(present))
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: bool(present))
+
+    def kill(pid, sig):
+        if pid == 99999999 and sig == 0:
+            raise ProcessLookupError
+        pytest.fail("unfenced PID signal")
+
+    def kill_group(pgid, sig):
+        assert pgid == 100
+        if sig == signal.SIGTERM:
+            present.pop(102)
+        elif sig == signal.SIGKILL:
+            present.clear()
+
+    monkeypatch.setattr(module.os, "kill", kill)
+    monkeypatch.setattr(module.os, "killpg", kill_group)
+    recovered = module._reap_dead_holders(directory)
+    assert recovered[0]["remaining"] == []
+    assert 102 in recovered[0]["reaped"]
+    assert not path.exists(), "settled recovery retained the capacity claim"
 
 
 def test_missing_exact_birth_for_known_pid_keeps_lease_unresolved(monkeypatch):

@@ -20,9 +20,10 @@ machine).
 ``slots/<i>.lock``, so the kernel frees it when its holder dies. Each lease names itself in
 ``holders/<id>.json`` (marked ``backfill`` if it took slots ahead of the head).
 
-**Cleanup:** A private child records its exact process birth in the holder file, then waits for the
-holder to release it before executing CMD. If the holder dies first, CMD never starts. Its group
-and observed descendants are recorded with
+**Cleanup:** A private child records its exact process birth and an in-group guardian in the holder
+file, then waits for the holder to release it before executing CMD. If the holder dies first, CMD
+never starts. The guardian keeps group custody after CMD's root exits. Its group and observed
+descendants are recorded with
 process birth identities in the holder record. TERM + CONT, a grace period, then KILL apply only to
 verified members of that lease. An unresolved dead holder keeps its capacity claim until recovery
 can verify that its processes are gone. ``OTTO_HEAVY_LEASE`` only lets nested heavy calls reuse slots.
@@ -296,10 +297,17 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
         if not scanned:
             return
         if group:
-            try:
-                os.killpg(pgid, sig)
-            except (ProcessLookupError, PermissionError):
-                pass
+            # Recheck an exact group member immediately before the group signal.
+            # The numeric PGID alone is never signal authority.
+            current = census()
+            group = bool(current and any(
+                pid in current and current[pid]["birth"] == record["processes"][str(pid)]["birth"]
+                and current[pid]["pgid"] == pgid for pid in live))
+            if group:
+                try:
+                    os.killpg(pgid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
         for pid in live:
             # Recheck directly before signalling, since a PID can have exited since the snapshot.
             current = census()
@@ -318,7 +326,9 @@ def stop_lease(record: dict, holder_file: Path | None = None) -> dict:
         deadline = time.monotonic() + GRACE_SECONDS
         while time.monotonic() < deadline:
             live, group, scanned, unverified, root_unverified = targets()
-            if not live and not group:
+            anchor = record.get("group_anchor")
+            if (not live and not group) or (anchor and live == {int(anchor)} and not unverified
+                                           and not record.get("unidentified")):
                 break
             time.sleep(0.2)
     killed, group, scanned, unverified, root_unverified = targets()
@@ -477,6 +487,7 @@ def _describe(holders: list[dict]) -> str:
 
 def _lease_child(gate_fd: int, ready_fd: int, holder_file: Path, token: str, command: list[str]) -> int:
     """Record this exact private-group root before the requested command is allowed to exec."""
+    anchor_arm = -1
     try:
         with open(holder_file.parent.parent / "reap.lock", "a+") as guard:
             fcntl.flock(guard, fcntl.LOCK_EX)
@@ -490,12 +501,42 @@ def _lease_child(gate_fd: int, ready_fd: int, holder_file: Path, token: str, com
             record.update(pid=os.getpid(), pgid=os.getpid(), launch_state="recorded",
                           processes={str(os.getpid()): {"birth": list(identity.birth), "pgid": os.getpid()}})
             _write_holder(holder_file, record)
+            # The command may exit before the holder's first census. Keep an exact,
+            # durable member in its private group so an orphaned group child can
+            # still be attributed after the leader is reaped.
+            anchor_ready, anchor_ready_write = os.pipe()
+            anchor_arm_read, anchor_arm = os.pipe()
+            try:
+                anchor = subprocess.Popen(
+                    [sys.executable, "-m", "otto.hostctl.heavy", "--_group_anchor",
+                     str(anchor_ready_write), str(anchor_arm_read)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, pass_fds=(anchor_ready_write, anchor_arm_read))
+                os.close(anchor_ready_write)
+                anchor_ready_write = -1
+                os.close(anchor_arm_read)
+                anchor_arm_read = -1
+                if os.read(anchor_ready, 1) != b"1" or anchor.poll() is not None:
+                    return 125
+                anchor_birth = _birth_at(anchor.pid, os.getpid(), os.getpid())
+                if anchor_birth is None:
+                    return 125
+                record["group_anchor"] = anchor.pid
+                record["processes"][str(anchor.pid)] = {"birth": anchor_birth, "pgid": os.getpid()}
+                _write_holder(holder_file, record)
+                os.write(anchor_arm, b"1")
+            finally:
+                for fd in (anchor_ready, anchor_ready_write, anchor_arm_read):
+                    if fd >= 0:
+                        os.close(fd)
         os.write(ready_fd, b"1")
         os.close(ready_fd)
         ready_fd = -1
         if os.read(gate_fd, 1) != b"1":
             return 125  # holder died before release; the requested command never ran
     finally:
+        if anchor_arm >= 0:
+            os.close(anchor_arm)
         os.close(gate_fd)
         if ready_fd >= 0:
             os.close(ready_fd)
@@ -505,6 +546,21 @@ def _lease_child(gate_fd: int, ready_fd: int, holder_file: Path, token: str, com
         print(f"heavy: could not execute {command[0]}: {exc}", file=sys.stderr)
         return 127
     return 127
+
+
+def _group_anchor(ready_fd: int, arm_fd: int) -> int:
+    """Hold the launched private group until its exact identity is swept."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        os.write(ready_fd, b"1")
+        os.close(ready_fd)
+        if os.read(arm_fd, 1) != b"1":
+            return 0  # launch failed before this member became durable
+    finally:
+        os.close(arm_fd)
+    while True:
+        signal.pause()
 
 
 def _launch_child(command: list[str], env: dict, holder_file: Path, record: dict) -> tuple[subprocess.Popen, dict]:
@@ -525,9 +581,15 @@ def _launch_child(command: list[str], env: dict, holder_file: Path, record: dict
         if os.read(ready_read, 1) != b"1":
             raise RuntimeError("heavy child could not record its launch identity")
         recorded = json.loads(holder_file.read_text())
+        anchor_pid = recorded.get("group_anchor")
         if (recorded.get("launch_token") != token or recorded.get("launch_state") != "recorded"
                 or recorded.get("pid") != child.pid
-                or not recorded.get("processes", {}).get(str(child.pid), {}).get("birth")):
+                or not recorded.get("processes", {}).get(str(child.pid), {}).get("birth")
+                or not recorded.get("processes", {}).get(str(anchor_pid), {}).get("birth")
+                or _birth_at(child.pid, os.getpid(), child.pid)
+                   != recorded["processes"][str(child.pid)]["birth"]
+                or _birth_at(int(anchor_pid), child.pid, child.pid)
+                   != recorded["processes"][str(anchor_pid)]["birth"]):
             raise RuntimeError("heavy child launch identity is not durable")
         os.write(gate_write, b"1")
         return child, recorded
@@ -705,4 +767,6 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--_lease_child"]:
         raise SystemExit(_lease_child(int(sys.argv[2]), int(sys.argv[3]), Path(sys.argv[4]),
                                       sys.argv[5], sys.argv[6:]))
+    if sys.argv[1:2] == ["--_group_anchor"]:
+        raise SystemExit(_group_anchor(int(sys.argv[2]), int(sys.argv[3])))
     raise SystemExit(main())
