@@ -367,6 +367,25 @@ class HostctlCliTest(HostctlFixture):
                                               "value": {"landed": True}}}]
         self.assertEqual(_task_dispatch_status(observed), {"state": "landed", "reason": None})
 
+    def test_project_task_dispatch_projection_uses_retained_worker_lifecycle(self):
+        from otto.hostctl.cli import _task_dispatch_status
+
+        observed = {"assignments": [{"ref": {"id": "assignment-1"}}],
+                    "dispatches": [{"payload": {"assignment": {"id": "assignment-1"},
+                                                   "status": "admitted"}}]}
+        due = {"schedule_id": "worker-1", "role": "worker",
+               "assignment_ref": {"id": "assignment-1"}, "completion_state": "none",
+               "host_evidence": {}}
+        self.assertEqual(_task_dispatch_status(observed, [due]), {"state": "admitted", "reason": None})
+        due["host_evidence"] = {"gateway_attempt": {"result": {"outcome": "pending"}}}
+        self.assertEqual(_task_dispatch_status(observed, [due]), {"state": "launched", "reason": None})
+        due["completion_state"] = "succeeded"
+        self.assertEqual(_task_dispatch_status(observed, [due]), {"state": "landed", "reason": None})
+        due["completion_state"] = "failed"
+        due["last_result"] = {"error": {"message": "worker start refused"}}
+        self.assertEqual(_task_dispatch_status(observed, [due]),
+                         {"state": "failed", "reason": "worker start refused"})
+
     # -- 5. project status --------------------------------------------------
     def test_project_status_reads_stored_documents_and_roles(self):
         self._ready()

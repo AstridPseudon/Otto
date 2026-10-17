@@ -523,6 +523,9 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
         record = _resolve_project(session, args.project)
     with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
+        # Due rows are owner-retained lifecycle evidence for automatic workers.
+        # A prepared schedule alone is not proof that the worker started.
+        dues = session.due_port.list_due({"project_ref": record.ref.id})
         tasks = []
         view = session.owner.sheet.export(record.ref)
         task_views = {item["ref"].id: item for item in view.tasks}
@@ -554,7 +557,7 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                           "phase": megado.get("phase"), "repo": plan.get("repo"), "branch": plan.get("branch"),
                           "depends_on": len(task.payload.get("dependencies") or ()),
                           "required_assessment_scopes": required_scopes,
-                          "dispatch": _task_dispatch_status(task_view.get("observed") or {})})
+                          "dispatch": _task_dispatch_status(task_view.get("observed") or {}, dues)})
         observed = view.project.get("observed", {}) if hasattr(view, "project") else {}
         assignments = []
         for item in observed.get("assignments") or ():
@@ -597,8 +600,8 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                 "provider_called": False}
 
 
-def _task_dispatch_status(observed: Mapping[str, Any]) -> dict[str, Any]:
-    """Project retained assignment/dispatch/result/report records for one task."""
+def _task_dispatch_status(observed: Mapping[str, Any], schedules: Any = ()) -> dict[str, Any]:
+    """Project retained assignment, dispatch and worker lifecycle records."""
     assignments = observed.get("assignments") or ()
     assignment_refs = {item.get("ref", {}).get("id") for item in assignments
                        if isinstance(item, Mapping) and isinstance(item.get("ref"), Mapping)}
@@ -611,6 +614,10 @@ def _task_dispatch_status(observed: Mapping[str, Any]) -> dict[str, Any]:
     reports = [item.get("payload") or {} for item in observed.get("reports") or ()
                if isinstance(item, Mapping)
                and (item.get("payload") or {}).get("assignment", {}).get("id") in assignment_refs]
+    worker_schedules = [item for item in schedules or ()
+                        if isinstance(item, Mapping)
+                        and (item.get("assignment_ref") or {}).get("id") in assignment_refs
+                        and item.get("role") == "worker"]
     unknown_seen = False
     unknown_reason = None
     for payload in (*reports, *results):
@@ -629,7 +636,30 @@ def _task_dispatch_status(observed: Mapping[str, Any]) -> dict[str, Any]:
             unknown_reason = reason
     if unknown_seen:
         return {"state": "unknown", "reason": str(unknown_reason)[:512] if unknown_reason is not None else None}
-    if dispatches:
+    # Completion is terminal owner evidence and takes precedence over a stale
+    # dispatch admission record. A schedule is launched only when its retained
+    # host evidence proves that start crossed the gateway boundary.
+    for schedule in worker_schedules:
+        if schedule.get("completion_state") == "succeeded":
+            return {"state": "landed", "reason": None}
+        if schedule.get("completion_state") in {"failed", "unknown"}:
+            result = schedule.get("last_result") or {}
+            error = result.get("error") if isinstance(result, Mapping) else None
+            reason = error.get("message") if isinstance(error, Mapping) else None
+            reason = reason or (result.get("reason") if isinstance(result, Mapping) else None)
+            return {"state": schedule["completion_state"],
+                    "reason": str(reason)[:512] if reason is not None else None}
+    for schedule in worker_schedules:
+        attempt = (schedule.get("host_evidence") or {}).get("gateway_attempt")
+        if isinstance(attempt, Mapping):
+            result = attempt.get("result") or {}
+            if isinstance(result, Mapping) and result.get("outcome") in {"failed", "unknown"}:
+                reason = (result.get("error") or {}).get("message") if isinstance(result.get("error"), Mapping) else None
+                reason = reason or result.get("reason")
+                return {"state": result["outcome"], "reason": str(reason)[:512] if reason else None}
+            return {"state": "launched", "reason": None}
+    if any((payload.get("status") or "dispatched") in {"dispatched", "launched"}
+           for payload in dispatches):
         return {"state": "launched", "reason": None}
     if assignments:
         return {"state": "admitted", "reason": None}
