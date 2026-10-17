@@ -148,12 +148,18 @@ class LandGate(Scratch):
     def test_temporary_service_owner_left_before_the_landing_is_logged_not_refused(self):
         self.lab("T26", {"note.txt": "x\n"})
         home = self.tmp / "older-orphan-home"
-        line = "424242 python service run --home %s\n" % home
+        line = "424242 1 python service run --home %s\n" % home
         (self.tmp / "ps-listing.before").write_text(line)
         self.ps_listing.write_text(line)
         r = self.land("T26")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("left before this landing (not its own)", self.log("T26"))
+
+    def test_a_live_owner_with_a_parent_is_not_an_orphan(self):
+        self.lab("T27", {"note.txt": "x\n"})
+        self.ps_listing.write_text("434343 4242 python service run --home %s\n" % (self.tmp / "live-home"))
+        r = self.land("T27")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_temporary_service_owner_orphan_is_named(self):
         self.lab("T25", {"note.txt": "x\n"})
@@ -162,7 +168,7 @@ class LandGate(Scratch):
             [sys.executable, "-c", "import time; time.sleep(60) # service run --home " + str(home)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        self.ps_listing.write_text("%d python service run --home %s\n" % (owner.pid, home))
+        self.ps_listing.write_text("%d 1 python service run --home %s\n" % (owner.pid, home))
         try:
             r = self.land("T25")
             self.assertRefused(r, "T25", "orphan service run")

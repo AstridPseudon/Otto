@@ -181,13 +181,15 @@ for candidate in (sys.argv[1], "/tmp", "/private/tmp"):
         if root not in roots:
             roots.append(root.rstrip(os.sep) + os.sep)
 try:
-    listing = subprocess.run(["ps", "-axo", "pid=,command="], check=True,
+    listing = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], check=True,
                              text=True, capture_output=True).stdout
 except (OSError, subprocess.CalledProcessError) as exc:
     print("cannot inspect processes: %s" % exc, file=sys.stderr)
     raise SystemExit(2)
 for line in listing.splitlines():
-    match = re.match(r"\s*(\d+)\s+(.*)", line)
+    # Only an orphan counts: a test's owner while its test runs has the test as its parent (another
+    # worker's run, 17 Oct); one its test left behind is reparented to launchd (pid 1).
+    match = re.match(r"\s*(\d+)\s+1\s+(.*)", line)
     if not match or "service run" not in match.group(2):
         continue
     home_match = re.search(r"--home(?:=|\s+)(\S+)", match.group(2))
