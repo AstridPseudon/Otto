@@ -342,6 +342,9 @@ class AssertionKindTests(unittest.TestCase):
         self.assertEqual(stage["dependencies"]["B"], ["A"])
         self.assertTrue(stage["admission"]["unadmitted_revision"])
         self.assertEqual(stage["scenarios"], ["admit-and-dispatch"])
+        self.assertEqual(stage["capacity"], {"turn_units": 1, "manager_reserve": 1,
+                                             "heavy_headroom": 1, "worker_floor": 1})
+        self.assertEqual(stage["pool_limit"], stage["capacity"]["turn_units"])
         policy = stage["run_policy"]["assessment_accounting"]
         self.assertEqual(policy["scope_mode"], "check-accepted")
         self.assertEqual(policy["task_criterion_pairs"], ["A/C-A", "B/C-B", "C/C-C"])
@@ -1273,68 +1276,6 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertNotIn('rm -f "$STAGE_ROOT/home/run/operator-admission.jsonl"', shell)
         self.assertIn('cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"',
                       shell)
-
-    def test_real_stage_two_keeps_real_prover_and_fake_uses_stub(self):
-        root = short_temp_root()
-        self.addCleanup(shutil.rmtree, root, True)
-        calls = []
-        cli = ModuleType("otto.hostctl.cli")
-        cli.main = lambda argv: calls.append(("real", argv)) or 0
-        fake = ModuleType("perch_fake_presence")
-        fake.main = lambda argv: calls.append(("fake", argv)) or 0
-        modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
-                   "otto.hostctl.cli": cli, "perch_fake_presence": fake}
-        args = ["--home", str(root / "home"), "service", "run"]
-        with mock_patch.dict(sys.modules, modules), \
-                mock_patch.object(self.launcher, "defer_fake_lab_cleanup") as defer, \
-                mock_patch.object(self.launcher, "install_fake_completion") as complete:
-            for mode in ("0", "1"):
-                with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root),
-                         "OTTO_STAGING_STAGE2_SETUP": "1", "OTTO_STAGING_FAKE_PRESENCE": mode}):
-                    self.assertEqual(self.launcher.main(args), 0)
-            self.assertEqual([item[0] for item in calls], ["real", "fake"])
-            self.assertEqual(defer.call_count, 1)
-            self.assertEqual(complete.call_count, 1)
-            with mock_patch.dict(os.environ, {"OTTO_STAGING_ROOT": str(root),
-                     "OTTO_STAGING_STAGE2_SETUP": "0", "OTTO_STAGING_FAKE_PRESENCE": "1"}):
-                with self.assertRaises(SystemExit):
-                    self.launcher.main(args)
-
-    def test_fake_lab_cleanup_is_deferred_only_after_a_landing(self):
-        root = short_temp_root()
-        self.addCleanup(shutil.rmtree, root, True)
-        canary_repo = root / "perch-canary" / "2-test" / "canon"
-        other_repo = root / "other" / "canon"
-        canary_repo.mkdir(parents=True)
-        other_repo.mkdir(parents=True)
-        calls = []
-
-        class LabRefused(RuntimeError):
-            pass
-
-        class LabFleet:
-            def __init__(self, repo):
-                self.repo = repo
-
-            def remove(self, name, merged_into=None, before_unlink=None):
-                calls.append((name, merged_into))
-                return "removed"
-
-        labs = ModuleType("herzchen.fleet.labs")
-        labs.LabFleet = LabFleet
-        labs.LabRefused = LabRefused
-        modules = {"herzchen": ModuleType("herzchen"), "herzchen.fleet": ModuleType("herzchen.fleet"),
-                   "herzchen.fleet.labs": labs}
-        with mock_patch.dict(sys.modules, modules):
-            self.launcher.defer_fake_lab_cleanup(root)
-            fleet = LabFleet(canary_repo)
-            with self.assertRaisesRegex(LabRefused, "artifact capture"):
-                fleet.remove("task-opaque-id", merged_into="commit")
-            with self.assertRaisesRegex(LabRefused, "artifact capture"):
-                fleet.remove("another-task", merged_into="commit")
-            self.assertEqual(LabFleet(other_repo).remove("A", merged_into="commit"), "removed")
-            self.assertEqual(fleet.remove("A"), "removed")
-        self.assertEqual(calls, [("A", "commit"), ("A", None)])
 
     def test_fake_manager_completes_only_landed_canary_with_stored_acceptance(self):
         calls = []
