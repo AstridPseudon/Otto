@@ -445,7 +445,7 @@ class OttoPortfolio:
                 "owner_status_entrypoint": "manager_ctl.py status (through the already running owner command service)",
                 "current_run_configuration": ".otto/runs/<run-id>/run.yaml, or its adopted native configuration record; this is the sole model/stage/budget authority",
                 "complete_criterion_source": ".otto/runs/<run-id>/tasklist.md; read the exact criterion rows before interpreting status",
-                "accessible_megado_skill": "policy-staging/megado/skill/SKILL.md and its linked execution/run-config/native-work references",
+                "accessible_megado_skill": "src/otto/packs/megado/skill/SKILL.md and its linked execution/run-config/native-work references",
                 "maintained_otto_skill_index": "src/otto/portfolio/skills/SKILL.md",
                 "maintained_recovery_skill": "src/otto/portfolio/skills/recovery/SKILL.md",
                 "evidence_skill": "not installed by this candidate",

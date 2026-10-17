@@ -91,7 +91,7 @@ Claude Code.
    `TrustedAdapterSelection`.
 5. **Model profile.** Add a profile to `otto/agents/host_profiles.py`, binding
    the seven Megado slots. Add the skill template
-   `policy-staging/megado/skill/templates/run.<host>.json`.
+   `src/otto/packs/megado/skill/templates/run.<host>.json`.
    `tests/test_megado_templates.py` keeps the two equal.
 6. **Conformance.** Copy these tests:
    - `src/otto/agents/tests/test_claude_binding.py`;

@@ -6,11 +6,29 @@ import unittest
 
 from otto.agents.host_profiles import PROFILES, SLOTS
 from otto.portfolio.run_config import read_run_config, run_config_path
+from herzchen.packs.authoring import read_managed_pack
 
-SKILL = Path(__file__).resolve().parents[1] / "policy-staging" / "megado" / "skill"
+REPO = Path(__file__).resolve().parents[1]
+PACK_ROOT = REPO / "src" / "otto" / "packs" / "megado"
+SKILL = PACK_ROOT / "skill"
 
 
 class TemplateTests(unittest.TestCase):
+    def test_megado_is_a_complete_loadable_managed_pack(self):
+        manifest = json.loads((PACK_ROOT / "pack.yaml").read_text())
+        declared = {resource["path"] for resource in manifest["resources"]}
+        for resource_path in declared:
+            with self.subTest(resource=resource_path):
+                self.assertTrue((PACK_ROOT / resource_path).is_file(), resource_path)
+        self.assertIn("skill/SKILL.md", declared)
+        self.assertIn("skill/templates/run.json", declared)
+        self.assertIn("skill/templates/run.claude.json", declared)
+        pack = read_managed_pack(
+            "megado", project_root=REPO, native_pack_root=REPO / "src" / "otto" / "packs"
+        )
+        self.assertEqual(pack.pack_id, "megado")
+        self.assertEqual({item.path for item in pack.resources}, declared)
+
     def test_templates_are_json_and_match_the_host_profiles(self):
         for name, profile in (("run.json", "codex"), ("run.claude.json", "claude")):
             template = json.loads((SKILL / "templates" / name).read_text())

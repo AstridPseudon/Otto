@@ -64,7 +64,7 @@ One orchestrator runs a PORTFOLIO of related projects end to end. Each project h
   - portfolio totals;
   - a short **"needs the orchestrator"** list: help requests, projects that are ready but not active, overridden readiness, stalled managers.
 - **Speed:** a few seconds on the 7.6 GB live store. Do NOT export a sheet per project (today's `projects` takes ~65 s that way); read the minimal records.
-- **Megado's hourly summary:** this command is it. Update the Megado skill reference to use it (`policy-staging/megado/skill/references/manager-communication.md:8`).
+- **Megado's hourly summary:** this command is it. Update the Megado skill reference to use it (`src/otto/packs/megado/skill/references/manager-communication.md:8`).
 
 ### F4. Detach
 `ottoctl project detach --project X` (orchestrator or owner): removes the project from the portfolio's supervision. It refuses while that project's manager is running, and it removes the project's `portfolio.shared` associations.
