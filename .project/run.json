@@ -61,7 +61,7 @@
     {
       "stage": "Astra canon integration corrections",
       "status": "complete",
-      "notes": "All six original findings, the PL4 timed crash-test blocker, and the PL4 per-process missing-birth identity gap are fixed and merged. Fresh whole-project Astra review is underway. PL6 remains evidence only."
+      "notes": "All six original findings, the PL4 timed crash-test blocker, and the PL4 per-process missing-birth identity gap are fixed and merged. Fresh whole-project Astra review passed. PL6 remains evidence only."
     },
     {
       "stage": "whole-project Astra review after canon corrections",
