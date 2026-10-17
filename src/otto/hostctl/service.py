@@ -51,9 +51,15 @@ def _owner_exception_result(exc: Exception) -> dict[str, Any]:
     """Build the owner lane's error envelope for a dispatch exception."""
     from .register import RegistrationPinError, RetainedSelectionError, refusal_result
     from otto.agents.host_profiles import ProfileSelectionError
-    return (refusal_result(exc) if isinstance(exc, (RegistrationPinError, RetainedSelectionError, ProfileSelectionError)) else
-            {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
-             "provider_called": False})
+    if isinstance(exc, (RegistrationPinError, RetainedSelectionError, ProfileSelectionError)):
+        return refusal_result(exc)
+    from .skills import ManagedMegadoSourceUnavailableError
+    error_code = "SkillInstallError" if isinstance(exc, ManagedMegadoSourceUnavailableError) else type(exc).__name__
+    result = {"outcome": "error", "error": {"code": error_code, "message": str(exc)},
+              "provider_called": False}
+    if isinstance(exc, ManagedMegadoSourceUnavailableError):
+        result["next_action"] = exc.next_action
+    return result
 
 
 def owner_lane(home: Path) -> Path:
