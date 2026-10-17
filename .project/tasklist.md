@@ -18,7 +18,7 @@ Every worker first adds a focused check that fails on its task branch before imp
 | PK3R-UX4 | normal | 0.10 | PK3R | Preserve recovery guidance when a previously retained profile fails host qualification or model support during activation. | Add focused retained-activation refusal and envelope checks; new check fails before implementation. | None. | — | merged |
 | PK3R-UX5 | normal | 0.10 | PK3R | Preserve recovery guidance when legacy pending-profile migration resolves an unavailable manager adapter or unsupported overridden manager model. | Extend the existing legacy migration refusal test and verify both service/CLI envelopes; new check fails before implementation. | None. | — | merged |
 | PK3R-UX6 | normal | 0.10 | PK3R | Preserve a concrete recovery action when retained run bytes, role bindings, or migration integrity no longer match the adopted profile selection. | Extend changed-run, retained-binding and migration-conflict checks to assert both service/CLI refusal envelopes. | None. | — | planned |
-| PK3R-UX7 | normal | 0.05 | PK3 | Update host-onboarding guidance to put profiles and host qualification in the managed `otto-profiles` pack resources rather than the removed Python table. | Focused documentation check or source assertion confirms the old code path is gone and the resource paths are named. | None. | — | planned |
+| PK3R-UX7 | normal | 0.05 | PK3 | Update host-onboarding guidance to put profiles and host qualification in the managed `otto-profiles` pack resources rather than the removed Python table. | Focused documentation check or source assertion confirms the old code path is gone and the resource paths are named. | None. | — | merged |
 
 Deletion and scope notes:
 

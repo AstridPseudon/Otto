@@ -15,6 +15,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:26Z | PK3R-UX3 | merged 5832ee02207b07cf692d12edb43f01a168f7aedd | +36/-9 | test_host_neutral_defaults.py 19 passed; test_hostctl_bundle.py 29 passed/3 subtests; diff --check passed | Unknown, unqualified, unsupported and launcher-drift profile refusals now carry next_action through both error envelopes. No deletions.
 2026-10-17T21:29Z | PK3R-UX4 | merged 945d5bb71cc451bfeb56d9d26b9c42f1659393af | +29/-2 | test_hostctl_bundle.py 30 passed/5 subtests; diff --check passed | Retained-profile activation refusals for host/model qualification now use the recovery-aware refusal type. No deletions.
 2026-10-17T21:32Z | PK3R-UX5 | merged 0499e8eb937c785e9419893d0260e81ae91f291d | +23/-6 | test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Legacy pending migration refusals for unavailable manager adapter or unsupported manager model now preserve next_action. No deletions.
+2026-10-17T21:34Z | PK3R-UX7 | merged 551cc7f41313a40c695a642ca460d8cd9dfd7474 | +24/-4 | test_host_onboarding_docs.py 1 passed; diff --check passed | Host onboarding now points to managed profile/host resources and keeps the Megado template steps. No deletions.
 
 ## Questions for the orchestrator
 
@@ -33,7 +34,7 @@ Astra's second whole-project pass found that a retained profile can be correctly
 
 Astra's third whole-project pass found a remaining refusal in legacy pending-profile migration: unavailable manager adapters and unsupported overridden manager models raised plain `ValueError`, losing `next_action`. PK3R-UX5 uses the existing profile-selection refusal type while retaining host/model qualification checks. The full bundle file passed with 30 tests and seven subtests; all three envelope serializers were exercised without an owner socket.
 
-Astra's fourth pass found two remaining defects: retained run/binding/migration integrity refusals still lost `next_action` through both envelopes, and `docs/host-onboarding.md` still directed profile edits to the removed Python table. PK3R-UX6 and PK3R-UX7 address those issues; the suspected host-admission path was withdrawn as unreachable.
+Astra's fourth pass found two remaining defects: retained run/binding/migration integrity refusals still lost `next_action` through both envelopes, and `docs/host-onboarding.md` still directed profile edits to the removed Python table. PK3R-UX7 is merged and verified with a source-level doc assertion. The suspected host-admission path was withdrawn as unreachable; PK3R-UX6 is in progress.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
