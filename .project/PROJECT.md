@@ -145,3 +145,5 @@ The manager's manifest check prompted a baseline comparison with `install/build_
 - Follow-up: restored the 15 Oct pinned runtime manifest unchanged after verifying its provenance in `install/README.md`; the snapshot remains historical evidence and its candidate path is not a live caller.
 
 2026-10-17 20:29 UTC | SL9B | merged 3053409 | +17/-305 | retirement 1 passed; advisor delivery 28 passed, 1 AF_UNIX case needs the gate; diff check clean | pinned historical manifest preserved.
+
+2026-10-17 20:35 UTC | SL7A | merged 52d23ff | +116/-35 | docs supported-routes check 3 passed, 9 subtests; diff check clean | historical friction notes retained; implementation removal remains PROGRAM A6.
