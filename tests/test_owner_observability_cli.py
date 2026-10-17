@@ -95,6 +95,15 @@ class OwnerObservabilityCliTests(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "bound_actor_mismatch")
         self.assertEqual(self.reader.calls, [])
 
+    def test_malformed_owner_cli_arguments_return_structured_usage_error(self):
+        result = owner_verb(["show", "history", "overview"],
+                            session=self.session, home=Path("/tmp/otto-owner-test"))
+        self.assertEqual(result["outcome"], "error", result)
+        self.assertEqual(result["error"]["code"], "usage", result)
+        self.assertEqual(result["error"]["exit_code"], 2)
+        self.assertIn("--project-ref", result["error"]["message"])
+        self.assertEqual(self.reader.calls, [])
+
     def test_installed_status_friction_reads_only_explicit_granted_projects(self):
         status = {"outcome": "read", "projects": [{"project_ref": PROJECT}]}
         with patch("otto.portfolio.status.portfolio_status", return_value=status):
