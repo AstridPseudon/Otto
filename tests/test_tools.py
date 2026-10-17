@@ -795,7 +795,8 @@ def test_mac_write_scope_pins_the_server_exec(tmp_path):
     ws.mkdir()
     state.mkdir()
     granted = MacWriteScope(str(ws), str(state), authentication="isolated", exec_allow=(sys.executable,))
-    assert granted.pin["exec_allow"] == [os.path.realpath(sys.executable)]
+    from herzchen.fleet.tools.pins import exec_allow_for_commands
+    assert granted.pin["exec_allow"] == list(exec_allow_for_commands((sys.executable,)))
     assert "(allow process-fork)" in granted.policy
 
     plain = MacWriteScope(str(ws), str(state), authentication="isolated")

@@ -92,13 +92,16 @@ def sandbox_policy(workspace: str, state_root: str, *, allow_subprocesses: bool 
 
     A manager profile runs commands: its children inherit this same write fence, so only process
     creation is relaxed, never file writes. ``exec_allow`` lets a leaf fork and exec exactly the listed
-    absolute binaries (its one MCP server) and nothing else; it has no effect when subprocesses are allowed.
+    absolute binaries (its one MCP server), plus a matching existing framework Python.app binary; it
+    has no effect when subprocesses are allowed.
     """
     quote = json.dumps
     exec_allow = tuple(exec_allow)
     for path in exec_allow:
         if not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path:
             raise ClaudeBindingError("exec_allow entries must be absolute paths")
+    from ..tools.pins import exec_allow_for_commands
+    exec_allow = exec_allow_for_commands(exec_allow)
     leaf_exec = bool(exec_allow) and not allow_subprocesses
     if leaf_exec:
         spawn = '(deny process-exec)(allow process-fork)'
@@ -140,9 +143,15 @@ class SandboxFence:
         if type(allow_subprocesses) is not bool:
             raise ClaudeBindingError('allow_subprocesses must be explicit')
         self.workspace = workspace
+        exec_allow = tuple(exec_allow)
+        for path in exec_allow:
+            if not isinstance(path, str) or not os.path.isabs(path) or "\x00" in path:
+                raise ClaudeBindingError("exec_allow entries must be absolute paths")
+        from ..tools.pins import exec_allow_for_commands
+        exec_allow = exec_allow_for_commands(exec_allow)
         self.policy = sandbox_policy(workspace, state_root, allow_subprocesses=allow_subprocesses,
                                      extra_write_roots=tuple(extra_write_roots), auth_lock=auth_lock,
-                                     exec_allow=tuple(exec_allow))
+                                     exec_allow=exec_allow)
         self.pin = {"kind": self.kind, "workspace": workspace, "state_root": state_root,
                     "subprocesses": allow_subprocesses, "extra_write_roots": list(extra_write_roots),
                     "policy_sha256": hashlib.sha256(self.policy.encode()).hexdigest()}

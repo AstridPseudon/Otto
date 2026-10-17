@@ -23,6 +23,90 @@ from herzchen.fleet.hosts.codex import CodexStream
 DEVNULL = subprocess.DEVNULL
 
 
+def _has_homebrew_framework_python():
+    executable = Path("/opt/homebrew/bin/python3.11")
+    if sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec") or not executable.is_file():
+        return False
+    try:
+        resolved = executable.resolve(strict=True)
+        target = resolved.parent.parent / "Resources/Python.app/Contents/MacOS/Python"
+        return target.is_file() and os.access(target, os.X_OK)
+    except (OSError, RuntimeError):
+        return False
+
+
+def test_framework_python_expansion_requires_existing_python_launcher(tmp_path):
+    from herzchen.fleet.hosts.claude import sandbox_policy
+
+    version = tmp_path / "Python.framework/Versions/3.11"
+    bin_dir = version / "bin"
+    target = version / "Resources/Python.app/Contents/MacOS/Python"
+    bin_dir.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    python = bin_dir / "python3.11"
+    python.write_text("stub")
+    python.chmod(0o755)
+    target.write_text("app")
+    target.chmod(0o755)
+    other = bin_dir / "other"
+    other.write_text("binary")
+    other.chmod(0o755)
+
+    other_policy = sandbox_policy("/w", "/s", exec_allow=(str(other),))
+    python_policy = sandbox_policy("/w", "/s", exec_allow=(str(python),))
+    target_rule = '(allow process-exec (literal ' + json.dumps(str(target)) + '))'
+    python.unlink()
+    missing_policy = sandbox_policy("/w", "/s", exec_allow=(str(python),))
+    assert target_rule not in missing_policy
+    assert target_rule not in other_policy
+    assert target_rule in python_policy
+
+
+@pytest.mark.skipif(not _has_homebrew_framework_python(),
+                    reason="needs macOS sandbox-exec and Homebrew Python 3.11")
+def test_framework_python_mcp_exec_pin_runs_worker_but_denies_unpinned_executable(tmp_path):
+    from herzchen.fleet.hosts.claude import sandbox_policy, sandbox_wrap
+    from herzchen.fleet.tools.pins import exec_allow_for, sole_server_grant
+
+    workspace, state = tmp_path / "workspace", tmp_path / "state"
+    workspace.mkdir()
+    state.mkdir()
+    grant = sole_server_grant(server="otto", tools=("task",), command="/opt/homebrew/bin/python3.11",
+                              token="token", token_env="OTTO_TOKEN", token_env_prefix="OTTO_")
+    allowed = exec_allow_for(grant)
+    executable = Path("/opt/homebrew/bin/python3.11").resolve(strict=True)
+    version_dir = executable.parent.parent
+    expected_app_python = version_dir / "Resources/Python.app/Contents/MacOS/Python"
+    assert len(allowed) == 2
+    assert allowed[0] == os.path.realpath("/opt/homebrew/bin/python3.11")
+    assert allowed[1] == str(expected_app_python.resolve(strict=True))
+    policy = sandbox_policy(str(workspace), str(state), exec_allow=(allowed[0],))
+    assert '(allow process-exec (literal ' + json.dumps(allowed[0]) + '))' in policy
+    assert '(allow process-exec (literal ' + json.dumps(allowed[1]) + '))' in policy
+    assert policy.count('(allow process-exec ') == 2
+    assert '(allow process-exec (subpath ' not in policy
+    worker = "print('worker-ok')"
+    result = subprocess.run(sandbox_wrap(policy, str(workspace),
+                                         ["/opt/homebrew/bin/python3.11", "-c", worker]),
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "worker-ok" in result.stdout
+
+    denied = "\n".join((
+        "import subprocess",
+        "try:",
+        "    subprocess.run(['/usr/bin/true'])",
+        "    print('CHILD_ALLOWED')",
+        "except PermissionError:",
+        "    print('CHILD_DENIED')",
+    ))
+    denied_result = subprocess.run(
+        sandbox_wrap(policy, str(workspace), ["/opt/homebrew/bin/python3.11", "-c", denied]),
+        capture_output=True, text=True, timeout=30)
+    assert denied_result.returncode == 0, denied_result.stderr
+    assert "CHILD_DENIED" in denied_result.stdout
+
+
 def _reap_tree(leader):
     """Kill the group led by a process this test launched, then reap the leader. Safe to call twice."""
     if leader is None:
