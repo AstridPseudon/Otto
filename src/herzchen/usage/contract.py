@@ -171,7 +171,7 @@ PREDECESSOR_SEAMS = {
     },
     "events": {
         "owner": "Events source facets, append ordering, snapshot, and bounded detail readers",
-        "paths": ["src/herzchen/kernel/history.py", "src/otto/portfolio/observability_contract.py", "src/otto/portfolio/observability_views.py"],
+        "paths": ["src/herzchen/kernel/history.py", "src/otto/portfolio/observability_views.py"],
         "rule": "usage facts attach as typed facets; no second ledger or view store",
     },
 }

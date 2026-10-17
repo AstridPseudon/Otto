@@ -2,6 +2,7 @@
 
 import unittest
 import tempfile
+import otto.portfolio as portfolio
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.domains.work import WorkGraph, contributions
@@ -122,6 +123,11 @@ class ObservabilityViewsTests(unittest.TestCase):
                 self.assertTrue(detail["coverage"]["bounded"])
             finally:
                 store.close()
+
+    def test_historical_candidate_proof_is_not_a_package_api(self):
+        self.assertFalse(hasattr(portfolio, "CandidateProofError"))
+        self.assertFalse(hasattr(portfolio, "PROOF_SCHEMA"))
+        self.assertFalse(hasattr(portfolio, "run_candidate_journey"))
 
 
 if __name__ == "__main__":
