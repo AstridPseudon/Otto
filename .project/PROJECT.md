@@ -22,6 +22,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:55Z | PK3R-UX10 | merged 2b5aacf9d646f4baf3bb241d1844906c5e54a183 | +67/-0 | test_host_neutral_defaults.py 23 passed/13 subtests; diff --check passed | Oracle, review-stage and scheduled-check structures are validated before registration consumers; malformed values now get recovery guidance. No deletions.
 2026-10-17T21:59Z | PK3R-UX11 | merged 0c0fb8568ba08be99f0e5b0191a8f265065519ba | +30/-0 | test_host_neutral_defaults.py 24 passed/13 subtests; diff --check passed | Every managed profile, including nondefault entries, must provide a nonblank adapter. No deletions.
 2026-10-17T22:05Z | PK3R-UX12 | merged 2a7edc7fd7e885225b4d8246bef096ee12dba4bd | +19/-1 | test_host_neutral_defaults.py 25 passed/16 subtests; test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Non-string explicit run model_profile values are refused rather than raising TypeError or silently choosing a default. No deletions.
+2026-10-17T22:11Z | PK3R-UX13 | merged a6f8397155479c8ee31782681f3091e146ea5799 | +43/-4 | test_host_neutral_defaults.py 25 passed/24 subtests; diff --check passed | Required template policy, launcher qualification and host capability fields are now validated before consumers use them. No deletions.
 
 ## Questions for the orchestrator
 
@@ -52,7 +53,7 @@ Astra's eighth pass found nondefault profiles could omit `adapter`, pass load va
 
 Astra's ninth pass found a truthy non-string run `model_profile` raised TypeError on profile lookup, while a falsey malformed list silently chose the default. PK3R-UX12 validates explicit non-string run values before lookup and preserves the refusal through both envelopes. Its tests cover list, mapping and empty-list values.
 
-Astra's tenth pass found profile fields consumed directly by run templates and host admission were still optional/loosely typed. Missing assurance/policy values or malformed adapter and launcher fields could cause generic exceptions after source verification. PK3R-UX13 will validate these consumed fields at load time.
+Astra's tenth pass found profile fields consumed directly by run templates and host admission were still optional/loosely typed. PK3R-UX13 now validates oracle/review/scheduled/assurance fields, launcher version/parser qualification and adapter capability lists before consumers use them. Its tests cover missing and malformed values through both envelopes.
 
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 

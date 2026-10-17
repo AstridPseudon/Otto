@@ -24,7 +24,7 @@ Every worker first adds a focused check that fails on its task branch before imp
 | PK3R-UX10 | normal | 0.10 | PK3 | Validate profile oracle, review-stage and scheduled-check policy shapes before consumers can raise generic runtime errors. | Add malformed policy-field cases for each structure and assert service/CLI recovery envelopes. | None. | — | merged |
 | PK3R-UX11 | normal | 0.05 | PK3 | Require each profile resource to declare a valid adapter, including nondefault profiles. | Add a nondefault profile lacking adapter and assert recovery-aware refusal through service/CLI envelopes. | None. | — | merged |
 | PK3R-UX12 | normal | 0.05 | PK3 | Refuse non-string explicit run `model_profile` values with recovery guidance instead of a TypeError or silent default. | Add list/object/empty-list input checks and assert service/CLI envelopes; new tests fail before change. | None. | — | merged |
-| PK3R-UX13 | normal | 0.10 | PK3 | Require all profile fields used by run templates and validate host launcher qualification and adapter capability lists before returning a pinned pack. | Add missing/malformed consumed-field cases and assert recovery-aware refusals; new tests fail before implementation. | None. | — | planned |
+| PK3R-UX13 | normal | 0.10 | PK3 | Require all profile fields used by run templates and validate host launcher qualification and adapter capability lists before returning a pinned pack. | Add missing/malformed consumed-field cases and assert recovery-aware refusals; new tests fail before implementation. | None. | — | merged |
 
 Deletion and scope notes:
 
