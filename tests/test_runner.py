@@ -611,6 +611,30 @@ def test_restart_restores_exact_lease_for_unresolved_scope(harness):
         harness.retire(runner)
 
 
+def test_restart_does_not_restore_lease_after_latch_cleanup(harness, monkeypatch):
+    store = harness.store
+    record = harness.record(store, "cleaned-restart", ["fake", "old"], "c1", "unknown",
+                            units=2, custody="uncertain", outcome="lost_in_restart")
+    store.put(record)
+    latches = harness.state / "latches"
+    latches.mkdir(exist_ok=True)
+    latch = latches / "cleaned-restart.json"
+    latch.write_text("unresolved")
+
+    def cleanup(path, grace, census_fn):
+        assert path == str(latch)
+        latch.unlink()
+        return Disposition("gone")
+
+    monkeypatch.setattr("herzchen.fleet.runner.runner.custody.resume_cleanup", cleanup)
+    first = harness.runner(store=harness.new_store())
+    assert first.status()["used"] == 0 and not latch.exists()
+    harness.retire(first)
+    second = harness.runner(store=harness.new_store())
+    assert second.status()["used"] == 0
+    harness.retire(second)
+
+
 def test_peer_without_parent_credential_needs_own_lease(harness):
     gate = threading.Event()
 
@@ -659,6 +683,62 @@ def test_peer_without_parent_credential_needs_own_lease(harness):
                                "parent_token": token}, peer_pid=4242)
         assert stale["ok"] and stale["nested"] is False
         assert harness.store.get("stale-peer")["units"] == 1
+    finally:
+        gate.set()
+
+
+def test_immediate_child_waits_for_parent_launch_identity(harness):
+    gate = threading.Event()
+    entered = threading.Event()
+    child_response = {}
+
+    class Process:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            assert gate.wait(10)
+            return 0
+
+    class Scope:
+        process = Process()
+
+        def release(self):
+            return Disposition("gone")
+
+        def terminate(self, grace):
+            gate.set()
+            return Disposition("gone")
+
+    runner = None
+
+    def launch(argv, **kwargs):
+        if argv[-1] == "parent":
+            env = kwargs["env"]
+
+            def child():
+                child_response.update(runner.submit(
+                    {"argv": ["fake", "child"], "cwd": str(harness.cwd), "request_id": "immediate-child",
+                     "parent_run_id": env["RUNNER_PARENT_RUN_ID"],
+                     "parent_token": env["RUNNER_PARENT_TOKEN"]}, peer_pid=4242))
+
+            threading.Thread(target=child, daemon=True).start()
+            assert entered.wait(5)
+        return Scope()
+
+    runner = harness.runner(launch=launch)
+    original = runner._parent_lease
+
+    def observed(request):
+        if request.get("request_id") == "immediate-child":
+            entered.set()
+        return original(request)
+
+    runner._parent_lease = observed
+    try:
+        harness.submit(runner, ["fake", "parent"], weight=3, request_id="immediate-parent")
+        wait_until(lambda: child_response, "immediate child submit response")
+        assert child_response["ok"] and child_response["nested"] is True
+        assert harness.store.get("immediate-child")["units"] == 0
     finally:
         gate.set()
 

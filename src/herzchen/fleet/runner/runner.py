@@ -202,13 +202,12 @@ class Runner:
                                  custody=_custody_state(disposition), settled_at=self._clock())
                 if not disposition.gone:
                     unresolved.add(record["run_id"])
-            elif record["state"] == "unknown" and (record.get("custody") == "uncertain" or
-                                                     os.path.exists(self._latch_path(record["run_id"]))):
+            elif record["state"] == "unknown" and os.path.exists(self._latch_path(record["run_id"])):
                 latch = self._latch_path(record["run_id"])
-                has_latch = os.path.exists(latch)
-                if has_latch:
-                    cleaned.add(record["run_id"])
-                if not has_latch or not custody.resume_cleanup(latch, self._grace, self._census_fn).gone:
+                cleaned.add(record["run_id"])
+                # Custody removes its latch only after proving gone. The sealed unknown result
+                # remains immutable, so latch absence is the durable settlement evidence.
+                if not custody.resume_cleanup(latch, self._grace, self._census_fn).gone:
                     unresolved.add(record["run_id"])
         for record in records:
             if record["state"] != "queued":
@@ -462,9 +461,12 @@ class Runner:
         if not isinstance(run_id, str) or not isinstance(token, str):
             return None
         lease = self._leases.get(run_id)
-        if lease is None or lease.closed or lease.custody is None:
+        if lease is None:
             return None
-        return lease if hmac.compare_digest(lease.parent_token, token) else None
+        with lease.lock:
+            if lease.closed or lease.custody is None:
+                return None
+            return lease if hmac.compare_digest(lease.parent_token, token) else None
 
     # -- helpers -----------------------------------------------------------------------------
 
