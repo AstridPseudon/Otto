@@ -119,6 +119,41 @@ if [ -n "$D19_FILES" ]; then
   fi
   [ -f "$D19" ] || D19="$(dirname "$OPS_DIR")/$D19"
   [ -f "$D19" ] || fail "D19 decision file not found: $D19"
+  decision_names_file() {  # DECISION PATH
+    "$PY" - "$1" "$2" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+path = sys.argv[2]
+start = 0
+while True:
+    index = text.find(path, start)
+    if index < 0:
+        raise SystemExit(1)
+    end = index + len(path)
+    token_chars = lambda c: c.isalnum() or c in "_./-"
+    if (index == 0 or not token_chars(text[index - 1])) and (end == len(text) or not token_chars(text[end])):
+        raise SystemExit(0)
+    start = index + 1
+PY
+  }
+  D19_MISSING=""
+  for f in $D19_FILES; do
+    # Require the complete path as a token. In particular, test_a.py must not be
+    # covered by test_a.pyx or test_a_extra.py in the decision text.
+    if ! decision_names_file "$D19" "$f"; then
+      D19_MISSING="$D19_MISSING $f"
+    fi
+  done
+  if [ -n "$D19_MISSING" ]; then
+    D19_MISSING="${D19_MISSING# }"
+    # The decision is the orchestrator's, not the worker's: stop as a missing decision does (exit 4), so
+    # the manager asks the orchestrator instead of resuming the worker (TOOLING20, 17 Oct).
+    log "D19: decision does not name changed test file(s): $D19_MISSING ($D19)"
+    echo "D19: $D19 does not name changed test file(s): $D19_MISSING; extend the decision, then re-run land.sh $TASK --d19 $D19" >&2
+    exit 4
+  fi
   VERDICT="$(grep -m1 -E 'LAND|SEND BACK' "$D19" || true)"
   case "$VERDICT" in
     *"SEND BACK"*) fail "D19: review says SEND BACK ($D19)" ;;
