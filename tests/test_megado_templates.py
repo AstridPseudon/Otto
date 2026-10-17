@@ -41,6 +41,9 @@ class TemplateTests(unittest.TestCase):
             template = json.loads((SKILL / "templates" / name).read_text())
             self.assertEqual(template["model_profile"], profile, name)
             self.assertNotIn("roles", template, name)
+            selected_pin = host_profiles.profile(profile)["pin"]
+            self.assertEqual(template["profile_pack"], {
+                key: selected_pin[key] for key in ("pack_id", "pack_version", "resource_digests")}, name)
             resolved = host_profiles.run_template(template["model_profile"])
             self.assertEqual(set(resolved["roles"]), set(SLOTS), name)
             self.assertEqual(resolved["roles"],
@@ -142,7 +145,6 @@ class RunConfigLoaderTests(unittest.TestCase):
             root = Path(directory)
             raw = json.loads((SKILL / "templates" / "run.json").read_text())
             selected = host_profiles.profile(raw["model_profile"])
-            raw["profile_pack"] = selected["pin"]
             (root / "run.json").write_text(json.dumps(raw))
             resolved = resolved_run_config(root)
         self.assertEqual(set(resolved["roles"]), set(SLOTS))
@@ -156,7 +158,6 @@ class RunConfigLoaderTests(unittest.TestCase):
             root = Path(directory)
             raw = json.loads((SKILL / "templates" / "run.json").read_text())
             selected = host_profiles.profile(raw["model_profile"])
-            raw["profile_pack"] = selected["pin"]
             raw["roles"] = {"coordinator": {"model": "gpt-6-astra", "reasoning": "high"}}
             (root / "run.json").write_text(json.dumps(raw))
             resolved = resolved_run_config(root)
@@ -172,6 +173,36 @@ class RunConfigLoaderTests(unittest.TestCase):
             raw["profile_pack"] = {"resource_digests": {"profiles.json": "stale"}}
             (root / "run.json").write_text(json.dumps(raw))
             with self.assertRaisesRegex(ValueError, "pin|profile pack|stale"):
+                resolved_run_config(root)
+
+    def test_raw_template_requires_pin_before_defaults_are_resolved(self):
+        from otto.portfolio.run_config import resolved_run_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = json.loads((SKILL / "templates" / "run.json").read_text())
+            raw.pop("profile_pack", None)
+            (root / "run.json").write_text(json.dumps(raw))
+            with self.assertRaisesRegex(ValueError, "profile pack pin"):
+                resolved_run_config(root)
+
+    def test_all_seven_partial_slots_merge_fields_and_stale_pin_is_refused(self):
+        from otto.portfolio.run_config import resolved_run_config
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = json.loads((SKILL / "templates" / "run.json").read_text())
+            selected = host_profiles.profile(raw["model_profile"])
+            raw["roles"] = {slot: {"reasoning": "high"} for slot in SLOTS}
+            (root / "run.json").write_text(json.dumps(raw))
+            resolved = resolved_run_config(root)
+            for slot in SLOTS:
+                self.assertEqual(resolved["roles"][slot],
+                                 {"model": selected["roles"][slot]["model"], "reasoning": "high"})
+            raw["profile_pack"] = {"pack_id": "otto-profiles", "pack_version": "0.0.0",
+                                   "resource_digests": selected["pin"]["resource_digests"]}
+            (root / "run.json").write_text(json.dumps(raw))
+            with self.assertRaisesRegex(ValueError, "profile pack pin"):
                 resolved_run_config(root)
 
 

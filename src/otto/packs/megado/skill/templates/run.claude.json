@@ -1,6 +1,14 @@
 {
   "mode": "planning_only",
   "model_profile": "claude",
+  "profile_pack": {
+    "pack_id": "otto-profiles",
+    "pack_version": "1.0.0",
+    "resource_digests": {
+      "profiles.json": "f97f2f7a7bdb9dba5bb9852a085be950ee9f4d7da16937011fc3700bb1291fba",
+      "hosts.json": "1d09e8f06d6ba4255af334e05bbafc8ad7eccb8ea11b3228c83433e5c4b3e164"
+    }
+  },
   "project_advisor_policy": {
     "resource": "protocols/project-advisor.json",
     "adoption": "explicit_instance_adoption",

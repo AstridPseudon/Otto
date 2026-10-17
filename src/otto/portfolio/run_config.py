@@ -7,8 +7,8 @@ guessed between.
 """
 from __future__ import annotations
 
-import json
 import copy
+import json
 from pathlib import Path
 from typing import Any
 
@@ -39,22 +39,35 @@ def resolved_run_config(run_path: str | Path) -> Any:
     declaration keeps each explicit project role binding authoritative.
     """
     run = read_run_config(run_path)
-    from otto.agents.host_profiles import SLOTS, profile
+    if not isinstance(run, dict):
+        raise ValueError("run declaration must be an object")
+    from otto.agents.host_profiles import SLOTS, profile, profile_pin_matches
     roles = run.get("roles") or {}
     if not isinstance(roles, dict):
         raise ValueError("run roles must be a mapping")
-    if set(SLOTS).issubset(roles):
+    complete = all(isinstance(roles.get(slot), dict)
+                   and isinstance(roles[slot].get("model"), str) and roles[slot]["model"]
+                   and isinstance(roles[slot].get("reasoning"), str) and roles[slot]["reasoning"]
+                   for slot in SLOTS)
+    declared_pin = run.get("profile_pack")
+    if complete and declared_pin is None:
         return run
     name = run.get("model_profile")
     if not isinstance(name, str) or not name:
-        raise ValueError("run with unbound roles must select a model profile")
+        raise ValueError("run with a profile pack pin or unbound roles must select a model profile")
     selected = profile(name)
-    declared_pin = run.get("profile_pack")
-    if declared_pin is not None and declared_pin != selected["pin"]:
+    if declared_pin is None:
+        raise ValueError("run with unbound roles must declare a profile pack pin")
+    if not profile_pin_matches(declared_pin, selected["pin"]):
         raise ValueError("run profile pack pin is stale or inconsistent")
+    if complete:
+        return {**run, "profile_pack": copy.deepcopy(selected["pin"])}
     resolved = copy.deepcopy(selected["roles"])
     for slot, binding in roles.items():
         if slot not in resolved or not isinstance(binding, dict):
             raise ValueError("run has an invalid responsibility slot binding")
         resolved[slot].update(binding)
+        if (not isinstance(resolved[slot].get("model"), str) or not resolved[slot]["model"]
+                or not isinstance(resolved[slot].get("reasoning"), str) or not resolved[slot]["reasoning"]):
+            raise ValueError("run has an incomplete responsibility slot binding")
     return {**run, "roles": resolved, "profile_pack": copy.deepcopy(selected["pin"])}

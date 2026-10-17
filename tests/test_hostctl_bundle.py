@@ -303,6 +303,26 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         self.assertEqual(selection["roles"], selected["roles"])
         self.assertEqual(selection["resolved_roles"], registration["configuration"]["roles"])
 
+    def test_registration_accepts_template_resource_pin_and_retains_full_selection(self):
+        from otto.agents import host_profiles
+        from otto.hostctl.bundle import parse_files
+        from otto.hostctl.register import plan, plan_retained
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        files = dict(bundle["files"])
+        files[bundle["run_file"]] = json.dumps({**bundle["run"],
+            "profile_pack": host_profiles.profile_resource_pin(selected["pin"])})
+        bundle = {**bundle, **parse_files(files), "root": bundle["root"]}
+        registration = plan(bundle, profile=selected, manager_principal="manager",
+                            worktree=str(self.root), tool_entrypoint="ottoctl")
+        facts = registration["custom"]["otto_host_registration"]
+        self.assertEqual(facts["profile_selection"]["pin"], selected["pin"])
+        host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        replay = plan_retained(bundle, facts=facts, host=host, manager_principal="manager",
+                               worktree=str(self.root), tool_entrypoint="ottoctl")
+        self.assertEqual(replay["configuration"]["roles"], registration["configuration"]["roles"])
+
     def test_retained_activation_uses_registration_defaults_after_pack_defaults_change(self):
         from otto.agents import host_profiles
         from otto.hostctl.register import plan, plan_retained

@@ -95,8 +95,10 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     run = bundle["run"]
     if run.get("model_profile") and run["model_profile"] != profile["name"]:
         raise ValueError("selected run model profile differs from the qualified host profile")
-    if run.get("profile_pack") is not None and run["profile_pack"] != profile.get("pin"):
-        raise ValueError("selected run profile pack pin is stale or inconsistent")
+    if run.get("profile_pack") is not None:
+        from otto.agents.host_profiles import profile_pin_matches
+        if not profile_pin_matches(run["profile_pack"], profile.get("pin") or {}):
+            raise ValueError("selected run profile pack pin is stale or inconsistent")
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
     title = heading if heading.startswith(run_id) else (run_id + ": " + heading if heading else run_id)
@@ -224,8 +226,10 @@ def plan_retained(bundle_source: Any, *, facts: Mapping[str, Any], host: Mapping
     run = bundle["run"]
     if run.get("model_profile") and run["model_profile"] != selection.get("name"):
         raise ValueError("registered model profile differs from retained selection")
-    if run.get("profile_pack") is not None and run["profile_pack"] != selection.get("pin"):
-        raise ValueError("registered profile pack pin is stale or inconsistent")
+    if run.get("profile_pack") is not None:
+        from otto.agents.host_profiles import profile_pin_matches
+        if not profile_pin_matches(run["profile_pack"], selection.get("pin") or {}):
+            raise ValueError("registered profile pack pin is stale or inconsistent")
     kind = host.get("kind")
     adapter = selection.get("adapter")
     host_settings = (host.get("adapters") or {}).get(adapter)

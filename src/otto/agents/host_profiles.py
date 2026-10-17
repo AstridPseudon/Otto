@@ -145,6 +145,23 @@ def profile_for_run(run: Mapping[str, Any], *, host_kind: str, default_profile: 
     return profile(selected, host_kind=host_kind)
 
 
+def profile_resource_pin(full_pin: Mapping[str, Any]) -> dict[str, Any]:
+    """Policy resource identity usable inside a Git-tracked run template.
+
+    The full source revision includes the commit containing the template, so
+    embedding it in that same template would invalidate itself at commit.
+    """
+    return {key: copy.deepcopy(full_pin[key]) for key in
+            ("pack_id", "pack_version", "resource_digests")}
+
+
+def profile_pin_matches(declared: Any, full_pin: Mapping[str, Any]) -> bool:
+    """Accept an exact adopted pin or the template's exact resource pin."""
+    return declared == full_pin or (isinstance(declared, Mapping)
+        and set(declared) == {"pack_id", "pack_version", "resource_digests"}
+        and dict(declared) == profile_resource_pin(full_pin))
+
+
 def slot_binding(slot: str, name: Optional[str] = None, **options: Any) -> dict[str, str]:
     if slot not in SLOTS:
         raise ValueError("unknown responsibility slot %r" % (slot,))
@@ -175,7 +192,8 @@ def run_template(name: str, *, mode: str = "planning_only") -> dict[str, Any]:
     if resource is None:
         raise ValueError("Megado has no run template for model profile %r" % (name,))
     template = json.loads(resource.content)
-    if template.get("model_profile") != name or "roles" in template:
+    if (template.get("model_profile") != name or "roles" in template
+            or not profile_pin_matches(template.get("profile_pack"), chosen["pin"])):
         raise ValueError("Megado run template conflicts with its selected profile")
     return {**template, "mode": mode, "roles": copy.deepcopy(chosen["roles"]),
             "oracle": copy.deepcopy(chosen["oracle"]),
