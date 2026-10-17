@@ -524,16 +524,35 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
     with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
         record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
         tasks = []
+        view = session.owner.sheet.export(record.ref)
+        task_views = {item["ref"].id: item for item in view.tasks}
+        from herzchen.domains.assessment import AssessmentModule
+        from otto.portfolio.assessment import OttoAssessment
+        assessed = OttoAssessment(AssessmentModule(session.store, actor=session.owner.owner_actor),
+                                  session.owner.owner_actor)
         for raw in record.payload.get("tasks") or ():
             ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
             task = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
             megado = (task.payload.get("custom") or {}).get("megado") or {}
             plan = (task.payload.get("custom") or {}).get("otto.plan") or {}
+            task_view = task_views.get(task.ref.id, {})
+            coverage = assessed.coverage(task.ref)
+            required_scopes = []
+            for row in coverage.get("scopes", ()):
+                scope = assessed.get_scope(row["ref"])
+                if scope.policy.get("required_for_completion") is not True:
+                    continue
+                criterion_definitions = []
+                for criterion_ref in scope.criterion_refs:
+                    criterion = session.owner.graph.reader.get_identity(criterion_ref)
+                    criterion_definitions.append(criterion.payload.get("definition") if criterion is not None else None)
+                required_scopes.append({**row, "criterion_definitions": criterion_definitions})
             tasks.append({"id": task.payload.get("alias") or task.ref.id, "title": task.title,
                           "lifecycle": task.lifecycle.value, "route": megado.get("route"),
                           "phase": megado.get("phase"), "repo": plan.get("repo"), "branch": plan.get("branch"),
-                          "depends_on": len(task.payload.get("dependencies") or ())})
-        view = session.owner.sheet.export(record.ref)
+                          "depends_on": len(task.payload.get("dependencies") or ()),
+                          "required_assessment_scopes": required_scopes,
+                          "dispatch": _task_dispatch_status(task_view.get("observed") or {})})
         observed = view.project.get("observed", {}) if hasattr(view, "project") else {}
         assignments = []
         for item in observed.get("assignments") or ():
@@ -574,6 +593,38 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                 "assessment_scope": custom.get("assessment_scope"), "tasks": tasks,
                 "assignments": assignments, "documents": documents, "allowances": pools, "schedules": dues,
                 "provider_called": False}
+
+
+def _task_dispatch_status(observed: Mapping[str, Any]) -> dict[str, Any]:
+    """Project retained assignment/dispatch/result/report records for one task."""
+    assignments = observed.get("assignments") or ()
+    assignment_refs = {item.get("ref", {}).get("id") for item in assignments
+                       if isinstance(item, Mapping) and isinstance(item.get("ref"), Mapping)}
+    dispatches = [item.get("payload") or {} for item in observed.get("dispatches") or ()
+                  if isinstance(item, Mapping)
+                  and (item.get("payload") or {}).get("assignment", {}).get("id") in assignment_refs]
+    results = [item.get("payload") or {} for item in observed.get("results") or ()
+               if isinstance(item, Mapping)
+               and (item.get("payload") or {}).get("assignment", {}).get("id") in assignment_refs]
+    reports = [item.get("payload") or {} for item in observed.get("reports") or ()
+               if isinstance(item, Mapping)
+               and (item.get("payload") or {}).get("assignment", {}).get("id") in assignment_refs]
+    for payload in (*reports, *results):
+        value = payload.get("value") or {}
+        value = value if isinstance(value, Mapping) else {}
+        state = value.get("state") or value.get("status")
+        reason = value.get("reason")
+        if reason is None and isinstance(value.get("error"), Mapping):
+            reason = value["error"].get("message")
+        if state == "failed" or value.get("failed") is True:
+            return {"state": "failed", "reason": str(reason or "dispatch failed")[:512]}
+        if value.get("landed") is True or state == "landed":
+            return {"state": "landed", "reason": None}
+    if dispatches:
+        return {"state": "launched", "reason": None}
+    if assignments:
+        return {"state": "admitted", "reason": None}
+    return {"state": "admitted", "reason": None}
 
 
 def _reader_actor(session: HostSession) -> Any:
