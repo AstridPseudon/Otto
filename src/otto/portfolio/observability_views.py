@@ -257,6 +257,7 @@ def friction_from_rows(rows: Sequence[Mapping[str, Any]], *, complete: bool) -> 
     """Summarize only explicit retained friction evidence from one bounded page."""
     names = ("questions", "refusals", "next_actions", "reworks", "unknown_effects", "answer_waits")
     counts = {name: 0 for name in names}
+    observed = set()
     heavy_seconds = 0.0
     heavy_known = False
     accepted_tasks = set()
@@ -278,20 +279,31 @@ def friction_from_rows(rows: Sequence[Mapping[str, Any]], *, complete: bool) -> 
                 or (data.get("schema") in {"otto.issue.v1", "otto.issue.response.v1"}
                     and data.get("awaiting") == "orchestrator")):
             counts["questions"] += 1
+            observed.add("questions")
         if outcome in {"refused", "rejected", "denied"} or data.get("refusal") is True:
             counts["refusals"] += 1
+            observed.add("refusals")
         if data.get("next_action"):
             counts["next_actions"] += 1
+            observed.add("next_actions")
         if outcome == "rework" or str(data.get("disposition", "")).lower() == "rework":
             counts["reworks"] += 1
+            observed.add("reworks")
         native_result = data.get("native_result")
+        native_outcome = native_result.get("outcome") if isinstance(native_result, Mapping) else None
+        if (isinstance(native_result, Mapping) and isinstance(native_outcome, str)
+                or data.get("unknown_effect") is True or data.get("effect_state") in {"known", "unknown"}
+                or data.get("unknown_effects") is True):
+            observed.add("unknown_effects")
         if (data.get("unknown_effect") is True or data.get("effect_state") == "unknown"
                 or data.get("unknown_effects") is True or native_result == "unknown"
-                or isinstance(native_result, Mapping) and native_result.get("state") == "unknown"):
+                or isinstance(native_result, Mapping) and (native_result.get("state") == "unknown"
+                                                            or native_outcome == "unknown")):
             counts["unknown_effects"] += 1
         if (data.get("awaiting_answer") is True or data.get("answer_wait_seconds") is not None
                 or data.get("answer_wait") is True or data.get("awaiting") == "answer"):
             counts["answer_waits"] += 1
+            observed.add("answer_waits")
         seconds = data.get("heavy_seconds")
         if seconds is None:
             seconds = _mapping(_mapping(data.get("usage")).get("metrics")).get("heavy_seconds")
@@ -311,12 +323,16 @@ def friction_from_rows(rows: Sequence[Mapping[str, Any]], *, complete: bool) -> 
         if task_id and type(tokens) is int and tokens >= 0:
             task_tokens[task_id] = task_tokens.get(task_id, 0) + tokens
 
-    availability = "known" if complete else "unavailable"
+    count_states = {
+        name: ("known" if complete and (not rows or name in observed) else "unavailable")
+        for name in names
+    }
     return {
         "schema": "otto.status.friction.v1",
         "window_days": 30,
         "coverage": "complete" if complete else "partial-or-inaccessible",
-        "counts": {name: {"state": availability, "value": count if complete else None}
+        "counts": {name: {"state": count_states[name],
+                          "value": count if count_states[name] == "known" else None}
                    for name, count in counts.items()},
         "heavy_seconds": {"state": "known" if complete and heavy_known else "unavailable",
                           "value": heavy_seconds if complete and heavy_known else None},

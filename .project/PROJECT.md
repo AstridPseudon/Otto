@@ -66,3 +66,9 @@ Astra reviewed the original SL2 diff and reproduced the cross-schedule reacquisi
 - SL6 is blocked because its declared SL2 dependency has no production replacement entrypoint until PROGRAM/orchestrator wiring is decided.
 - SL7 is blocked by SL5's unanswered keep/retire decision and SL6.
 - SL9 is blocked by the dependent rows above and the measured deletion shortfall: 913 net portfolio lines removed versus 11,980 required. The remaining ledger entries are candidate gross sizes with live callers; further removals need measured parity evidence and an agreed path past PROGRAM-owned files.
+
+### SL8 retained-history correction
+
+Astra found the initial friction classifier treated omitted issue data as known-zero and did not recognize retained result observations whose `native_result` mapping has `outcome: unknown`. Fixed the classifier to count the real retained `native_result.outcome` shape and to report a friction count unavailable when non-empty projection rows do not establish that category's coverage. Added regressions that construct issue and result facets with `herzchen.kernel.history.transition`, then pass them through the Events view-row summary shape. Under the previous classifier those assertions would have observed question `known: 0` and unknown-effects `known: 0`; now questions are unavailable because `state()` drops `value/schema/awaiting`, while the unknown retained result counts as one.
+
+Changed files: `src/otto/portfolio/observability_views.py`, `tests/test_status_friction.py`, `.project/PROJECT.md`. Focused check: `/opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_status_friction.py` (3 passed). No assertions were weakened.
