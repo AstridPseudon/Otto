@@ -46,6 +46,8 @@ Astra's sixth pass found malformed JSON field types that could raise TypeError b
 
 Astra's seventh pass found `oracle`, `review_stages`, and `scheduled_checks` still lacked structural validation, allowing malformed entries to fail during registration with generic errors. PK3R-UX10 now validates the consumed policy shapes before returning a profile. Its tests cover ten malformed cases and assert recovery guidance in both envelopes.
 
+Astra's eighth pass found nondefault profiles could omit `adapter`, pass load validation, and later raise KeyError when selected. PK3R-UX11 will validate the required adapter on every profile and preserve recovery guidance.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions

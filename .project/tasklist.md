@@ -22,6 +22,7 @@ Every worker first adds a focused check that fails on its task branch before imp
 | PK3R-UX8 | normal | 0.10 | PK3 | Preserve a concrete recovery action when the managed profile pack is unavailable, fails provenance verification, or contains invalid profile/host resources. | Add focused loader refusal and serializer checks that fail before implementation. | None. | — | merged |
 | PK3R-UX9 | normal | 0.10 | PK3 | Refuse malformed managed profile JSON field types through the recovery-aware pack error, including default profile, host profile selection, and allowed model list. | Add focused malformed-type cases and assert service/CLI recovery guidance; checks fail before implementation. | None. | — | merged |
 | PK3R-UX10 | normal | 0.10 | PK3 | Validate profile oracle, review-stage and scheduled-check policy shapes before consumers can raise generic runtime errors. | Add malformed policy-field cases for each structure and assert service/CLI recovery envelopes. | None. | — | merged |
+| PK3R-UX11 | normal | 0.05 | PK3 | Require each profile resource to declare a valid adapter, including nondefault profiles. | Add a nondefault profile lacking adapter and assert recovery-aware refusal through service/CLI envelopes. | None. | — | planned |
 
 Deletion and scope notes:
 
