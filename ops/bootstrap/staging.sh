@@ -223,6 +223,25 @@ up() {
       --owner otto-staging-owner --operator otto-staging-operator --credential-ref otto-staging-credential-v1 >>"$LOG" 2>&1 \
       || die "up: could not create the staging installation; see $LOG"
   fi
+  if [ "${OTTO_STAGING_STAGE2_SETUP:-0}" = 1 ]; then
+    # The service reads its capacity policy from the installation at startup.
+    # Keep the disposable canary's limit there, where the product applies it.
+    "$PY" -I - "$HOME_DIR/installation.json" "$HERE/canary/project.json" <<'PY' \
+      || die "up: could not set the stage-2 installation capacity"
+import json
+import os
+import sys
+from pathlib import Path
+
+installed = Path(sys.argv[1])
+policy = json.loads(Path(sys.argv[2]).read_text())["stages"]["2"]["capacity"]
+value = json.loads(installed.read_text())
+value["capacity"] = policy
+pending = installed.with_suffix(".capacity.tmp")
+pending.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+os.replace(pending, installed)
+PY
+  fi
   # PERCH stage 2's disposable repo must be in the installation before owner
   # composition: the dispatch registry retains this map at service startup.
   if [ -n "${OTTO_STAGING_CANARY_REPO:-}" ]; then

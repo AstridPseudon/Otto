@@ -52,7 +52,8 @@ STAGE1 = ("portfolio-admitted-before-saves", "canary-has-three-planned-tasks", "
           "stale-save-refused", "store-growth-per-save")
 STAGE2 = ("admit-and-dispatch-ran", "stage2-canary-valid", "stage2-review-document", "operator-presence-approved",
           "admitted-ready-dependency-order",
-          "unadmitted-revision-refused", "pool-and-manager-reserve-held", "worker-kill-recovery",
+          "unadmitted-revision-refused", "metadata-only-write-runnable",
+          "pool-and-manager-reserve-held", "owner-descriptors-bounded", "worker-kill-recovery",
           "stage2-store-snapshots", "stage2-census")
 STAGE2_REVIEW_TEXT = "# Plan review\n\nThe PERCH stage-2 canary plan is approved for operator admission and dispatch on staging.\n"
 # The events of a lab run: a save starts none of them.
@@ -425,22 +426,20 @@ def stage2_observations(raw):
     """Project real owner reads and Store snapshots into the stage-2 gate."""
     raw = Path(raw)
     activation = read_json(raw / "stage2-activation.json", {}) or {}
-    refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
-    tasks = ("A", "B", "C")
+    current_activation = read_json(raw / "stage2-current-activation.json", activation) or activation
+    config = read_json(raw / "config.json", {}) or {}
+    tasks = config.get("stage2_tasks") or []
     records = []
     owner_reads = []
     for alias in tasks:
         status = read_json(raw / ("stage2-dispatch-" + alias + ".json"), {}) or {}
-        admission = read_json(raw / ("stage2-admit-" + alias + ".json"), {}) or {}
-        project = read_json(raw / ("stage2-dispatch-" + alias + "-project.json"), {}) or {}
-        by_alias = {task.get("id"): task for task in project.get("tasks") or []}
-        prerequisites = {"A": (), "B": ("A",), "C": ("B",)}[alias]
+        admission = read_json(raw / ("stage2-metadata-only-C.json" if alias == "C" and
+                                  (raw / "stage2-metadata-only-C.json").exists() else
+                                  "stage2-admit-" + alias + ".json"), {}) or {}
         try:
-            task = stage2_dispatch_check(status, activation, admission, alias)
-            records.append({"alias": alias, "admitted": True,
-                            "ready": all(by_alias.get(prereq, {}).get("lifecycle") == "completed"
-                                         for prereq in prerequisites),
-                            "dispatch_state": task["dispatch"]["state"]})
+            task = stage2_dispatch_check(status, current_activation if alias == "C" else activation,
+                                         admission, alias)
+            records.append({"alias": alias, "dispatch_state": task["dispatch"]["state"]})
         except (ValueError, KeyError):
             continue
         owner_reads.append(read_json(raw / ("stage2-owner-" + alias + ".json"), {}) or {})
@@ -454,47 +453,18 @@ def stage2_observations(raw):
                 "pool_peak": max(row["active_or_uncertain"] for row in capacity),
                 "manager_reserve_remaining": min(row["limit"] - row["active"] for row in manager),
                 "source": "staging service status after each retained worker dispatch"}
-    timeline = read_json(raw / "timeline.json", {}) or {}
-    request = read_json(raw / "stage2-unadmitted-request.json", {}) or {}
-    response = read_json(raw / "stage2-unadmitted-response.json", {}) or {}
-    negative_exit = (read_json(raw / "notes.json", {}) or {}).get("stage2-unadmitted-exit")
-    requested_task = request.get("task_ref") or {}
-    expected_task = refs.get("C") or {}
-    error = response.get("error") or {}
-    stored_c = next((row for row in timeline.get("work_tasks") or [] if row.get("alias") == "C"), {})
-    if (negative_exit not in (None, 0) and request.get("revision") == "rev-unadmitted"
-            and all(requested_task.get(key) == expected_task.get(key) for key in ("authority", "kind", "id"))
-            and requested_task.get("revision") is None
-            and response.get("outcome") == "rejected"
-            and error.get("code") == "sheet_changed"
-            and "rev-unadmitted" in str(error.get("message", ""))
-            and stored_c.get("admitted_revision") != "rev-unadmitted"):
-        observed["unadmitted_refusal"] = {"outcome": "refused", "reason": "unadmitted_revision",
-                                            "task": "C", "revision": request["revision"],
-                                            "owner_error": response.get("error")}
     before = read_json(raw / "stage2-store-before.json", {}) or {}
     after = read_json(raw / "stage2-store-after.json", {}) or {}
-    # Link each public task dispatch to its assignment's actual Store stream.
-    # Project status owns the task-level state; the Store proves the matching
-    # dispatch event instead of relying on a private service-state projection.
-    dispatch_in_store = 0
-    for row in records:
-        task_id = (refs.get(row["alias"]) or {}).get("id")
-        matching = [assignment for assignment in timeline.get("tasks") or []
-                    if isinstance(task_id, str) and isinstance(assignment.get("task_id"), str)
-                    and assignment.get("scope_task_id") == task_id and any(
-                        event.get("stream") == "dispatch:" + assignment["task_id"]
-                        and event.get("event_type") == "work.assignment.dispatched"
-                        for event in assignment.get("events") or [])]
-        if len(matching) == 1:
-            row["assignment_id"] = matching[0]["task_id"]
-            dispatch_in_store += 1
-    admitted = sorted(row["alias"] for row in timeline.get("work_tasks") or []
-                      if row.get("admitted_revision"))
+    store_events, matched, event_errors = stage2_event_evidence(raw, config)
+    dispatch_in_store = sum((alias, "dispatch") in matched for alias in tasks)
+    admitted = sorted(alias for task_id, alias in (store_events.get("tasks") or {}).items()
+                      if alias in tasks and (store_events.get("revisions") or {}).get(task_id)
+                      and (store_events["revisions"][task_id][-1] or {}).get("admitted_revision"))
     observed["store_snapshots"] = [
         {"integrity": before.get("integrity"), "rows": before.get("rows")},
         {"integrity": after.get("integrity"), "rows": after.get("rows"),
-         "dispatch_events": dispatch_in_store, "admitted_tasks": admitted}]
+         "dispatch_events": dispatch_in_store, "admitted_tasks": admitted,
+         "event_errors": event_errors}]
     if (raw / "stage2-killed-worker.json").exists():
         state = stage2_kill_state(raw)
         observed["worker_kill"] = {key: state[key] for key in
@@ -509,6 +479,139 @@ def stage2_observations(raw):
 def cmd_stage2_observations(args):
     Path(args.raw, "stage2-observations.json").write_text(
         json.dumps(stage2_observations(args.raw), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def stage2_owner_labs_snapshot(root):
+    """List task labs and the contents of the owner's control directories."""
+    root = Path(root)
+    result = {"root": str(root), "exists": root.exists(), "entries": [], "labs": [],
+              "controls": {}, "unexpected": []}
+    if not root.exists():
+        return result
+    if not root.is_dir():
+        result["unexpected"].append("root is not a directory")
+        return result
+    for namespace in sorted(root.iterdir()):
+        result["entries"].append(namespace.name)
+        if namespace.is_symlink() or not namespace.is_dir():
+            result["unexpected"].append(namespace.name)
+            continue
+        for child in sorted(namespace.iterdir()):
+            relative = str(child.relative_to(root))
+            if child.is_symlink() or not child.is_dir():
+                result["unexpected"].append(relative)
+            elif child.name in {".creating", ".landed", ".locks"}:
+                result["controls"][relative] = [
+                    {"name": entry.name, "kind": ("symlink" if entry.is_symlink() else
+                     "directory" if entry.is_dir() else "file" if entry.is_file() else "other")}
+                    for entry in sorted(child.iterdir())]
+            else:
+                result["labs"].append(relative)
+    return result
+
+
+def stage2_owner_lab_evidence(raw):
+    """Judge owner lab snapshots and describe the same evidence for the report."""
+    mapped = (read_json(raw / "stage2-repository-map.json", {}) or {}).get("repositories", {}).get("toy")
+    expected_root = str(mapped) + ".otto-labs" if isinstance(mapped, str) and mapped else None
+    activation = read_json(raw / "stage2-activation.json", {}) or {}
+    task_refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
+    c_task_id = (task_refs.get("C") or {}).get("id")
+    killed_marker = (read_json(raw / "stage2-killed-worker.json", {}) or {}).get("marker")
+    final_status = read_json(raw / "stage2-dispatch-status.json", {}) or {}
+    c_status = next((task for task in final_status.get("tasks") or []
+                     if isinstance(task, dict) and task.get("id") == "C"), {})
+    retained_c = None
+    if (expected_root and c_task_id and isinstance(killed_marker, str)
+            and Path(killed_marker).name == ".perch-worker-C.pid"
+            and (c_status.get("dispatch") or {}).get("state") == "unknown"
+            and c_status.get("lifecycle") == "pending"):
+        try:
+            relative = Path(killed_marker).parent.relative_to(expected_root)
+            if (len(relative.parts) == 2 and relative.name == c_task_id
+                    and all(part not in {".", ".."} for part in relative.parts)):
+                retained_c = str(relative)
+        except ValueError:
+            pass
+
+    failures, summary, retained = [], [], []
+    for label, when in (("before", "before the first harness step"), ("after", "after down")):
+        snapshot_name = "stage2-owner-labs-" + label + ".json"
+        owner_labs = read_json(raw / snapshot_name, {}) or {}
+        if (owner_labs.get("root") != expected_root or not isinstance(owner_labs.get("exists"), bool)
+                or not isinstance(owner_labs.get("entries"), list)
+                or not isinstance(owner_labs.get("labs"), list)
+                or not isinstance(owner_labs.get("unexpected"), list)):
+            failures.append("owner %s lab-root listing missing, incomplete or names another root" % label)
+            summary.append("- owner lab root %s: snapshot missing or incomplete ([raw snapshot](raw/%s))"
+                           % (when, snapshot_name))
+            continue
+        summary.append("- owner lab root %s: `%s` (%s; [raw snapshot](raw/%s))" % (
+            when, expected_root, "present" if owner_labs["exists"] else "absent", snapshot_name))
+        if not owner_labs["exists"] and (owner_labs["entries"] or owner_labs["labs"]
+                                         or owner_labs["unexpected"] or owner_labs.get("controls")):
+            failures.append("owner %s absent lab root has listed entries" % label)
+        failures.extend("owner %s unexpected lab-root entry %s" % (label, name)
+                        for name in owner_labs["unexpected"])
+        task_labs = []
+        for name in owner_labs["labs"]:
+            if (not isinstance(name, str) or len(Path(name).parts) != 2
+                    or any(part in {".", ".."} for part in Path(name).parts)):
+                failures.append("owner %s invalid lab entry %r" % (label, name))
+            elif Path(name).name in {".creating", ".landed", ".locks"}:
+                failures.append("owner %s control directory %s was listed as a lab; its contents were not recorded"
+                                % (label, name))
+                summary.append("- owner control directory %s `%s`: contents not recorded" % (when, name))
+            elif label == "after" and name == retained_c:
+                retained.append("C %s" % name)
+                task_labs.append("`%s` (expected retained C lab: worker killed; task pending, dispatch unknown)" % name)
+            else:
+                failures.append("owner %s lab %s" % (label, name))
+                task_labs.append("`%s` (unexpected)" % name)
+        summary.append("- owner task labs %s: %s" % (when, ", ".join(task_labs) or "none"))
+        controls = owner_labs.get("controls")
+        if not isinstance(controls, dict):
+            if owner_labs["exists"]:
+                failures.append("owner %s control directory contents not recorded" % label)
+                summary.append("- owner control directory contents %s: not recorded" % when)
+            else:
+                summary.append("- owner control directories %s: none (root absent)" % when)
+            controls = {}
+        elif not controls:
+            summary.append("- owner control directories %s: none" % when)
+        for path, contents in sorted(controls.items()):
+            parts = Path(path).parts if isinstance(path, str) else ()
+            if (len(parts) != 2 or parts[0] not in owner_labs["entries"]
+                    or parts[1] not in {".creating", ".landed", ".locks"}
+                    or not isinstance(contents, list)):
+                failures.append("owner %s invalid control directory %r" % (label, path))
+                summary.append("- owner control directory %s: invalid entry %r" % (when, path))
+                continue
+            described = []
+            for entry in contents:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                kind = entry.get("kind") if isinstance(entry, dict) else None
+                if (not isinstance(name, str) or not name or Path(name).name != name
+                        or name in {".", ".."} or kind not in {"file", "directory", "symlink", "other"}):
+                    failures.append("owner %s invalid control entry in %s: %r" % (label, path, entry))
+                    described.append("invalid entry %r" % entry)
+                    continue
+                described.append("`%s` (%s)" % (name, kind))
+                if parts[1] in {".creating", ".landed"}:
+                    failures.append("owner %s stale %s marker %s/%s" % (label, parts[1], path, name))
+                elif kind != "file" or not name.endswith(".lock") or name == ".lock":
+                    failures.append("owner %s unexpected lock control entry %s/%s (%s)" % (
+                        label, path, name, kind))
+            summary.append("- owner control directory %s `%s`: %s" % (
+                when, path, ", ".join(described) or "empty"))
+    detail = ("no unexpected owner labs or stale control markers; retained recovery lab " + ", ".join(retained)
+              if retained else "no owner task labs or stale control markers left")
+    return failures, detail, summary
+
+
+def cmd_stage2_owner_labs(args):
+    Path(args.out).write_text(json.dumps(stage2_owner_labs_snapshot(args.root), sort_keys=True) + "\n",
+                              encoding="utf-8")
 
 
 def cmd_field(args):
@@ -595,13 +698,15 @@ def cmd_sample(args):
     stage_root = Path(args.stage_root)
     disk = shutil.disk_usage(stage_root) if stage_root.exists() else None
     swap = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True).stdout.strip()
-    units = [line for line in ps_lines() if "fake_worker.py" in line and "--lab" in line and args.canary in line]
+    stage = (read_json(Path(args.raw) / "config.json", {}) or {}).get("stage")
+    units = ([line for line in ps_lines() if "fake_worker.py" in line and "--lab" in line and args.canary in line]
+             if stage != "2" else None)
     status = read_status(args.status)
     line = {
         "at": now_iso(),
         "disk_free_kb": disk.free // 1024 if disk else None,
         "swap": swap,
-        "pool_units": len(units),
+        "pool_units": len(units) if units is not None else None,
         "store_bytes": store_bytes(str(stage_root / "store" / "staging.store")),
         "staging_state": status.get("outcome", "unavailable"),
         "staging_generation": status.get("generation"),
@@ -849,22 +954,34 @@ def seed(raw, kind):
             raise ValueError("no operator admission log to seed")
         lines[0]["prover_result"] = "declined"
         path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-    elif kind in {"admit_order", "unadmitted", "reserve", "worker_kill", "store_snapshot", "stage2_census"}:
+    elif kind in {"admit_order", "unadmitted", "reserve"}:
+        name = {"admit_order": "stage2-store-events.json",
+                "unadmitted": "stage2-edited-C-no-launch.json",
+                "reserve": "stage2-contention-owner.json"}[kind]
+        value = seeded_read(raw / name)
+        if kind == "admit_order":
+            event = next((row for row in value.get("events") or [] if row.get("alias") == "C"
+                          and row.get("event_type") == "work.assignment.dispatched"), None)
+            if event is None:
+                raise ValueError("no C Store dispatch to seed")
+            event["recorded_at"] = "0001-01-01T00:00:00Z"
+        elif kind == "unadmitted":
+            event = next((row for row in value.get("tasks") or [] if row.get("id") == "C"), None)
+            if event is None:
+                raise ValueError("no edited C product status to seed")
+            event["dispatch"]["state"] = "launched"
+        else:
+            value["manager_turn_active"] = False
+        (raw / name).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    elif kind in {"worker_kill", "store_snapshot", "stage2_census"}:
         stage2 = read_json(raw / "stage2-observations.json", {}) or {}
-        key = {"admit_order": "dispatch", "unadmitted": "unadmitted_refusal", "reserve": "capacity",
-               "worker_kill": "worker_kill", "store_snapshot": "store_snapshots", "stage2_census": "census"}[kind]
+        key = {"worker_kill": "worker_kill", "store_snapshot": "store_snapshots", "stage2_census": "census"}[kind]
         if key not in stage2:
             raise ValueError("no %s observation in this run to seed a fault into" % key)
         value = stage2[key]
         if kind == "store_snapshot" and value:
             value = value[-1]
-        if kind == "admit_order":
-            value["dispatched"] = ["B", "A", "C"]
-        elif kind == "unadmitted":
-            value["outcome"] = "admitted"
-        elif kind == "reserve":
-            value["manager_reserve_remaining"] = 0
-        elif kind == "worker_kill":
+        if kind == "worker_kill":
             value["slot_released"] = False
         elif kind == "store_snapshot":
             value["integrity"] = "corrupt"
@@ -944,14 +1061,16 @@ def cmd_init(args):
                                              "landing_conflict": project["tasks"][name].get("landing_conflict", False)}
                                             for name in stage["tasks"]]
     config = {
-        "stage": args.stage, "fake": args.fake, "tasks": tasks, "check": project["check"], "stage_root": args.stage_root,
+        "stage": args.stage, "fake": args.fake, "tasks": tasks,
+        "check": "/usr/bin/true" if args.stage == "2" else project["check"], "stage_root": args.stage_root,
         "host": stage.get("host"),
         "pool_limit": stage.get("pool_limit", project["pool_limit"]), "manager_reserve": stage.get("manager_reserve"),
         "scenarios": stage.get("scenarios", []),
         "stage2_tasks": stage.get("tasks") if args.stage == "2" else None,
         "stage2_admitted": (stage.get("admission") or {}).get("admitted") if args.stage == "2" else None,
         "stage2_dependencies": stage.get("dependencies") if args.stage == "2" else None,
-        "stage2_unadmitted_revision": (stage.get("admission") or {}).get("unadmitted_revision") if args.stage == "2" else None,
+        "stage2_expected_completed": stage.get("expected_completed") if args.stage == "2" else None,
+        "stage2_kill_task": stage.get("kill_task") if args.stage == "2" else None,
         "store": stage.get("store"), "faults": [f for f in args.faults.split(",") if f],
         "staging_restart": args.staging_restart, "staging_sha": args.staging_sha,
         "canon_main_sha": args.canon_main_sha, "started_at": args.started_at, "finished_at": now_iso(),
@@ -1330,6 +1449,101 @@ def stage1_failures(raw, config):
     return found
 
 
+def stage2_event_evidence(raw, config):
+    """Match direct Store events to the stage's admitted task identities."""
+    data = read_json(raw / "stage2-store-events.json", {}) or {}
+    tasks = config.get("stage2_tasks") or []
+    refs = (((read_json(raw / "stage2-activation.json", {}) or {}).get("activation") or {})
+            .get("steps") or {}).get("tasks") or {}
+    refs = refs.get("task_refs") or {}
+    failures = []
+    selected = {}
+    if data.get("error") or not isinstance(data.get("events"), list):
+        failures.append("direct Store event read failed: " + str(data.get("error") or "missing events"))
+    for alias in tasks:
+        task_id = (refs.get(alias) or {}).get("id")
+        if not task_id or (data.get("tasks") or {}).get(task_id) != alias:
+            failures.append(alias + " has no exact work.task identity in the Store receipt")
+            continue
+        rows = [row for row in data.get("events") or [] if isinstance(row, dict)
+                and row.get("task_id") == task_id and row.get("alias") == alias]
+        dispatches = [row for row in rows if row.get("event_type") == "work.assignment.dispatched"
+                      and row.get("assignment_id") and
+                      row.get("stream") == "dispatch:" + row["assignment_id"] and
+                      (data.get("assignments") or {}).get(row["assignment_id"]) == task_id]
+        if len(dispatches) != 1:
+            failures.append(alias + " missing one work.assignment.dispatched event")
+        else:
+            selected[(alias, "dispatch")] = dispatches[0]
+        landed = [row for row in rows if row.get("event_type") == "work.result.appended"
+                  and row.get("assignment_id") and
+                  row.get("stream") == "result:" + row["assignment_id"] and
+                  (row.get("value") or {}).get("lab_commit") and
+                  ((row.get("value") or {}).get("task_ref") or {}).get("id") == task_id and
+                  (row.get("value") or {}).get("assignment_id") == row["assignment_id"]]
+        if len(landed) == 1:
+            selected[(alias, "landing")] = landed[0]
+        elif len(landed) > 1:
+            failures.append(alias + " has more than one landing observation in its assignment stream")
+        completed = [row for row in rows if row.get("event_type") == "work.revised"
+                     and row.get("stream") == "work:" + task_id and
+                     (row.get("subject") or {}).get("id") == task_id and
+                     (row.get("effects") or {}).get("completion")]
+        if len(completed) == 1:
+            selected[(alias, "completion")] = completed[0]
+        elif len(completed) > 1:
+            failures.append(alias + " has more than one manager completion event in the Store")
+    return data, selected, failures
+
+
+def stage2_event_time(row):
+    try:
+        return datetime.datetime.fromisoformat(row["recorded_at"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def stage2_timeline_failures(raw, config):
+    _data, events, failures = stage2_event_evidence(raw, config)
+    final_status = read_json(raw / "stage2-dispatch-status.json", None)
+    status_tasks = final_status.get("tasks") if isinstance(final_status, dict) else None
+    if not isinstance(status_tasks, list):
+        completed = [alias for alias in config.get("stage2_expected_completed") or []
+                     if events.get((alias, "completion")) is not None]
+        failures.append("final product status snapshot missing; Store completion events retained for: "
+                        + (", ".join(completed) or "none"))
+        by_alias = None
+    else:
+        by_alias = {row.get("id"): row for row in status_tasks if isinstance(row, dict)}
+    for alias in config.get("stage2_expected_completed") or []:
+        dispatch, landing, completion = (events.get((alias, kind)) for kind in
+                                         ("dispatch", "landing", "completion"))
+        if landing is None:
+            failures.append(alias + " missing landing observation in its assignment stream")
+        if completion is None:
+            failures.append(alias + " missing manager completion event in the Store")
+        if dispatch and landing and completion:
+            times = [stage2_event_time(row) for row in (dispatch, landing, completion)]
+            if None in times or not times[0] < times[1] < times[2]:
+                failures.append(alias + " dispatch, landing observation and completion are not in event order")
+            if landing.get("assignment_id") != dispatch.get("assignment_id"):
+                failures.append(alias + " landing observation belongs to another assignment")
+        if by_alias is not None:
+            status = by_alias.get(alias) or {}
+            if status.get("lifecycle") != "completed" or (status.get("dispatch") or {}).get("state") != "landed":
+                failures.append(alias + " has no landed and completed product status")
+    return failures
+
+
+def stage2_lsof_count(raw, label, expected_pid):
+    lines = read_lines(raw / ("stage2-fds-" + label + ".txt"))
+    if not lines or not lines[0].startswith("COMMAND "):
+        return None
+    if any(len(line.split()) < 2 or line.split()[1] != str(expected_pid) for line in lines[1:]):
+        return None
+    return len(lines) - 1
+
+
 def stage2_failures(raw, config):
     """The admit-and-dispatch scenario is accepted only from recorded staging observations."""
     observations = read_json(raw / "stage2-observations.json", {}) or {}
@@ -1341,12 +1555,10 @@ def stage2_failures(raw, config):
     dependencies = config.get("stage2_dependencies", {})
     if len(tasks) != 3 or config.get("stage2_admitted") != tasks:
         found["stage2-canary-valid"].append("canary must admit exactly three tasks")
-    if dependencies.get("B") != ["A"]:
-        found["stage2-canary-valid"].append("canary B must depend on A")
-    revision = config.get("stage2_unadmitted_revision")
-    if (not isinstance(revision, dict) or revision.get("admitted") is not False
-            or revision.get("task") not in tasks or not revision.get("revision")):
-        found["stage2-canary-valid"].append("canary has no explicit unadmitted task revision")
+    if dependencies.get("A") != [] or dependencies.get("B") != [] or dependencies.get("C") != ["B"]:
+        found["stage2-canary-valid"].append("A and B must be independently ready and C depend on B")
+    if config.get("stage2_expected_completed") != ["A", "B"] or config.get("stage2_kill_task") != "C":
+        found["stage2-canary-valid"].append("stage outcome declarations do not name the completed and killed tasks")
 
     save = read_json(raw / "stage2-plan-save.json", {}) or {}
     plan = read_json(raw / "stage2-plan-save.input.json", {}) or {}
@@ -1357,6 +1569,7 @@ def stage2_failures(raw, config):
     for task in plan.get("tasks") or []:
         alias = task.get("id")
         if (alias not in tasks or (task.get("fields") or {}).get("check") != {"argv": ["/usr/bin/true"]}
+                or task.get("dependencies") != dependencies.get(alias)
                 or (task.get("metadata_namespace") or {}).get("otto.plan") !=
                    {"repo": "toy", "branch": "canon/main", "route": "normal"}):
             found["stage2-canary-valid"].append("canary task lacks its typed check or dispatch plan: " + str(alias))
@@ -1378,6 +1591,8 @@ def stage2_failures(raw, config):
         shown = [row for row in status_tasks if isinstance(row, dict) and row.get("id") == alias]
         scope = declared[0] if len(declared) == 1 else {}
         required = shown[0].get("required_assessment_scopes") if len(shown) == 1 else None
+        if len(shown) == 1 and shown[0].get("depends_on") != len(dependencies.get(alias, [])):
+            found["stage2-canary-valid"].append(alias + " has a different product dependency count")
         shown_scope = required[0] if isinstance(required, list) and len(required) == 1 \
             and isinstance(required[0], dict) else {}
         criterion_refs = scope.get("criterion_refs")
@@ -1418,40 +1633,159 @@ def stage2_failures(raw, config):
     for task in tasks:
         task_ref = task_refs.get(task) or {}
         matches = [line for line in admission_lines if isinstance(line, dict) and line.get("task") == task_ref.get("id")]
-        if len(matches) != 1 or matches[0].get("prover_result") != "approved":
-            found["operator-presence-approved"].append("%s admission log lacks one approved prover_result" % task)
-        if expected_review is not None and (len(matches) != 1 or matches[0].get("review") != expected_review["id"]):
+        expected_count = 2 if task == "C" else 1
+        if len(matches) != expected_count or any(line.get("prover_result") != "approved" for line in matches):
+            found["operator-presence-approved"].append("%s admission log lacks %d approved prover_result records" % (task, expected_count))
+        if expected_review is not None and (len(matches) != expected_count or
+                                            any(line.get("review") != expected_review["id"] for line in matches)):
             found["stage2-review-document"].append("%s admission log does not name the stored plan review" % task)
 
-    dispatch = observations.get("dispatch") or {}
-    records = dispatch.get("records") or []
-    if dispatch.get("dispatched") != tasks:
-        found["admitted-ready-dependency-order"].append("dispatched %s, expected ready tasks in order %s" % (dispatch.get("dispatched"), tasks))
-    if [row.get("alias") for row in records] != tasks or any(
-            row.get("admitted") is not True or row.get("ready") is not True for row in records):
-        found["admitted-ready-dependency-order"].append("dispatch records include a task that was unadmitted or dependency-blocked")
-    order = {name: i for i, name in enumerate(dispatch.get("dispatched") or [])}
+    store_events, task_events, event_errors = stage2_event_evidence(raw, config)
+    stored_rows = [row for row in store_events.get("events") or [] if isinstance(row, dict)]
+    found["admitted-ready-dependency-order"].extend(event_errors)
     for name, prereqs in dependencies.items():
         for prereq in prereqs:
-            if name in order and prereq in order and order[prereq] >= order[name]:
-                found["admitted-ready-dependency-order"].append("%s dispatched before dependency %s" % (name, prereq))
+            dispatch = task_events.get((name, "dispatch"))
+            completion = task_events.get((prereq, "completion"))
+            if dispatch is None or completion is None:
+                found["admitted-ready-dependency-order"].append(
+                    "%s/%s lacks a Store dispatch or prerequisite completion event" % (name, prereq))
+            elif (stage2_event_time(dispatch) is None or stage2_event_time(completion) is None or
+                  stage2_event_time(dispatch) <= stage2_event_time(completion)):
+                found["admitted-ready-dependency-order"].append(
+                    "%s dispatched before prerequisite %s completed in the Store" % (name, prereq))
 
-    refusal = observations.get("unadmitted_refusal") or {}
-    if refusal.get("outcome") != "refused" or refusal.get("reason") != "unadmitted_revision":
-        found["unadmitted-revision-refused"].append("unadmitted revision outcome/reason was %s/%s" %
-                                                     (refusal.get("outcome"), refusal.get("reason")))
-    expected_revision = config.get("stage2_unadmitted_revision") or {}
-    if refusal.get("task") != expected_revision.get("task") or refusal.get("revision") != expected_revision.get("revision"):
-        found["unadmitted-revision-refused"].append("refusal names %s@%s, expected %s@%s" %
-            (refusal.get("task"), refusal.get("revision"), expected_revision.get("task"), expected_revision.get("revision")))
+    edited = read_json(raw / "stage2-instruction-edit-C.json", {}) or {}
+    edit_input = read_json(raw / "stage2-instruction-edit-C.input.json", {}) or {}
+    no_launch = read_json(raw / "stage2-edited-C-no-launch.json", {}) or {}
+    no_launch_owner = read_json(raw / "stage2-edited-C-owner.json", {}) or {}
+    edited_ref = (edited.get("task_refs") or {}).get("C") or {}
+    edited_project_id = (edited.get("project_ref") or {}).get("id")
+    original_ref = task_refs.get("C") or {}
+    edited_task = next((row for row in edit_input.get("tasks") or [] if row.get("id") == "C"), {})
+    c_before = next((row for row in no_launch.get("tasks") or [] if row.get("id") == "C"), {})
+    prereq_before = next((row for row in no_launch.get("tasks") or [] if row.get("id") == "B"), {})
+    c_events = [row for row in stored_rows
+                if row.get("task_id") == original_ref.get("id") and row.get("event_type") == "work.revised"
+                and row.get("stream") == "work:" + str(original_ref.get("id"))]
+    initial_admission = [row for row in c_events if ((((row.get("effects") or {}).get("result_payload") or {})
+                         .get("metadata_namespaces") or {}).get("work.admission") or {}).get("revision") ==
+                         original_ref.get("revision")]
+    readmission = [row for row in c_events if ((((row.get("effects") or {}).get("result_payload") or {})
+                   .get("metadata_namespaces") or {}).get("work.admission") or {}).get("revision") ==
+                   edited_ref.get("revision")]
+    edited_history = next((row for row in (store_events.get("revisions") or {}).get(edited_ref.get("id"), [])
+                           if isinstance(row, dict) and row.get("revision") == edited_ref.get("revision")), {})
+    instruction_edit = [row for row in stored_rows
+                        if row.get("event_type") == "work.project-sheet.applied"
+                        and edited_project_id and row.get("stream") == "work:" + edited_project_id
+                        and (row.get("subject") or {}).get("id") == edited_project_id
+                        and (row.get("subject") or {}).get("kind") == "work.project"
+                        and any(ref.get("kind") == "work.task" and ref.get("id") == edited_ref.get("id")
+                                and ref.get("revision") == edited_ref.get("revision")
+                                for ref in (row.get("effects") or {}).get("child_refs") or []
+                                if isinstance(ref, dict))
+                        and any((facet.get("subject") or {}).get("id") == edited_ref.get("id")
+                                and (facet.get("subject") or {}).get("revision") == edited_ref.get("revision")
+                                and "instructions" in (facet.get("changed_fields") or [])
+                                for facet in (((row.get("effects") or {}).get("history_summary") or {})
+                                              .get("facets") or []) if isinstance(facet, dict))]
+    idle_at = stage2_event_time({"recorded_at": no_launch_owner.get("projection_at")})
+    b_completion = task_events.get(("B", "completion"))
+    c_dispatch = task_events.get(("C", "dispatch"))
+    if (edited.get("outcome") != "saved" or edited_ref.get("id") != original_ref.get("id")
+            or edited_ref.get("revision") in (None, original_ref.get("revision"))
+            or edited_task.get("instructions") != "Canary dispatch C (post-admission edit)"
+            or prereq_before.get("lifecycle") != "completed"
+            or (c_before.get("dispatch") or {}).get("state") != "admitted"
+            or c_before.get("lifecycle") == "completed"
+            or (no_launch_owner.get("native_capacity") or {}).get("active_or_uncertain") != 0
+            or (no_launch_owner.get("manager_turns") or {}).get("active") != 0
+            or len(initial_admission) != 1 or len(instruction_edit) != 1 or len(readmission) != 1
+            or not edited_history or edited_history.get("admitted_revision") is not None or idle_at is None
+            or b_completion is None or not stage2_event_time(b_completion)
+            or not stage2_event_time(initial_admission[0]) or not stage2_event_time(instruction_edit[0])
+            or not stage2_event_time(initial_admission[0]) < stage2_event_time(instruction_edit[0]) < idle_at
+            or not stage2_event_time(b_completion) < idle_at
+            or c_dispatch is None or not stage2_event_time(c_dispatch)
+            or not stage2_event_time(readmission[0])
+            or not idle_at < stage2_event_time(readmission[0]) < stage2_event_time(c_dispatch)):
+        found["unadmitted-revision-refused"].append("C's edited instructions did not remain unlaunched after B completed")
+    write = read_json(raw / "stage2-metadata-only-C.json", {}) or {}
+    write_ref = write.get("task_ref") or {}
+    revisions = (store_events.get("revisions") or {}).get(edited_ref.get("id"), [])
+    by_revision = {row.get("revision"): row for row in revisions if isinstance(row, dict)}
+    before_write, after_write = by_revision.get(edited_ref.get("revision"), {}), by_revision.get(write_ref.get("revision"), {})
+    metadata_events = [row for row in stored_rows if row.get("task_id") == edited_ref.get("id")
+                       and row.get("event_type") == "work.revised"
+                       and ((((row.get("effects") or {}).get("result_payload") or {})
+                            .get("metadata_namespaces") or {}).get("work.admission") or {})
+                           .get("revision") == edited_ref.get("revision")]
+    dispatch_c = task_events.get(("C", "dispatch"))
+    negative_at = idle_at
+    c_after = next((row for row in (read_json(raw / "stage2-dispatch-C-project.json", {}) or {}).get("tasks") or []
+                    if row.get("id") == "C"), {})
+    if (write.get("outcome") not in {"admitted", "already-admitted"}
+            or write.get("admitted_revision") != edited_ref.get("revision")
+            or write_ref.get("id") != edited_ref.get("id")
+            or write_ref.get("revision") in (None, edited_ref.get("revision"))
+            or not before_write or not after_write
+            or before_write.get("reviewed_digest") != after_write.get("reviewed_digest")
+            or before_write.get("instructions") != after_write.get("instructions")
+            or after_write.get("admitted_revision") != edited_ref.get("revision")
+            or (c_after.get("dispatch") or {}).get("state") != "launched"
+            or len(metadata_events) != 1 or dispatch_c is None or negative_at is None
+            or not stage2_event_time(metadata_events[0]) or not stage2_event_time(dispatch_c)
+            or not negative_at < stage2_event_time(metadata_events[0]) < stage2_event_time(dispatch_c)):
+        found["metadata-only-write-runnable"].append("C's metadata-only admission write did not preserve content and launch")
 
-    capacity = observations.get("capacity") or {}
-    if capacity.get("pool_peak", 0) > config.get("pool_limit", 0):
-        found["pool-and-manager-reserve-held"].append("pool peak %s exceeds limit %s" %
-                                                     (capacity.get("pool_peak"), config.get("pool_limit")))
-    if capacity.get("manager_reserve_remaining", -1) < config.get("manager_reserve", 0):
-        found["pool-and-manager-reserve-held"].append("manager reserve remaining %s, expected at least %s" %
-                                                     (capacity.get("manager_reserve_remaining"), config.get("manager_reserve")))
+    installed = read_json(raw / "stage2-installation.json", {}) or {}
+    owner = read_json(raw / "stage2-contention-owner.json", {}) or {}
+    project = read_json(raw / "stage2-contention-project.json", {}) or {}
+    pool = owner.get("native_capacity") or {}
+    managers = owner.get("manager_turns") or {}
+    ready = {row.get("id"): (row.get("dispatch") or {}).get("state") for row in project.get("tasks") or []}
+    if ((installed.get("capacity") or {}).get("turn_units") != config.get("pool_limit") or
+            (installed.get("capacity") or {}).get("manager_reserve") != config.get("manager_reserve") or
+            pool.get("worker_limit") != config.get("pool_limit") or
+            pool.get("active_or_uncertain") != 2 or managers.get("active") != 1 or
+            owner.get("manager_turn_active") is not True or
+            sorted(ready.get(alias) for alias in ("A", "B") if ready.get(alias)) != ["admitted", "launched"] or
+            (read_json(raw / "stage2-manager-start.json", {}) or {}).get("outcome") in {None, "error", "refused"}):
+        found["pool-and-manager-reserve-held"].append("configured worker limit, waiting second task or active manager reserve is absent")
+    first_two = [(task_events.get((alias, "dispatch")), alias) for alias in ("A", "B")
+                       if task_events.get((alias, "dispatch")) is not None]
+    contention_at = stage2_event_time({"recorded_at": owner.get("projection_at")})
+    if len(first_two) != 2:
+        found["pool-and-manager-reserve-held"].append("two independent workers have no Store dispatch events")
+    else:
+        ordered = sorted(first_two, key=lambda pair: stage2_event_time(pair[0]) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc))
+        first_done = task_events.get((ordered[0][1], "completion"))
+        if first_done is None or not stage2_event_time(first_done) or not stage2_event_time(ordered[1][0]) or \
+                stage2_event_time(ordered[1][0]) <= stage2_event_time(first_done):
+            found["pool-and-manager-reserve-held"].append("second ready worker dispatched before first worker completed")
+        admission_times = []
+        for alias in ("A", "B"):
+            task_id = (task_refs.get(alias) or {}).get("id")
+            pin = (task_refs.get(alias) or {}).get("revision")
+            stamps = [row for row in stored_rows
+                      if row.get("task_id") == task_id and row.get("event_type") == "work.revised"
+                      and ((((row.get("effects") or {}).get("result_payload") or {})
+                           .get("metadata_namespaces") or {}).get("work.admission") or {}).get("revision") == pin]
+            if len(stamps) != 1 or stage2_event_time(stamps[0]) is None:
+                found["pool-and-manager-reserve-held"].append(alias + " has no exact admission Store event")
+            else:
+                admission_times.append(stage2_event_time(stamps[0]))
+        if (len(admission_times) == 2 and (contention_at is None or first_done is None
+                or stage2_event_time(first_done) is None
+                or not max(admission_times) < contention_at < stage2_event_time(first_done))):
+            found["pool-and-manager-reserve-held"].append("both ready tasks were not admitted before the manager contention read")
+
+    owner_pid = read_lines(raw / "stage2-owner-pid.txt")
+    pid = int(owner_pid[0]) if len(owner_pid) == 1 and owner_pid[0].isdigit() else None
+    before_fd, after_fd = (stage2_lsof_count(raw, label, pid) for label in ("before", "after"))
+    if pid is None or before_fd is None or after_fd is None or after_fd > before_fd + 3:
+        found["owner-descriptors-bounded"].append("owner lsof descriptor count is missing or grew beyond +3")
 
     killed = observations.get("worker_kill") or {}
     if killed.get("slot_released") is not True or killed.get("killed_worker_absent") is not True:
@@ -1464,7 +1798,7 @@ def stage2_failures(raw, config):
         found["stage2-store-snapshots"].append("expected at least two readable, integrity-ok Store snapshots")
     else:
         final = snapshots[-1]
-        if final.get("dispatch_events", 0) < 3 or final.get("admitted_tasks") != tasks:
+        if final.get("event_errors") or final.get("dispatch_events", 0) < 3 or final.get("admitted_tasks") != tasks:
             found["stage2-store-snapshots"].append("final Store snapshot does not contain three admitted tasks and dispatch events")
 
     census = observations.get("census") or {}
@@ -1501,6 +1835,8 @@ def assertions(raw):
         missing = [k for k in REQUIRED[task["expect"]] if k not in kinds]
         if missing:
             failures.append("%s missing %s" % (task["name"], ", ".join(missing)))
+    if config.get("stage") == "2":
+        failures.extend(stage2_timeline_failures(raw, config))
     add("timeline-events", failures, "every task has its events")
 
     if config.get("stage") == "4":
@@ -1527,13 +1863,19 @@ def assertions(raw):
             ["conflict lab was not deleted"], "the conflict lab was removed after refusal")
 
     left = read_lines(raw / "leftovers.txt")
-    add("labs-left-behind", ["left: " + line for line in left], "no lab, lab branch or lab folder left")
+    if config.get("stage") == "2":
+        owner_failures, lab_detail, _ = stage2_owner_lab_evidence(raw)
+        left.extend(owner_failures)
+    else:
+        lab_detail = "no lab, lab branch or lab folder left"
+    add("labs-left-behind", ["left: " + line for line in left], lab_detail)
 
     # Until stage 2 there is no product pool to read: this is the harness's own count of its fake workers.
-    limit = config.get("pool_limit")
-    peak = pool_units_peak(raw)
-    add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
-        "peak %s of limit %s" % (peak, limit))
+    if config.get("stage") != "2":
+        limit = config.get("pool_limit")
+        peak = pool_units_peak(raw)
+        add("harness-pool-within-limit", [] if limit is None or peak <= limit else ["peak %d units, limit %d" % (peak, limit)],
+            "peak %s of limit %s" % (peak, limit))
 
     # The Store must hold what the stage says it holds, both ways, with no gap in a task's timeline; a read that
     # failed is not a match. A staging that did not start has no Store to read: staging-ready says so.
@@ -1782,7 +2124,7 @@ def cmd_render(args):
     out.append("- staging tree sha %s; canon/main %s" % (config.get("staging_sha", "?"), config.get("canon_main_sha", "?")))
     out.append("- check per task: `%s`; pool limit %s" % (config.get("check", "?"), config.get("pool_limit", "?")))
     out.append("- faults seeded: %s" % (", ".join(config.get("faults", [])) or "none"))
-    out.append("- the Otto and its Store are real; the worker is fake (commits only, no model); the staging Otto is"
+    out.append("- the Otto and its Store are real; --fake uses a fake worker and also fakes operator presence; the staging Otto is"
                " down at the end, so the census after is a clean line." if config.get("fake") else "")
     out += ["", "## Assertions", ""]
     out += table(["assertion", "result", "detail"],
@@ -1809,13 +2151,18 @@ def cmd_render(args):
     out.append("- gone during the run without perch starting them (wrong-kill candidates): %s"
                % (", ".join(map(str, gone)) if gone else "none"))
     out += ["", "## Labs and scratch left over", ""]
-    out += ["    " + line for line in read_lines(raw / "leftovers.txt")] or ["none"]
-    out += ["", "## Pool units over time", ""]
-    out.append("peak %d of limit %s (perch's marks; samples peak %d)" % (
-        pool_units_peak(raw), config.get("pool_limit", "?"), max([s["pool_units"] for s in samples] or [0])))
-    out += table(["at", "pool units", "staging state"],
-                 [[s["at"], s["pool_units"], "%s (gen %s)" % (s["staging_state"], s["staging_generation"])]
-                  for s in samples]) if samples else ["(no samples)"]
+    leftovers = read_lines(raw / "leftovers.txt")
+    out += ["- harness leftovers: " + line for line in leftovers] or ["- harness leftovers: none"]
+    if config.get("stage") == "2":
+        _, _, owner_summary = stage2_owner_lab_evidence(raw)
+        out += owner_summary
+    if config.get("stage") != "2":
+        out += ["", "## Pool units over time", ""]
+        out.append("peak %d of limit %s (perch's marks; samples peak %d)" % (
+            pool_units_peak(raw), config.get("pool_limit", "?"), max([s["pool_units"] for s in samples] or [0])))
+        out += table(["at", "pool units", "staging state"],
+                     [[s["at"], s["pool_units"], "%s (gen %s)" % (s["staging_state"], s["staging_generation"])]
+                      for s in samples]) if samples else ["(no samples)"]
     out += ["", "## Staging at rest", ""] + at_rest_lines(raw)
     out += ["", "## Store growth", ""]
     if samples:
@@ -1881,6 +2228,9 @@ def build_parser():
     p.set_defaults(fn=cmd_stage2_capacity_held)
     p = sub.add_parser("stage2-observations"); p.add_argument("--raw", required=True)
     p.set_defaults(fn=cmd_stage2_observations)
+    p = sub.add_parser("stage2-owner-labs")
+    p.add_argument("--root", required=True); p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_stage2_owner_labs)
     p = sub.add_parser("stage2-kill-check"); p.add_argument("--raw", required=True)
     p.set_defaults(fn=cmd_stage2_kill_check)
     p = sub.add_parser("field"); p.add_argument("--project", required=True); p.add_argument("--key", required=True)

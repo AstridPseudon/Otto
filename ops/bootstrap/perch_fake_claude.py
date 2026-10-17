@@ -11,6 +11,22 @@ import signal
 import socket
 import sys
 import uuid
+from pathlib import Path
+
+
+def await_release(marker):
+    """Hold one owner-launched turn until the harness has taken its product reads."""
+    released = False
+
+    def release(_signal, _frame):
+        nonlocal released
+        released = True
+
+    signal.signal(signal.SIGUSR1, release)
+    with open(marker, "w", encoding="utf-8") as output:
+        output.write(str(os.getpid()) + "\n")
+    while not released:
+        signal.pause()
 
 
 def emit(value):
@@ -57,6 +73,19 @@ def canary_alias(prompt):
     raise ValueError("fake worker brief has no exact stage-2 task identity")
 
 
+def canary_workspace_role():
+    """Recognize the owner-supplied canary worktree or its fenced lab cwd."""
+    cwd = Path.cwd()
+    if (cwd.name == "canon" and cwd.parent.name.startswith("2-")
+            and cwd.parent.parent.name == "perch-canary"):
+        return "manager"
+    for parent in cwd.parents:
+        if (parent.name == "canon.otto-labs" and parent.parent.name.startswith("2-")
+                and parent.parent.parent.name == "perch-canary"):
+            return "worker"
+    return None
+
+
 def main():
     if "--version" in sys.argv:
         print("2.1.293 (Claude Code)")
@@ -86,14 +115,30 @@ def main():
               "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
               "result": "READY", "usage": {"input_tokens": 1, "output_tokens": 1}})
         return 0
+    workspace_role = canary_workspace_role()
+    try:
+        alias = canary_alias(prompt)
+    except ValueError:
+        if workspace_role != "manager":
+            raise
+        alias = None
+    if alias is None:
+        if workspace_role == "manager":
+            await_release(".perch-manager.pid")
+        emit({"type": "result", "subtype": "success", "is_error": False,
+              "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
+              "result": "PERCH manager turn complete", "usage": {"input_tokens": 1, "output_tokens": 1}})
+        return 0
     if tools and "Bash" not in tools:
-        if canary_alias(prompt) == "C":
+        if alias == "C":
             # Stage 2 kills this exact owner-launched worker to verify that
             # only its slot is released. The PID marker is inside its lab.
             with open(".perch-worker-C.pid", "w", encoding="utf-8") as marker:
                 marker.write(str(os.getpid()) + "\n")
             signal.pause()
             return 1
+        if alias in {"A", "B"} and workspace_role == "worker":
+            await_release(".perch-worker-" + alias + ".pid")
         path = os.path.join(os.getcwd(), "perch-worker-" + session + ".txt")
         content = "PERCH stage-2 worker artifact from " + model + "\n"
         emit({"type": "assistant", "uuid": "write-" + session, "session_id": session,
