@@ -38,12 +38,16 @@ PY = sys.executable
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 ENV = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in (SRC, os.environ.get("PYTHONPATH", "")) if p))
 
-GATE_CODE = "import os,time,sys\nwhile not os.path.exists(sys.argv[1]): time.sleep(0.05)"
+GATE_CODE = ("import os,time,sys\n"
+             "parent = os.getppid()\n"
+             "open(sys.argv[1] + '.waiter.pid', 'w').write(str(os.getpid()))\n"
+             "while os.getppid() == parent and not os.path.exists(sys.argv[1]): time.sleep(0.05)\n")
 QUICK = [PY, "-c", "print('ok')"]
 COUNT_CODE = "import sys\nopen(sys.argv[1], 'a').write('x\\n')\n"
 GATE_COUNT_CODE = ("import os, sys, time\n"
                    "open(sys.argv[1], 'a').write('x\\n')\n"
-                   "while not os.path.exists(sys.argv[2]):\n"
+                   "parent = os.getppid()\n"
+                   "while os.getppid() == parent and not os.path.exists(sys.argv[2]):\n"
                    "    time.sleep(0.05)\n")
 MARK_CODE = "import sys\nopen(sys.argv[1], 'w').write('ran')\n"
 SLEEPER_CODE = ("import os, sys, time\n"
@@ -57,7 +61,8 @@ USAGE_CODE = ("import json, os, sys, time\n"
 ORPHAN_CODE = ("import os, subprocess, sys, time\n"
                "child = subprocess.Popen([sys.executable, '-c', 'import time\\nwhile True: time.sleep(1)'])\n"
                "open(sys.argv[1], 'w').write(str(child.pid))\n"
-               "while not os.path.exists(sys.argv[2]): time.sleep(0.05)\n")
+               "parent = os.getppid()\n"
+               "while os.getppid() == parent and not os.path.exists(sys.argv[2]): time.sleep(0.05)\n")
 
 NESTED_CLIENT_SRC = '''\
 import json, os, sys
@@ -93,6 +98,7 @@ import os, subprocess, sys, time
 import nested_client
 
 sock, cwd, marker, out, gate, mode = sys.argv[1:7]
+parent = os.getppid()
 if mode == "direct":
     code = nested_client.run(sock, cwd, marker, out)
 else:
@@ -104,7 +110,7 @@ tmp = out + ".done.tmp"
 with open(tmp, "w") as handle:
     handle.write(str(code))
 os.replace(tmp, out + ".done")
-while not os.path.exists(gate):
+while os.getppid() == parent and not os.path.exists(gate):
     time.sleep(0.05)
 sys.exit(code)
 '''
@@ -177,6 +183,7 @@ class Harness:
         self._runners = []
         self._servers = []
         self._procs = []
+        self._closed = False
 
     @property
     def store(self) -> ResultStore:
@@ -254,6 +261,9 @@ class Harness:
         return path
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         errors = []
         for server in self._servers:
             try:
@@ -266,6 +276,14 @@ class Harness:
                 runner.stop()
             except Exception as exc:
                 errors.append(exc)
+        # File-gated helpers publish their PID beside the gate. If a test fails before
+        # releasing one, stop it as part of this harness's teardown too.
+        for pid_file in self.tmp.rglob("*.waiter.pid"):
+            try:
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, 9)
+            except (OSError, ValueError):
+                continue
         for proc in self._procs:
             if proc.poll() is None:
                 proc.kill()
@@ -285,6 +303,46 @@ def harness(tmp_path):
             h.close()
         finally:
             shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+def test_waiter_helpers_are_cleaned_up_after_test_failure(harness):
+    runner = harness.runner()
+    gates = [harness.tmp / name for name in ("failure-gate-a", "failure-gate-b")]
+    run_ids = [harness.submit(runner, gate_cmd(gate), request_id="failure-waiter-%s" % index)
+               for index, gate in enumerate(gates)]
+    pids = []
+    for run_id, gate in zip(run_ids, gates):
+        wait_state(harness.store, run_id, "running")
+        pids.append(int(wait_until(lambda: gate.with_name(gate.name + ".waiter.pid").read_text()
+                                   if gate.with_name(gate.name + ".waiter.pid").exists() else None,
+                                   "waiter pid for %s" % gate.name)))
+
+    try:
+        with pytest.raises(AssertionError, match="deliberate test failure"):
+            assert False, "deliberate test failure after starting gated waiters"
+    finally:
+        # Exercise the same cleanup path the harness fixture runs after a failed test.
+        harness.close()
+
+    for pid in pids:
+        wait_until(lambda pid=pid: not alive(pid), "waiter process %s to be gone" % pid)
+
+
+def test_file_gated_waiter_exits_when_parent_disappears(harness):
+    gate = harness.tmp / "parent-disappears-gate"
+    parent_code = ("import os,sys,time\n"
+                   "gate=sys.argv[1]\n"
+                   "import subprocess\n"
+                   "subprocess.Popen([sys.executable, '-c', %r, gate])\n"
+                   "deadline=time.monotonic()+5\n"
+                   "while not os.path.exists(gate + '.waiter.pid') and time.monotonic()<deadline: time.sleep(.01)\n"
+                   "if not os.path.exists(gate + '.waiter.pid'): raise RuntimeError('waiter did not start')\n") % GATE_CODE
+    parent = harness.popen([PY, "-c", parent_code, str(gate)], env=dict(ENV, PYTHONPATH=SRC))
+    assert parent.wait(timeout=10) == 0
+    pid = int(wait_until(lambda: gate.with_name(gate.name + ".waiter.pid").read_text()
+                         if gate.with_name(gate.name + ".waiter.pid").exists() else None,
+                         "orphaned waiter pid"))
+    wait_until(lambda: not alive(pid), "waiter process %s to exit with its parent" % pid)
 
 
 # -- 1. narrow checks are not blocked behind a wide waiter -----------------------------------------
