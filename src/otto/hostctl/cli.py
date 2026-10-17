@@ -39,7 +39,8 @@ EXIT_OK, EXIT_ERROR, EXIT_UNAVAILABLE = 0, 1, 3
 def _cli_exception_result(exc: Exception) -> dict[str, Any]:
     """Build the direct CLI error envelope for a command exception."""
     from .register import RegistrationPinError, refusal_result
-    return (refusal_result(exc) if isinstance(exc, RegistrationPinError) else
+    from otto.agents.host_profiles import ProfileSelectionError
+    return (refusal_result(exc) if isinstance(exc, (RegistrationPinError, ProfileSelectionError)) else
             {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
              "provider_called": False})
 

@@ -65,8 +65,9 @@ class ModelProfileTests(unittest.TestCase):
         self.assertTrue(pack["pin"])
 
     def test_profile_selection_rejects_unknown_and_cross_host_profiles(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(host_profiles.ProfileSelectionError) as unknown:
             host_profiles.resolve_profile_name("missing", environ={})
+        self.assertIn("qualified for this host", unknown.exception.next_action)
         with self.assertRaises(ValueError):
             host_profiles.resolve_profile_name("claude", host_kind="codex", environ={})
         with self.assertRaises(ValueError):

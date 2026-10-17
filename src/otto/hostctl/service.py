@@ -50,7 +50,8 @@ _DEFAULT_PRESENCE = object()
 def _owner_exception_result(exc: Exception) -> dict[str, Any]:
     """Build the owner lane's error envelope for a dispatch exception."""
     from .register import RegistrationPinError, refusal_result
-    return (refusal_result(exc) if isinstance(exc, RegistrationPinError) else
+    from otto.agents.host_profiles import ProfileSelectionError
+    return (refusal_result(exc) if isinstance(exc, (RegistrationPinError, ProfileSelectionError)) else
             {"outcome": "error", "error": {"code": type(exc).__name__, "message": str(exc)},
              "provider_called": False})
 
