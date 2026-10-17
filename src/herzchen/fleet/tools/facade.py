@@ -10,7 +10,7 @@ from typing import Any, Callable, Protocol
 from .rules import CHECK, DONE, TASK, FeedbackLedger, ToolRuleError, ToolSpec
 from .tokens import TokenBook, TokenError
 
-__all__ = ["AllowlistedPort", "LandingOwnerPort", "OwnerPort", "ToolFacade"]
+__all__ = ["AllowlistedPort", "LandingOwnerPort", "OwnerPort", "SettlingOwnerPort", "ToolFacade"]
 
 _STRIPPED_KEYS = frozenset({"accepted", "acceptance", "counts_as_acceptance"})
 _MAX_DEPTH = 32
@@ -34,6 +34,29 @@ class AllowlistedPort:
         if operation not in self._allowed:
             raise PermissionError("operation is not on the owner allowlist")
         return self._inner.call(operation, assignment, args, feedback=feedback)
+
+
+class SettlingOwnerPort:
+    """Run a facade operation on the owner lane and settle landed work before it returns."""
+
+    def __init__(self, inner: OwnerPort, executor: Callable[[], Any],
+                 settle: Callable[[str], None], *, done_operation: str = "worker-done") -> None:
+        self.inner, self.executor, self.settle = inner, executor, settle
+        self.done_operation = done_operation
+
+    def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
+        executor = self.executor()
+        if not callable(executor):
+            raise PermissionError("owner command executor is unavailable")
+
+        def owned_call() -> Mapping:
+            result = self.inner.call(operation, assignment, args, feedback=feedback)
+            if (operation == self.done_operation and isinstance(result, Mapping)
+                    and result.get("landed") is True):
+                self.settle(assignment)
+            return result
+
+        return executor(owned_call)
 
 
 class LandingOwnerPort:

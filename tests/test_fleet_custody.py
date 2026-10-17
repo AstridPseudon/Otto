@@ -352,10 +352,14 @@ def test_landed_done_revokes_before_facade_waiter_resumes(monkeypatch, tmp_path)
     from otto.portfolio.execution_host import ExecutionHost
 
     calls = []
+    landing_started = threading.Event()
+    release_landing = threading.Event()
 
     class Landing:
         def done(self, lab_name, task_id, **_pins):
             calls.append(("done", lab_name, task_id))
+            landing_started.set()
+            release_landing.wait()
             return {"landed": True}
 
         def check(self, lab_name, task_id):
@@ -377,6 +381,7 @@ def test_landed_done_revokes_before_facade_waiter_resumes(monkeypatch, tmp_path)
     owner_returned = threading.Event()
     release_facade = threading.Event()
     replies = []
+    queued_replies = []
     done_thread = None
 
     def execute(operation):
@@ -395,9 +400,25 @@ def test_landed_done_revokes_before_facade_waiter_resumes(monkeypatch, tmp_path)
     done_thread = threading.Thread(
         target=lambda: replies.append(registry.facade.call(token, "done"))
     )
+    check_thread = threading.Thread(
+        target=lambda: queued_replies.append(registry.facade.call(token, "check"))
+    )
     try:
         done_thread.start()
-        owner_returned.wait()  # Owner finished done; its facade thread is held.
+        assert landing_started.wait(5)
+        check_thread.start()
+        deadline = time.monotonic() + 5
+        while host._owner_calls.qsize() == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert host._owner_calls.qsize() == 1  # Check captured its grant and entered the owner queue.
+        release_landing.set()
+        assert owner_returned.wait(5)  # Owner finished done; its facade thread is held.
+        check_thread.join(5)
+        assert not check_thread.is_alive()
+        assert queued_replies == [{
+            "ok": False, "error": "owner_unavailable",
+            "detail": "LookupError: assignment has no active dispatch record",
+        }]
         refused = registry.facade.call(token, "check")
         assert refused == {
             "ok": False, "error": "unauthorized", "detail": "unknown token"
@@ -406,8 +427,11 @@ def test_landed_done_revokes_before_facade_waiter_resumes(monkeypatch, tmp_path)
         assert record.state == "settled"
         assert registry.tokens.live() == frozenset()
     finally:
+        release_landing.set()
         release_facade.set()
         done_thread.join()
+        if check_thread.ident is not None:
+            check_thread.join()
         host.close()
         registry.close()
 
