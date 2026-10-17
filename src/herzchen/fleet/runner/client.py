@@ -17,7 +17,14 @@ class RunnerClient:
         self.timeout = timeout
 
     def call(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        payload = (json.dumps(dict(request), sort_keys=True) + "\n").encode("utf-8")
+        body = dict(request)
+        if body.get("op") == "submit":
+            parent = os.environ.get("RUNNER_PARENT_RUN_ID")
+            token = os.environ.get("RUNNER_PARENT_TOKEN")
+            if parent and token:
+                body.setdefault("parent_run_id", parent)
+                body.setdefault("parent_token", token)
+        payload = (json.dumps(body, sort_keys=True) + "\n").encode("utf-8")
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         except OSError as exc:

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import subprocess
 import threading
 import time
@@ -38,6 +40,7 @@ class Lease:
         self.interrupted = False
         self.closed = False
         self.done = False
+        self.parent_token = secrets.token_hex(32)
 
 
 class Runner:
@@ -83,7 +86,6 @@ class Runner:
             req = self._parse(request)
         except ValueError as exc:
             return _error("bad_request", str(exc))
-        snap = self._census_for(peer_pid)
         commit = self._resolve_commit(req["cwd"])
         if commit is None:
             return _error("no_commit", "cwd is not a git work tree with a commit")
@@ -99,7 +101,7 @@ class Runner:
                     return _error("binding_mismatch", "run_id %s names a different command" % run_id)
                 return {"ok": True, "run_id": run_id, "state": existing["state"], "existing": True,
                         "binding": binding, "commit": commit}
-            parent = self._parent_lease(peer_pid, snap)
+            parent = self._parent_lease(request)
             units = 0 if parent is not None else req["units"]
             record = {
                 "run_id": run_id, "seq": self._store.next_seq(), "binding": binding,
@@ -191,11 +193,23 @@ class Runner:
         records, invalid = self._store.all_records()
         self.invalid = invalid
         running = {record["run_id"] for record in records if record["state"] == "running"}
+        cleaned = set(running)
+        unresolved: set[str] = set()
         for record in records:
             if record["state"] == "running":
                 disposition = custody.resume_cleanup(self._latch_path(record["run_id"]), self._grace, self._census_fn)
                 self._put_record(record, state="unknown", outcome="lost_in_restart", exit_code=None,
                                  custody=_custody_state(disposition), settled_at=self._clock())
+                if not disposition.gone:
+                    unresolved.add(record["run_id"])
+            elif record["state"] == "unknown" and (record.get("custody") == "uncertain" or
+                                                     os.path.exists(self._latch_path(record["run_id"]))):
+                latch = self._latch_path(record["run_id"])
+                has_latch = os.path.exists(latch)
+                if has_latch:
+                    cleaned.add(record["run_id"])
+                if not has_latch or not custody.resume_cleanup(latch, self._grace, self._census_fn).gone:
+                    unresolved.add(record["run_id"])
         for record in records:
             if record["state"] != "queued":
                 continue
@@ -209,11 +223,27 @@ class Runner:
                 self._put_record(record, state="unknown", outcome="stale_commit", exit_code=None,
                                  settled_at=self._clock())
         for name in sorted(os.listdir(self._latches)):
-            if name.endswith(".json") and name[:-len(".json")] not in running:
+            if name.endswith(".json") and name[:-len(".json")] not in cleaned:
                 custody.resume_cleanup(os.path.join(self._latches, name), self._grace, self._census_fn)
-        heavy = self._pool.snapshot()["heavy"]
-        for ticket in heavy["leases"] + heavy["waiting"]:
-            self._pool.release_heavy(ticket)
+        records_by_id = {record["run_id"]: record for record in records}
+        pending = list(unresolved)
+        while pending:
+            parent_id = records_by_id[pending.pop()].get("nested_in")
+            if parent_id in records_by_id and parent_id not in unresolved:
+                unresolved.add(parent_id)
+                pending.append(parent_id)
+        for record in records:
+            if record["run_id"] not in unresolved:
+                continue
+            units = min(record["units"], self._capacity)
+            if units <= 0:
+                continue
+            ticket = self._pool.queue_heavy("runner:" + record["run_id"], units, pid=None)
+            if not self._pool.claim_heavy(ticket):
+                raise RuntimeError("cannot restore unresolved runner capacity for %s" % record["run_id"])
+            lease = Lease(record["run_id"], ticket, units, False, record)
+            lease.done = lease.closed = True
+            self._leases[record["run_id"]] = lease
 
     def start(self) -> None:
         """Begin admitting queued runs, and keep pumping while any wait."""
@@ -286,6 +316,8 @@ class Runner:
             lease.started_at = started
         env = dict(os.environ if self._environ is None else self._environ)
         env["RUNNER_USAGE_PATH"] = self._usage_path(run_id)
+        env["RUNNER_PARENT_RUN_ID"] = run_id
+        env["RUNNER_PARENT_TOKEN"] = lease.parent_token
         extra = {} if self._census_fn is None else {"census_fn": self._census_fn}
         launcher = self._launch or custody.Custody.launch
         failed = False
@@ -322,6 +354,8 @@ class Runner:
             interrupted = lease.interrupted
         if interrupted:
             outcome, exit_code, state = "interrupted", None, "unknown"
+        elif not disposition.gone:
+            outcome, exit_code, state = ("timed_out" if timed_out else "exited"), None, "unknown"
         elif timed_out:
             outcome, exit_code, state = "timed_out", _TIMEOUT_EXIT, "settled"
         else:
@@ -335,27 +369,41 @@ class Runner:
                         seconds=seconds, unit_seconds=unit_seconds)
 
     def _abandon(self, lease: Lease) -> None:
+        disposition = None
+        with lease.lock:
+            if lease.custody is not None:
+                try:
+                    disposition = lease.custody.terminate(self._grace)
+                except Exception:
+                    disposition = custody.Disposition(custody.UNCERTAIN, "cleanup failed")
         try:
             with self._cond:
                 self._write(lease, state="unknown", outcome="interrupted", exit_code=None,
-                            settled_at=self._clock())
+                            custody=_custody_state(disposition), settled_at=self._clock())
         except StoreError:
             pass
 
     def _finish(self, lease: Lease) -> None:
-        """Retire the lease: interrupt its unfinished children, then return its units and admit the next run."""
+        """Return units only after this scope and its nested children are known gone."""
         with self._cond:
             lease.closed = True
             children = [self._leases[child] for child in lease.children if child in self._leases]
-            children = [child for child in children if not child.done]
         for child in children:
+            if child.done:
+                continue
             self._interrupt(child)
         with self._cond:
-            self._leases.pop(lease.run_id, None)
-            if lease.ticket is not None:
-                self._pool.release_heavy(lease.ticket)
+            if not self._unresolved(lease):
+                self._leases.pop(lease.run_id, None)
+                if lease.ticket is not None:
+                    self._pool.release_heavy(lease.ticket)
             self._cond.notify_all()
             self.pump()
+
+    def _unresolved(self, lease: Lease) -> bool:
+        if lease.record.get("custody") == "uncertain" or os.path.exists(self._latch_path(lease.run_id)):
+            return True
+        return any(self._unresolved(self._leases[child]) for child in lease.children if child in self._leases)
 
     def _interrupt(self, lease: Lease) -> None:
         """Stop a lease's tree and settle its run unknown/interrupted, unless the run has already settled."""
@@ -365,7 +413,10 @@ class Runner:
             lease.closed = True
         with lease.lock:
             lease.interrupted = True
-            disposition = None if lease.custody is None else lease.custody.terminate(self._grace)
+            try:
+                disposition = None if lease.custody is None else lease.custody.terminate(self._grace)
+            except Exception:
+                disposition = custody.Disposition(custody.UNCERTAIN, "cleanup failed")
         seconds, unit_seconds = self._elapsed(lease)
         with self._cond:
             self._write(lease, state="unknown", outcome="interrupted", exit_code=None,
@@ -405,26 +456,15 @@ class Runner:
 
     # -- nesting -----------------------------------------------------------------------------
 
-    def _census_for(self, peer_pid: int | None) -> dict | None:
-        if peer_pid is None:
+    def _parent_lease(self, request: Mapping[str, Any]) -> Lease | None:
+        """A live run may delegate its already held capacity with its private credential."""
+        run_id, token = request.get("parent_run_id"), request.get("parent_token")
+        if not isinstance(run_id, str) or not isinstance(token, str):
             return None
-        return (self._census_fn or custody.census)()
-
-    def _parent_lease(self, peer_pid: int | None, snap: dict | None) -> Lease | None:
-        """The open lease whose process tree holds the peer, matched by pid and birth; None means standalone."""
-        if peer_pid is None or not snap or peer_pid not in snap:
+        lease = self._leases.get(run_id)
+        if lease is None or lease.closed or lease.custody is None:
             return None
-        peer = snap[peer_pid]
-        for lease in self._leases.values():
-            if lease.closed:
-                continue
-            with lease.lock:
-                if lease.custody is None:
-                    continue
-                live = lease.custody.observe(snap) or {}
-            if live.get(peer_pid) == peer.birth:
-                return lease
-        return None
+        return lease if hmac.compare_digest(lease.parent_token, token) else None
 
     # -- helpers -----------------------------------------------------------------------------
 

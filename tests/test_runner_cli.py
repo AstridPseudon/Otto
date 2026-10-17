@@ -10,11 +10,46 @@ import tempfile
 from types import SimpleNamespace
 import threading
 import unittest
+from unittest.mock import patch
 
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 from herzchen.fleet.runner import ResultStore, Runner, RunnerServer
+from herzchen.fleet.runner.client import RunnerClient
 from otto import runner_cli
 from otto.agents.claude_cli import ClaudeCliTransport, LauncherPin, VERSION, file_digest
+
+
+def test_client_attaches_only_complete_owned_parent_credential():
+    class Socket:
+        def __init__(self):
+            self.sent = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect(self, path):
+            pass
+
+        def sendall(self, payload):
+            self.sent = json.loads(payload)
+
+        def recv(self, size):
+            return b'{"ok": true}\n'
+
+    sock = Socket()
+    with patch("herzchen.fleet.runner.client.socket.socket", return_value=sock):
+        with patch.dict(os.environ, {"RUNNER_PARENT_RUN_ID": "parent", "RUNNER_PARENT_TOKEN": "secret"}):
+            assert RunnerClient("ignored").call({"op": "submit", "argv": ["x"]})["ok"]
+            assert sock.sent["parent_run_id"] == "parent" and sock.sent["parent_token"] == "secret"
+        with patch.dict(os.environ, {"RUNNER_PARENT_RUN_ID": "parent", "RUNNER_PARENT_TOKEN": ""}):
+            RunnerClient("ignored").call({"op": "submit", "argv": ["x"]})
+            assert "parent_run_id" not in sock.sent and "parent_token" not in sock.sent
 
 
 class RunnerCliTests(unittest.TestCase):
