@@ -78,7 +78,8 @@ class Scratch(unittest.TestCase):
         for rel, text in files.items():
             self.write(lab, rel, text)
         self.commit(lab, "work")
-        (lab / ".brief.md").write_text("**Title:** Do %s\nCheck command: `true`\n%s\n" % (task, brief_extra))
+        check = "%s -m pytest -q tests/test_herzchen_boundary.py" % sys.executable
+        (lab / ".brief.md").write_text("**Title:** Do %s\nCheck command: `%s`\n%s\n" % (task, check, brief_extra))
         return lab
 
     def land(self, task, *args):
@@ -402,6 +403,40 @@ class CheckPreexistingReds(Scratch):
         r = self.land("T13")
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("check failed", r.stdout + r.stderr)
+
+    def test_collection_error_with_passing_file_is_canon_red_and_sweep_continues(self):
+        self.write(self.repo, "tests/test_collection_red.py",
+                   "from otto import mod\nfrom otto import missing_module\n\ndef test_unreachable():\n    assert mod.f() == 1\n")
+        self.commit(self.repo, "canon has a collection error")
+        sh(["git", "push", "-q", "github", "canon/main:main"], cwd=self.repo, env=self.env)
+        self.start()
+        self.lab("T16", {"src/otto/mod.py": "def f():\n    return 1\n\n\ndef g():\n    return 2\n"})
+        self.brief("T16", "%s -m pytest -q tests/test_collection_red.py tests/test_mod.py" % sys.executable)
+        r = self.land("T16")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        check = (self.ops / "runs" / "T16" / ".gate" / "check.txt").read_text()
+        self.assertIn("1 passed", check)
+        self.assertIn("ERROR tests/test_collection_red.py", check)
+        self.assertIn("tests/test_collection_red.py", (self.ops / "canon-reds.txt").read_text())
+        log = self.log("T16")
+        self.assertIn("sweep tests/test_collection_red.py run 2/2: 1 failing", log)
+        self.assertIn("pre-existing failure (also on BASE): tests/test_collection_red.py", log)
+        self.assertIn("sweep tests/test_mod.py run 1/2: 0 failing", log)
+
+    def test_all_files_failing_collection_is_refused(self):
+        self.write(self.repo, "tests/test_collection_a.py", "from missing_a import value\n")
+        self.write(self.repo, "tests/test_collection_b.py", "from missing_b import value\n")
+        self.commit(self.repo, "canon has only collection errors in the selected check")
+        sh(["git", "push", "-q", "github", "canon/main:main"], cwd=self.repo, env=self.env)
+        self.start()
+        self.lab("T17", {"note.txt": "x\n"})
+        self.brief("T17", "%s -m pytest -q tests/test_collection_a.py tests/test_collection_b.py" % sys.executable)
+        r = self.land("T17")
+        self.assertRefused(r, "T17", "did not complete a test run")
+        check = (self.ops / "runs" / "T17" / ".gate" / "check.txt").read_text()
+        self.assertIn("ERROR tests/test_collection_a.py", check)
+        self.assertIn("ERROR tests/test_collection_b.py", check)
+        self.assertNotRegex(check, r"[0-9]+ (passed|failed|skipped|xfailed|xpassed)")
 
 
 class RunTaskCodex(Scratch):
