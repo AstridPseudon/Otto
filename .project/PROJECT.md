@@ -16,3 +16,27 @@ Base: canon/main eb9b6cd. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 ## Xhard review
 
 - PL1 Astra review findings: failed `Popen` stranded its launch intent; census uncertainty was not durable; `status`, `_send`, and `signal_group` also bypassed doubt persistence on unavailable census. Sent these defects to the same worker; fixes landed on task branch through `b70c817`. Astra re-reviewed and found no remaining concrete code defect. Decision: keep the setsid expectation unchanged pending the required Opus decision; preserve the worktree for continuation.
+
+## File inventory and accounting
+
+Committed project-package files changed from `eb9b6cd`:
+
+- `.project/PROJECT.md`
+- `.project/agent_goal.md`
+- `.project/manager-brief.md`
+- `.project/northstar.md`
+- `.project/plan.md`
+- `.project/run.json`
+- `.project/status.md`
+- `.project/tasklist.md`
+
+Unmerged PL1 worktree files on `task/PL1` at `b70c817`:
+
+- `src/herzchen/fleet/custody.py`
+- `tests/test_fleet_custody.py`
+
+The committed project diff is 8 files, +197/-0 at the initial package refresh (metadata records may add lines in later commits). Merged implementation deletions: 0. PL1 candidate deletion is 22 lines in its unmerged branch. The 99-line Otto figure is a provisional inventory, not completed savings; the Astrid package's approximately 4,000-line ambition does not map to this clone, and the program-level budget question remains open.
+
+## Final project review
+
+- Astra's final review found stale run/status metadata and an incomplete changed-file inventory. Updated `.project/status.md` and `.project/run.json` to reflect the authorized run and D19 block; listed all eight committed project files and the two unmerged PL1 files above. No implementation changes are merged. Astra judged PL1's blocked status justified because the existing setsid test explicitly requires ancestry-based killing and D19 requires an Opus decision before changing that expectation.

@@ -1,66 +1,18 @@
-# Goal: PROCLIFE: process lifecycle made structurally true
+# Goal: PROCLIFE — Otto process custody made structurally true
 
-Replace per-descendant custody (live observation under fixed sub-second budgets, and a host-wide latch) with owner-bound scopes. Prove it on the real film under normal load, then delete what it replaces.
+Replace ancestry-based per-descendant signal authority with owner-held private process-group scopes. Persist launch and cleanup intent before side effects, use TERM then KILL, and report cleanup as settled only with supported evidence. An unresolved run keeps its own capacity conflict held; it must not latch unrelated host work. Keep task outcome separate from cleanup state.
 
-**Why (15 Oct evidence, `evidence/proposal-20261015.md` §1):**
-- On Astrid main (22b59e34), the film journey failed only at the render. Every symptom came from lifecycle proof machinery:
-  - the 20 s start budget;
-  - the 1 s reconciliation cap and the latch it trips;
-  - "retirement blocked";
-  - 223-context launch validation taking 6.5 min, plus a `scripts` name collision;
-  - otto-heavy sweeping the host.
-- The live line, which has no `custody_broker.py`, renders the same film every day.
-- Codex's own full-film runs on recent tips (films 11–13) also ended unresolved.
+Build on canon's CUSTODY (`db1ac48`), KILLFENCE (`e2f807b`), ORPHANWORKER (`ac02366`), and FAILCLOSED (`28408ce`) changes. The detailed task sequence and measured candidate deletions are in `.project/tasklist.md`.
 
-**Threat model (Astra's wording, `evidence/astra-verdict.md`):**
-- **G1:** a scope is settled only after its backend confirms that no live processes remain within its declared containment boundary. POSIX covers group members and explicitly registered services while cleanup ownership survives. Accidental daemonization, environment sanitization and owner crashes are stated limitations that report `unresolved`.
-- **G2:** Astrid lifecycle code signals only an anchored private group or a registered incarnation-bound handle. Missing authority produces unresolved cleanup. This does not defend against malicious same-user processes; SECURITY.md already says pack code has the user's full power.
+## Invariants
 
-**API:** `spawn(owner, spec, lifetime="task"|"service") -> Scope`, `lease(service, task)`, `release(lease)`, `stop(scope, grace) -> Report`, `status(scope) -> Report`. Reports separate the execution result from cleanup state (`running` / `settled` / `unresolved`) and include backend coverage.
+- **G1 — settlement:** a scope settles only when evidence supports that no live process remains inside its declared private process group. A census gap, missing birth identity, unresolved recorded escapee, or interrupted cleanup remains `uncertain`/`unknown` and survives owner restart.
+- **G2 — authority:** signals go only to an anchored group while its recorded incarnation is proven. Parentage, environment tags, or a bare PID do not grant signal authority. Reused process identities are left untouched.
+- An accidental daemonization that was never recorded is an explicit containment limit; the implementation must not claim to have cleaned it up.
+- Unknown native worker attempts are not retried. Physical capacity and custody are separate; an unknown holder blocks only its known conflict domain.
 
-**Deletion budget (about −4k lines):**
-- the ordinary-command per-descendant path in `custody_broker.py`: `ProcessCustody.start_observer`, `observe_census`, `_register_census_candidate`, `_candidate_reconciliation_deadline`;
-- reconciliation in `process_group._observe_tree`;
-- the host-wide `generic_host._latch_cleanup_uncertainty` admission block;
-- the cross-process recognition in `host_bootstrap.py`: `_pin_native_host_command`, `_framework_reexec_of_launch`, and `_darwin_host_command_observation` as lifecycle authority;
-- startup-wide render validation: `_prepare_render_validation`'s worker enumeration and `_settle_registries`' cross-context loop.
+## Scope and exclusions
 
-Runtime custody and shared control-peer code are deleted only once their callers are proven gone.
+Keep the existing `Custody.launch/release/terminate` compatibility while migrating callers. The 15 Oct minimal design applies: no universal resource ledger, new resident daemon, general Scope/Lease framework, tag sweeper, per-descendant journal, speculative platform backend, or hardware-specific abstraction. Preserve the owner-claim, KILLFENCE, and ORPHANWORKER boundaries already landed.
 
-**Do not build:**
-- universal tag sweepers (tags are discovery hints, never signal authority);
-- another resident daemon (the pack host is the owner);
-- per-descendant journals;
-- generic container-runtime orchestration;
-- speculative Windows plumbing (Job Objects come only before claiming Windows);
-- caching before measurement;
-- hardware-specific lifecycle abstractions.
-
-No Codex gating (user, 15 Oct): this is Claude's job. Rules: `portfolio/PLAN.md` §15.
-
-**Rescoped 15 Oct (evidence/resource-lifecycle-framing.md, evidence/astra-framing-verdict.md).**
-- **The general problem:** responsibility for effects that outlive the execution that created them: running, billable, occupying, or sensitive. CPU/GPU and local/remote change only the enforcement mechanism.
-- **The abstraction is a durable cleanup obligation:** resource identity, owner incarnation, release authority/reference, backend, affected conflict keys, state, and last evidence.
-  - Acquisition intent is recorded before the external side effect, so a lost allocation response stays representable.
-  - States: `acquiring → active → release_requested → settled`, plus `unresolved` and reconciliation.
-  - Task outcome is separate from resource settlement.
-- **Lease expiry, maximum billable lifetime and idle retention are distinct policies.** Leases and owner-death enforcement are backend mechanisms, not universal requirements.
-- **Block the smallest known-safe conflict domain.** An unknown surviving writer may justify a wider block. A held reservation does not stop charges.
-- **The Runtime owns durable obligations, fencing, atomic settlement/reservation transitions and recovery scheduling.** Astrid supplies acquire, inspect and release adapters. Local recovery records stay until durable handoff works across crashes and Runtime outages. Redundant latches are deleted one at a time.
-- **Do not build:** a universal resource orchestrator, mandatory heartbeats for scratch, a second ledger, a generic GPU scheduler, per-descendant journals, or a promise that every backend is thin. Never equate cancel requests, expired leases, lock release or operator overrides with confirmed destruction. Never erase unresolved billing exposure to unblock scheduling.
-
-**Policy axes (evidence/astra-cpu-gpu-verdict.md supersedes cpu-gpu-differences.md).** CPU vs GPU is the wrong axis. Policy hangs off four independent properties of a resource:
-- **Lifetime:** disposable or reused service.
-- **Ownership:** owned (stop it) or borrowed/attached (protocol cancel, with acknowledgement and quiescence).
-- **Billing:** a paid provider allocation, including CPU pods; stopped RunPod storage still bills, so stop and terminate are distinct.
-- **Release evidence:** what the backend can authoritatively say. Provider confirmation suffices for pods. No VRAM-clearance proofs.
-
-**Defer:** VRAM packing (start with explicit device sets and coarse serialization), and universal GPU health checks (use backend readiness plus fault-triggered quarantine).
-
-**On Apple Silicon,** budget CPU and GPU memory as one unified pool.
-
-**Minimal plan adopted (15 Oct, evidence/opus-complexity-review.md).**
-- Fix the four observed failures mostly by deletion, in about 4 days.
-- The obligations ledger, policy objects, Scope/Lease API, host control endpoint, Linux/cgroup/Job Object backends, VRAM accounting and non-reaping retrofits are deferred until a real need appears.
-- Astra's principles above still bound every step.
-- Accepted limitation: on normal completion the leader is reaped before the group kill. That leaves a seconds-long pgid-reuse window, as on the live line.
+The former Astrid film journey and its ~4,000-line deletion ambition are not runnable or measurable in this Otto clone. The candidate Otto deletion budget is 99 direct legacy lines pending caller replacement; the orchestrator must confirm the project-level budget because Otto has no PROCLIFE row in program PLAN.md §14. The Astrid film and Otto staging checks remain external gates.

@@ -1,9 +1,5 @@
-# PROCLIFE: process lifecycle made structurally true
+# Northstar: PROCLIFE — Otto process scopes
 
-Astrid's process lifecycle should be true by construction, not proven by continuous observation. Each task attempt runs in a **task scope**. Each long-lived engine, and the pack host itself, runs in a **service scope**. Every scope has an owner that holds its handle until cleanup finishes.
+Every Otto process launch has an owner-held private-group scope. Cleanup records intent before launch or signal, stops the anchored group with TERM then KILL, and reports `settled` only when current evidence supports that result. Missing evidence remains unresolved across restart and holds only the affected capacity lease. No ancestry, tag, or bare PID can authorize a signal.
 
-Cleanup kills an anchored process group, or a handle bound to one specific process, and then reports `settled` or `unresolved`. It never invents absence, and nothing latches the whole host.
-
-The full film journey (Codex image → sprite → edit → publish → full-film review render) passes on a normally busy 8 GB Mac with no exclusive heavy slot. The same contract holds on Linux and inside containers.
-
-Evidence: the proposal, four Luna sense-checks and Astra's verdict are in `evidence/`. The rules are in `portfolio/PLAN.md` §15.
+Preserve landed KILLFENCE and ORPHANWORKER behavior, never retry an unknown native worker turn, and remove only the per-descendant/tag machinery whose callers have migrated. Follow `.project/tasklist.md`; stage/ps/sandbox-dependent proof runs at the external gate.
