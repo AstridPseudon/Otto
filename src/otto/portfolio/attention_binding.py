@@ -133,11 +133,12 @@ class ExternalAssignmentGuard:
               and value.get('outcome') == 'succeeded' and value.get('delivery_state') == 'done'
               and _digest(value) == proof['result_sha256'], 'owner result value differs from occurrence')
         hashes = completion.get('evidence_hashes', {})
+        result_key = ':'.join((proof['result_ref']['kind'], proof['result_ref']['id'], proof['result_ref']['revision'] or ''))
         resources = value.get('resource_evidence', {})
         evidence = value.get('task_bound_evidence', {})
         source = evidence.get('operation_result', {}).get('output', {}).get('source_verification', {})
-        _need(hashes.get('worker_result_canonical_sha256') == proof['result_sha256']
-              and completion.get('source_set_digest') == hashes.get('source_set_manifest_sha256') == source.get('manifest_sha256') == proof['source_set_digest']
+        _need(hashes.get(result_key) == proof['result_sha256']
+              and completion.get('source_set_digest') == source.get('manifest_sha256') == proof['source_set_digest']
               and resources.get('brief_sha256') == scope['brief_sha256'] and _digest(resources.get('brief')) == scope['brief_sha256']
               and resources['brief']['instruction_contract']['source_inspection']['manifest_sha256'] == proof['source_set_digest'], 'accepted source/brief evidence changed')
         self._manager_completion = json_value(completion)
