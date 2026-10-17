@@ -2,11 +2,12 @@
 # PERCH: observe one stage on the staging Otto and write its report.
 #   perch.sh STAGE|all [--fake]
 # It restarts the staging Otto on the commit under test (staging.sh restart, and nothing of its own),
-# runs the stage's canary tasks in a scratch copy of the toy repo under the staging root, stops the
-# Otto, and writes ops/perch/STAGE/UTC-TIME/report.md with the raw data beside it. The canary project
-# is ops/bootstrap/canary/project.json; STAGE is one of its stage names (0 today).
-# --fake: the canary's worker is the fake worker (real commits in the lab, no model). A run without
-# it needs a real worker, which is not built yet; stage 0 needs none, so it runs without the flag.
+# runs the stage's scenario against staging, stops the staging Otto, and writes
+# ops/perch/STAGE/UTC-TIME/report.md with raw evidence beside it. Stages 0 and 1
+# use the harness worker; stage 2 prepares a registered and activated owner
+# project and exercises task admission through the operator command. The canary
+# project is ops/bootstrap/canary/project.json.
+# --fake: the harness worker is fake (real commits in the lab, no model).
 # A stage's scenarios add steps of their own: staging-lifecycle (stage 0) reads the status, KILLs the Otto,
 # restarts it and tries a second start, which must be refused. A stage that wipes starts on an empty Store.
 # Stage 1 adds the scenario save-through-socket: the canary saved from its file through the owner socket from a cold
@@ -142,6 +143,72 @@ cold_client() {
     'import sys; from otto.hostctl.cli import main; sys.exit(main())' --home "$STAGE_ROOT/home" "$@" < /dev/null
 }
 
+# Stage 2 uses the same owner CLI setup path as an operator: join the canary host,
+# map its disposable repository, register the run bundle, then activate it. Every
+# command's raw answer is kept so a failed prerequisite is visible in the report.
+stage2_setup() {
+  local host bundle rc=0
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '"')"
+  bundle="$CANARY_DIR/project"
+  "$PY" -I "$REPORT_PY" stage2-bundle --project "$CANARY/project.json" --out "$bundle" > "$RAW/stage2-bundle-path.txt"
+  if cold_client service admit-host --host "$host" --client-home "$CANARY_DIR/client" > "$RAW/stage2-host-admission.json" 2> "$RAW/stage2-setup-errors.txt"; then :; else
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if cold_client repo map --name toy --path "$CANON" > "$RAW/stage2-repository-map.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if cold_client --host "$host" project register --bundle "$bundle" --worktree "$CANON" > "$RAW/stage2-registration.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if cold_client --host "$host" project activate --project perch-stage2 --worktree "$CANON" > "$RAW/stage2-activation.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if cold_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-project-status.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value ran
+  else
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value "failed: owner CLI setup exited $rc"
+  fi
+  return "$rc"
+}
+
+stage2_admit_tasks() {
+  local host task ref rc=0
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
+    ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
+      "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
+    # The operator command is the sole task admission route. It performs the
+    # owner-local presence proof and verifies the selected exact revision.
+    if cold_client --host "$host" service admit --task-ref "$ref" \
+        --revision "$("$PY" -I -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<< "$ref")" \
+        --review-ref "$ref" --request-key "perch-stage2-admit-$task" \
+        > "$RAW/stage2-admit-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else
+      rc=$?
+      "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: owner service admit exited $rc"
+      return "$rc"
+    fi
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value ran
+  done
+  return 0
+}
+
+stage2_run_manager() {
+  local host schedule rc=0
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  schedule="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); x=v["operating_setup"]["setup"]["roles"]["manager"]; print(x.get("schedule_id") if isinstance(x,dict) else x)' "$RAW/stage2-activation.json")" \
+    || return 1
+  if cold_client --host "$host" manager --project perch-stage2 start-manager --schedule-id "$schedule" \
+      > "$RAW/stage2-manager-start.json" 2>> "$RAW/stage2-setup-errors.txt"; then
+    return 0
+  else
+    rc=$?
+    return "$rc"
+  fi
+}
+
 # One save of the stage's document NAME through the owner socket, from REF_FROM's project ref when it is an edit or a
 # stale base. Its answer is raw/save-NAME.json; a client that gives none is recorded as unavailable, which fails.
 save_step() {  # NAME REF_FROM
@@ -240,7 +307,7 @@ run_task() {  # TASK FIRST LAST
 
 # One stage. Its result is left in STAGE_RC: a failed assertion is a red report, not an aborted run.
 run_stage() {  # STAGE
-  local stage=$1 stamp run task first="" last=""
+  local stage=$1 stamp run task first="" last="" host setup_rc dispatch_rc
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   run="$OUT_ROOT/$stage/$stamp"
   RAW="$run/raw"
@@ -274,6 +341,8 @@ run_stage() {  # STAGE
   STAGING_SHA="$(sed -n 's/.*"sha": "\([0-9a-f]*\)".*/\1/p' "$STAGE_ROOT/run/staging.json" 2>/dev/null | head -n 1 || true)"
   CANON_MAIN_SHA="$(git -C "$OTTO_REPO" rev-parse --short -q --verify 'canon/main^{commit}' || echo none)"
 
+  t="$(date +%s)"; make_canon; phase canary-setup "" "$t"
+
   # The stage's scenarios. One whose staging never came up is skipped, and the report says why.
   RUN_LIFECYCLE=""
   for scenario in $("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key scenarios); do
@@ -300,14 +369,28 @@ run_stage() {  # STAGE
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: staging did not start (rc $RESTART_RC)"
         elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
+        elif stage2_setup; then
+          if stage2_admit_tasks; then
+            if stage2_run_manager; then
+              "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value ran
+              host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+              cold_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-dispatch-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
+              cold_client service status > "$RAW/stage2-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
+            else
+              dispatch_rc=$?
+              "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: composed manager start/dispatch exited $dispatch_rc"
+            fi
+          else
+            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: operator task admission did not complete"
+          fi
         else
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: stage-2 setup did not produce an authenticated canary manager occurrence"
+          setup_rc=$?
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: stage-2 owner setup failed (rc $setup_rc)"
         fi ;;
       *) die "perch.sh has no scenario called $scenario" ;;
     esac
   done
 
-  t="$(date +%s)"; make_canon; phase canary-setup "" "$t"
   CHECK="$("$PY" -I "$REPORT_PY" field --project "$CANARY/project.json" --key check)"
   CHECK="${CHECK//'{python}'/$PY}"
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage "$stage"); do

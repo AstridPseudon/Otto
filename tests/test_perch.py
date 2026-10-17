@@ -228,6 +228,23 @@ class AssertionKindTests(unittest.TestCase):
         self.assertEqual(stage["dependencies"]["B"], ["A"])
         self.assertTrue(stage["admission"]["unadmitted_revision"])
         self.assertEqual(stage["scenarios"], ["admit-and-dispatch"])
+        policy = stage["run_policy"]["assessment_accounting"]
+        self.assertEqual(policy["scope_mode"], "check-accepted")
+        self.assertEqual(policy["task_criterion_pairs"], ["A/C-A", "B/C-B", "C/C-C"])
+
+    def test_stage_two_bundle_maps_repository_branch_and_check_policy(self):
+        project = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))
+        stage = project["stages"]["2"]
+        self.assertEqual((stage["repository"], stage["branch"]), ("toy", "canon/main"))
+        out = self.tmp / "stage2-bundle"
+        subprocess.run([sys.executable, "-I", str(BOOTSTRAP / "perch_report.py"), "stage2-bundle",
+                        "--project", str(BOOTSTRAP / "canary" / "project.json"), "--out", str(out)], check=True)
+        tasklist = (out / "tasklist.md").read_text(encoding="utf-8")
+        self.assertIn("| A | toy | canon/main |", tasklist)
+        self.assertIn("| B | toy | canon/main |", tasklist)
+        self.assertIn("| C | toy | canon/main |", tasklist)
+        run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(run["assessment_accounting"]["scope_mode"], "check-accepted")
 
     def test_composefleet_detection_uses_landed_modules_not_a_marker_string(self):
         stage_root = self.tmp / "staging"

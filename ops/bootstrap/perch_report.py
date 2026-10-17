@@ -121,6 +121,41 @@ def cmd_stage(args):
         print("" if value is None else json.dumps(value))
 
 
+def cmd_stage2_bundle(args):
+    """Materialize the disposable Megado source bundle consumed by project register."""
+    project = read_json(args.project)
+    stage = project.get("stages", {}).get("2", {})
+    bundle = Path(args.out)
+    bundle.mkdir(parents=True, exist_ok=True)
+    tasks = stage.get("tasks", [])
+    deps = stage.get("dependencies", {})
+    repo = stage.get("repository", "toy")
+    branch = stage.get("branch", "canon/main")
+    rows = ["# Tasklist: perch-stage2", "", "## Dispatch canary",
+            "| id | repo | branch | outcome | deps | route | proof |",
+            "|---|---|---|---|---|---|---|"]
+    for task in tasks:
+        dependency = ", ".join(deps.get(task, [])) or "-"
+        rows.append("| %s | %s | %s | Canary dispatch %s | %s | normal | accepted check passes |" %
+                    (task, repo, branch, task, dependency))
+    texts = {
+        "northstar.md": "# PERCH stage 2\n\nProve owner dispatch on staging.\n",
+        "agent_goal.md": "# Agent goal: perch-stage2\n\n## Objective\n\nDispatch three admitted canary tasks in dependency order.\n",
+        "plan.md": "# Plan\n\nRegister, activate, admit, then observe owner dispatch.\n",
+        "status.md": "# Status\n\nStaging canary.\n",
+        "manager-brief.md": "# Manager brief\n\nDispatch ready admitted tasks from %s at %s and report any owner dispatch failure.\n" % (repo, branch),
+        "tasklist.md": "\n".join(rows) + "\n",
+    }
+    for name, content in texts.items():
+        (bundle / name).write_text(content, encoding="utf-8")
+    run = {"run_id": "perch-stage2", "mode": "planning_only",
+           "roles": {"coordinator": {"model": "claude-haiku-5-5"},
+                     "worker_normal": {"model": "claude-haiku-5-5"}},
+           "assessment_accounting": stage.get("run_policy", {}).get("assessment_accounting")}
+    (bundle / "run.json").write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
+    print(str(bundle))
+
+
 def cmd_field(args):
     print(read_json(args.project)[args.key])
 
@@ -1211,6 +1246,8 @@ def build_parser():
     p.set_defaults(fn=cmd_tasks)
     p = sub.add_parser("stage"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
     p.add_argument("--key", required=True); p.set_defaults(fn=cmd_stage)
+    p = sub.add_parser("stage2-bundle"); p.add_argument("--project", required=True); p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_stage2_bundle)
     p = sub.add_parser("field"); p.add_argument("--project", required=True); p.add_argument("--key", required=True)
     p.set_defaults(fn=cmd_field)
     p = sub.add_parser("portfolio"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
