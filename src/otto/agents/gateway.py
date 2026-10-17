@@ -543,7 +543,8 @@ class OwnerDueRecordAttemptCapture:
                     and prior_result.get("delivery_state") != "unknown"
                 )
                 if not next_owner_occurrence:
-                    return {"outcome": "unknown", "message": "due occurrence already has a different unresolved attempt"}
+                    return {"outcome": "unknown", "message": "due occurrence already has a different unresolved attempt",
+                            "logical_request_key": prior.get("logical_request_key")}
             else:
                 if prior.get("request_fingerprint") != request_fingerprint:
                     return {"outcome": "request_reuse_conflict", "message": "same request key has different attempt content"}

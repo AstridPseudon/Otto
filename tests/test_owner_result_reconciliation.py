@@ -10,7 +10,7 @@ from herzchen.contracts import AuthenticatedActor
 from herzchen.kernel import Store
 from herzchen.kernel.operations import OperationState, UnknownOutcomeError
 from otto.agents.effect_ledger import NativeEffectLedger
-from otto.agents.gateway import InMemoryAttemptCapture, OttoGateway, Responsibility
+from otto.agents.gateway import InMemoryAttemptCapture, OttoGateway, OwnerDueRecordAttemptCapture, Responsibility
 
 from otto.agents.owner_runtime import CanonicalRoleRuntime, OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
 
@@ -77,6 +77,54 @@ class FixtureCapture(OwnerAuthorizedRoleCapture):
 
 
 class OwnerResultReconciliationTests(unittest.TestCase):
+    def test_raced_due_claim_guides_to_prior_effect_not_competing_request(self):
+        from herzchen.contracts import ResourceRef
+
+        earlier, incoming = "earlier-'$HOME'", "incoming"
+        effect_ref = ResourceRef("owner", "effect", NativeEffectLedger.key(earlier))
+        record = SimpleNamespace(host_evidence={"gateway_attempt": {
+            "state": "claimed", "logical_request_key": earlier,
+        }}, last_completed_request=None, completion_state=None,
+            in_flight_request=incoming)
+        capture = object.__new__(OwnerDueRecordAttemptCapture)
+        capture.scope_validator = None
+        capture._record = lambda: record
+        capture._scope_error = lambda *_args: None
+        capture.validate_generation = lambda *_args: None
+        # The competing claim becomes visible only when claim rereads the Due.
+        capture.read = lambda _key: None
+        capture.read_assignment = lambda *_args: None
+
+        class Ledger:
+            def __init__(self):
+                self.keys = []
+
+            def get(self, key):
+                self.keys.append(key)
+                return SimpleNamespace(effect_ref=effect_ref) if key == earlier else None
+
+        class Adapter:
+            def invoke(self, _request):
+                raise AssertionError("competing request must not reach the adapter")
+
+        ledger = Ledger()
+        responsibility = Responsibility(
+            owner="owner-principal", logical_agent_id="worker-1", operation="invoke",
+            packet_digest="a" * 64, logical_request_key=incoming,
+            project_ref={"authority": "owner", "kind": "wrk.project", "id": "p-1"},
+            task_ref={"authority": "owner", "kind": "wrk.task", "id": "t-1"},
+            assignment_ref=ASSIGNMENT, generation=1,
+        )
+        response = OttoGateway(Adapter(), attempt_capture=capture, effect_ledger=ledger,
+            require_owner_binding=True).operation(responsibility, {})
+
+        self.assertEqual(response["error"]["code"], "unknown_attempt_requires_reconciliation")
+        self.assertEqual(ledger.keys, [earlier])
+        self.assertEqual(response["effect_ref"], effect_ref.to_dict())
+        argv = shlex.split(response["next_action"])
+        self.assertEqual(argv[:4], ["otto", "effects", "read", "--effect-ref"])
+        self.assertEqual(json.loads(argv[4]), effect_ref.to_dict())
+
     def test_owner_attempt_unknown_and_replay_paths_read_back_exact_native_effect(self):
         from herzchen.contracts import ResourceRef
 
