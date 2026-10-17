@@ -99,11 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
     detach.add_argument("--project", required=True)
     for command in (depend, dependencies, detach):
         command.add_argument("--portfolio", help="owner lane: portfolio id")
-    sync = project_sub.add_parser("sync-docs", help="mirror changed run-dir files into a PENDING project by digest")
-    sync.add_argument("--project", required=True, help="project id or run id")
-    sync.add_argument("--bundle", help="run directory (default: the registered source bundle)")
-    sync.add_argument("--check", action="store_true", help="report drift only; record nothing")
-
     release = project_sub.add_parser("release-checkout", help="release this host's exact project checkout, preserving files/history; no activation")
     release.add_argument("--project", required=True)
     release.add_argument("--session-id", required=True, help="exact session returned by onboarding/open")
@@ -320,7 +315,7 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
         with HostSession(config, host=entry, project_ids=project_ids) as session:
             return owner_verb(list(args.portfolio_args), session=session, home=_home(args))
     if args.portfolio_args and args.portfolio_args[0] in {
-            "status", "documents", "retire", "sync-docs", "apply", "gate", "prerequisite"}:
+            "status", "documents", "retire", "apply", "gate", "prerequisite"}:
         return portfolio_command(args)
     import contextlib, io
     from otto.portfolio import cli as portfolio_cli
@@ -412,7 +407,7 @@ def cmd_register(args: argparse.Namespace) -> Any:
         receipt = register(session, computed, key=args.request_key)
     _receipt(home, "register-" + run_id, receipt)
     return {"outcome": "registered", **receipt,
-            "next_action": "edit the run dir and `ottoctl project sync-docs` until activation; then "
+            "next_action": "review the stored project documents; then "
                            "`ottoctl project activate --project " + run_id + "`"}
 
 
@@ -503,26 +498,6 @@ def cmd_release_checkout(args: argparse.Namespace) -> Any:
     return {**result, "provider_called": False}
 
 
-def cmd_sync_docs(args: argparse.Namespace) -> Any:
-    from herzchen.contracts import ResourceRef
-    from .sync import sync_documents
-    home = _home(args)
-    config = host_config.load(home)
-    with HostSession(config, host=_host_opt(args, config)) as session:
-        record = _resolve_project(session, args.project)
-    with HostSession(config, host=_host_opt(args, config), project_ids=(record.ref.id,)) as session:
-        record = session.owner.graph.current(ResourceRef(record.ref.authority, record.ref.kind, record.ref.id))
-        registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-        if getattr(args, "bundle_files", None) is None:
-            # The client reads the run dir itself; tell it which one is registered.
-            return {"outcome": "needs_bundle", "source_bundle": registration.get("source_bundle"),
-                    "provider_called": False}
-        result = sync_documents(session, record, _client_bundle(args), apply=not args.check)
-    if result.get("outcome") == "synced":
-        _receipt(home, "sync-" + str(registration.get("run_id") or record.ref.id) + "-" + result["request_key"][-20:], result)
-    return result
-
-
 def cmd_project_status(args: argparse.Namespace) -> Any:
     from herzchen.contracts import ResourceRef
     from herzchen.kernel import LimitService
@@ -555,16 +530,13 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
         reader = ProjectDocumentReader(sheet_reader=session.owner.sheet, content_reader=session.owner.content,
             visibility_reader=ContextPacketService(session.store.domain_handler((content_contribution(),))))
         custom = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-        registered = custom.get("raw_sha256") or {}
         documents = []
         for row in reader.list_documents(record.ref.to_dict(), actor=_reader_actor(session))["documents"]:
             path = next((m.get("key") for m in row.get("memberships") or () if m.get("namespace") == "project.files"), None)
             stored = session.owner.content.read(ResourceRef.from_dict(row["current_revision_ref"]))["content"]
             digest = hashlib.sha256(stored.encode()).hexdigest() if isinstance(stored, str) else None
             documents.append({"path": path, "role": row["document"].get("role"),
-                              "revision_ref": row["current_revision_ref"], "stored_text_sha256": digest,
-                              "registered_raw_sha256": registered.get(path),
-                              "matches_registered_bytes": None if path not in registered else digest == registered[path]})
+                              "revision_ref": row["current_revision_ref"], "stored_text_sha256": digest})
         limits = LimitService(session.store)
         pools = []
         for pool_id in _pool_ids(session, record):
@@ -901,8 +873,6 @@ def client_request(args: argparse.Namespace, key: tuple) -> Any:
     body = _lane_args(args)
     if key in {("project", "register"), ("project", "import-history")}:
         body.update(_read_client_bundle(args.bundle))
-    if key == ("project", "sync-docs") and args.bundle:
-        body.update(_read_client_bundle(args.bundle))
     if key == ("portfolio", None):
         body["portfolio_args"] = list(args.portfolio_args)
     if key == ("manager", None):
@@ -911,12 +881,6 @@ def client_request(args: argparse.Namespace, key: tuple) -> Any:
     if owner_request:
         request = {"command": "portfolio-operation", "args": request}
     result = _await(lane, request, args.wait_seconds, owner_actor=client.get("owner_actor") if client else None)
-    if key == ("project", "sync-docs") and isinstance(result, Mapping) and result.get("outcome") == "needs_bundle":
-        if not result.get("source_bundle"):
-            raise LookupError("no registered source bundle; pass --bundle")
-        body.update(_read_client_bundle(result["source_bundle"]))
-        result = _await(lane, {**request, "args": body}, args.wait_seconds,
-                        owner_actor=client.get("owner_actor") if client else None)
     return result
 
 
@@ -958,7 +922,7 @@ HOST_OPERATIONS = {
     ("portfolio", None): cmd_portfolio,
     ("projects", None): cmd_projects,
     ("project", "register"): cmd_register, ("project", "status"): cmd_project_status,
-    ("project", "sync-docs"): cmd_sync_docs, ("project", "activate"): cmd_activate,
+    ("project", "activate"): cmd_activate,
     ("project", "release-checkout"): cmd_release_checkout,
     ("project", "import-history"): cmd_import_history,
     ("project", "depend"): cmd_project_portfolio,

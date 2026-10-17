@@ -1,25 +1,16 @@
-"""Portfolio text documents using DAT revisions and read-only project associations.
-
-The private DAT manifest holds only sync digests and paths. It is committed in
-one owner transaction with document revisions and associations; no store schema
-or secondary index is introduced. Client processes read directories, while the
-single owner service validates and commits the supplied bytes.
-"""
+"""Read shared project documents through their canonical DAT associations."""
 from __future__ import annotations
 
 import hashlib
-import os
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, Mapping
 
-from herzchen.content import ContentDocument, ContentRevision, DocumentAssociation
+from herzchen.content import DocumentAssociation
+from herzchen.content import ContentDocument, ContentRevision
 from herzchen.contracts import ReferenceBinding, ResourceRef, TransactionContext, canonical_json
 
 NAMESPACE = "portfolio.shared"
-MAX_FILES = 1000
-MAX_FILE_BYTES = 10 << 20
-MAX_TOTAL_BYTES = 256 << 20
 
 
 def _base(ref):
@@ -40,91 +31,18 @@ def _path(value):
     return value
 
 
-def _files(bundle):
-    files = bundle.get("files")
-    if not isinstance(files, Mapping) or len(files) > MAX_FILES:
-        raise ValueError("portfolio sync requires at most 1000 UTF-8 files")
-    total = 0
-    for path, value in files.items():
-        _path(path)
-        if not isinstance(value, str):
-            raise ValueError("portfolio documents must contain UTF-8 text")
-        size = len(value.encode("utf-8"))
-        if size > MAX_FILE_BYTES:
-            raise ValueError("portfolio document exceeds 10 MiB")
-        total += size
-    if total > MAX_TOTAL_BYTES:
-        raise ValueError("portfolio sync exceeds 256 MiB")
-    return dict(files)
-
-
-def read_document_directory(directory, *, exclude_prefixes=()):
-    """Client-side, read-only directory ingestion with project sync's depth rule."""
-    from otto.hostctl.bundle import _bundle_names
-    root = Path(directory).resolve()
-    if not root.is_dir():
-        raise ValueError("not a directory: " + str(root))
-    files = {}
-    names = [name for name in _bundle_names(root)
-             if not any(name.startswith(prefix) for prefix in exclude_prefixes)]
-    if len(names) > MAX_FILES:
-        raise ValueError("portfolio sync requires at most 1000 UTF-8 files")
-    total = 0
-    for name in names:
-        with os.fdopen(os.open(root / name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb") as stream:
-            raw = stream.read(MAX_FILE_BYTES + 1)
-        total += len(raw)
-        if len(raw) > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
-            raise ValueError("portfolio sync exceeds its file or operation byte limit")
-        files[name] = raw.decode("utf-8")
-    bundle = {"root": str(root), "files": files}
-    _files(bundle)
-    return bundle
-
-
 def document_namespace(*, root=None, root_namespace=None):
-    """Stable root selector; omitted selectors retain the original generic scope."""
+    """Validate an optional namespace selector used by stored associations."""
     if root_namespace is not None:
         if not isinstance(root_namespace, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", root_namespace):
             raise ValueError("root namespace must be a single safe component of at most 64 characters")
         return root_namespace
     if root is None:
         return None
+    from pathlib import Path
     if not isinstance(root, (str, Path)) or not str(root) or not Path(root).is_absolute():
         raise ValueError("portfolio document root must be an absolute path")
     return "root-" + _digest(str(Path(root).resolve()))[:32]
-
-
-def _document_ref(portfolio, path, *, root_namespace=None):
-    namespace = document_namespace(root_namespace=root_namespace)
-    identity = [portfolio.to_dict(), path] if namespace is None else [portfolio.to_dict(), namespace, path]
-    return ResourceRef(portfolio.authority, "dat.content.document", "portfolio-" + _digest(canonical_json(identity))[:32])
-
-
-def _manifest_ref(portfolio, *, root_namespace=None):
-    return _document_ref(portfolio, ".sync-manifest", root_namespace=root_namespace)
-
-
-def _manifest(owner, portfolio, *, root_namespace=None):
-    head = owner.content.read(_manifest_ref(portfolio, root_namespace=root_namespace))
-    return dict((head.get("revision") or {}).get("content") or {"files": {}})
-
-
-def _authorized(session, portfolio):
-    portfolio = _base(portfolio)
-    if portfolio.kind != "wrk.portfolio" or portfolio.authority != session.actor.authority:
-        raise PermissionError("portfolio is outside the owner authority")
-    if session.host is None:
-        return portfolio, session.actor
-    if _base(session.host["portfolio_ref"]) != portfolio:
-        raise PermissionError("portfolio is outside the caller's supervision")
-    assignment = session.root_assignment()
-    if (assignment.principal != session.host["principal"] or assignment.role != "orchestrator"
-            or _base(assignment.scope) != portfolio
-            or assignment.generation != session.host.get("root_generation")
-            or getattr(assignment.status, "value", assignment.status) in {"reassigned", "completed", "cancelled"}):
-        raise PermissionError("portfolio documents require the current orchestrator or owner")
-    return portfolio, session.binding.authenticated_actor(session.host["principal"])
 
 
 def _context(actor, action, ref, value, head=None):
@@ -134,16 +52,18 @@ def _context(actor, action, ref, value, head=None):
         expected_version=version, expected_revision=(head or {}).get("current_revision", {}).get("revision"))
 
 
-def _write(owner, actor, portfolio, ref, body, *, manifest=False):
+def _document_ref(portfolio, path, *, root_namespace=None):
+    namespace = document_namespace(root_namespace=root_namespace)
+    identity = [portfolio.to_dict(), path] if namespace is None else [portfolio.to_dict(), namespace, path]
+    return ResourceRef(portfolio.authority, "dat.content.document", "portfolio-" + _digest(canonical_json(identity))[:32])
+
+
+def _write(owner, actor, portfolio, ref, body):
+    """Write a fixture or owner-authored DAT document; no manifest is maintained."""
     head = owner.content.read(ref)
     if head and (head.get("revision") or {}).get("content") == body:
         return None
-    # Shared DAT documents retain their own canonical EDT scope (authoring.py
-    # resolve_scope); authoring_scope here bounds read visibility to the portfolio.
-    # Reader sessions cannot acquire write capability for shared documents.
-    # Writes enter this orchestrator/owner-checked command on the owner lane.
-    document = ContentDocument(ref, "portfolio-manifest" if manifest else "portfolio-document",
-        "private" if manifest else "shared", "read", actor.actor,
+    document = ContentDocument(ref, "portfolio-document", "shared", "read", actor.actor,
         authoring_scope=portfolio, writable=False)
     context = _context(actor, "write", ref, body, head)
     revision = ContentRevision(ref, "rev-" + str(head.get("version", 0) + 1), body, actor,
@@ -174,213 +94,99 @@ def _project_portfolio(owner, project):
     return _base(value["portfolio_ref"]) if value.get("portfolio_ref") else None
 
 
-def sync_portfolio_documents(session, portfolio_ref, bundle, *, apply=True):
-    """Three-way sync plus explicit enrollment of newly attached projects."""
-    portfolio, actor = _authorized(session, portfolio_ref)
-    files = _files(bundle)
-    namespace = document_namespace(root_namespace=bundle.get("root_namespace"))
-    owner = session.owner
-    manifest = _manifest(owner, portfolio, root_namespace=namespace)
-    synced = dict(manifest.get("files") or {})
-    retired = set(manifest.get("retired") or ())
-    projects = [record for record in owner.graph.list(kind="project")
-                if ((record.payload.get("metadata") or {}).get("otto_orchestrator") or {}).get("portfolio_ref")
-                and _base(record.payload["metadata"]["otto_orchestrator"]["portfolio_ref"]) == portfolio]
-    rows, recorded, receipts, attached = [], [], [], []
-    if not apply:
-        for path in sorted(set(files) | set(synced) | retired):
-            ref = _document_ref(portfolio, path, root_namespace=namespace)
-            head = owner.content.read(ref)
-            text = (head.get("revision") or {}).get("content")
-            now = _digest(files[path]) if path in files else None
-            then = _digest(text) if isinstance(text, str) else None
-            base = synced.get(path)
-            if path in retired:
-                state = "retired"
-            elif now == then:
-                state = "unchanged"
-            elif then is None:
-                state = "added"
-            elif now is None:
-                state = "removed_from_run_dir"
-            elif then == base:
-                state = "changed"
-            elif now == base:
-                state = "otto_newer"
-            else:
-                state = "conflict"
-            rows.append({"path": path, "state": state, "stored_sha256": then,
-                         "run_dir_sha256": now, "last_synced_sha256": base})
-            if state in {"added", "changed"}:
-                recorded.append(path)
-            if state != "retired" and (head or state == "added"):
-                for project in projects:
-                    association = _association(project.ref, path, ref, root_namespace=namespace)
-                    link = owner.content.read(ResourceRef(project.ref.authority, "document-association", association.identity))
-                    if not link or link.get("payload", {}).get("active") is False:
-                        attached.append({"project_ref": _base(project.ref).to_dict(), "path": path})
-        return {"outcome": "plan", "portfolio_ref": portfolio.to_dict(),
-                **({"root_namespace": namespace} if namespace is not None else {}), "documents": rows,
-                "recorded": recorded, "attached": attached, "receipts": [],
-                "not_overwritten": [row["path"] for row in rows if row["state"] in {"conflict", "otto_newer"}],
-                "writes": False, "provider_called": False, "dispatch": False}
-    with session.store.transaction():
-        for path in sorted(set(files) | set(synced) | retired):
-            ref = _document_ref(portfolio, path, root_namespace=namespace)
-            head = owner.content.read(ref)
-            text = (head.get("revision") or {}).get("content")
-            now = _digest(files[path]) if path in files else None
-            then = _digest(text) if isinstance(text, str) else None
-            base = synced.get(path)
-            if path in retired:
-                state = "retired"
-            elif now == then:
-                state = "unchanged"
-            elif then is None:
-                state = "added"
-            elif now is None:
-                state = "removed_from_run_dir"
-            elif then == base:
-                state = "changed"
-            elif now == base:
-                state = "otto_newer"
-            else:
-                state = "conflict"
-            rows.append({"path": path, "state": state, "stored_sha256": then,
-                         "run_dir_sha256": now, "last_synced_sha256": base})
-            if state in {"added", "changed"}:
-                receipt = _write(owner, actor, portfolio, ref, files[path])
-                if receipt:
-                    receipts.append(receipt)
-                recorded.append(path)
-                synced[path] = now
-            elif state == "unchanged" and now is not None:
-                synced[path] = now
-            if state != "retired" and (head or state == "added"):
-                for project in projects:
-                    receipt = _link(owner, actor, _association(project.ref, path, ref, root_namespace=namespace))
-                    if receipt:
-                        receipts.append(receipt)
-                        attached.append({"project_ref": _base(project.ref).to_dict(), "path": path})
-        body = {**manifest, "files": synced}
-        if retired:
-            body["retired"] = sorted(retired)
-        receipt = _write(owner, actor, portfolio, _manifest_ref(portfolio, root_namespace=namespace), body, manifest=True)
-        if receipt:
-            receipts.append(receipt)
-        if namespace is not None:
-            catalog = _manifest(owner, portfolio)
-            roots = dict(catalog.get("roots") or {})
-            roots.setdefault(namespace, {"root": bundle.get("root")})
-            receipt = _write(owner, actor, portfolio, _manifest_ref(portfolio),
-                             {**catalog, "roots": roots}, manifest=True)
-            if receipt:
-                receipts.append(receipt)
-    return {"outcome": "synced" if recorded or attached else "in_sync", "portfolio_ref": portfolio.to_dict(),
-            **({"root_namespace": namespace} if namespace is not None else {}),
-            "documents": rows, "recorded": recorded, "attached": attached, "receipts": receipts,
-            "not_overwritten": [row["path"] for row in rows if row["state"] in {"conflict", "otto_newer"}],
-            "provider_called": False, "dispatch": False}
-
-
-def retire_portfolio_document(session, portfolio_ref, path, *, root_namespace=None):
-    """Unlink a managed path and retain DAT revisions plus a durable sync tombstone."""
-    portfolio, actor = _authorized(session, portfolio_ref)
-    path = _path(path)
-    namespace = document_namespace(root_namespace=root_namespace)
-    owner = session.owner
-    manifest = _manifest(owner, portfolio, root_namespace=namespace)
-    files = dict(manifest.get("files") or {})
-    retired = set(manifest.get("retired") or ())
-    common = {"portfolio_ref": portfolio.to_dict(), "path": path, "root_namespace": namespace,
-              "provider_called": False, "dispatch": False}
-    if path in retired:
-        return {**common, "outcome": "already_retired", "receipts": []}
-    if path not in files:
-        return {**common, "outcome": "unavailable", "receipts": []}
-    ref = _document_ref(portfolio, path, root_namespace=namespace)
-    receipts = []
-    with session.store.transaction():
-        for project in owner.graph.list(kind="project"):
-            association = _association(project.ref, path, ref, root_namespace=namespace)
-            linked = owner.content.read(ResourceRef(project.ref.authority, "document-association", association.identity))
-            target = ((linked.get("payload") or {}).get("association") or {}).get("document", {}).get("ref")
-            # An identically named association in another portfolio may bind a
-            # different document. Retire only this root's retained DAT identity.
-            if target is None or _base(target) != ref:
-                continue
-            receipt = _link(owner, actor, association, remove=True)
-            if receipt:
-                receipts.append(receipt)
-        files.pop(path)
-        retired.add(path)
-        receipt = _write(owner, actor, portfolio, _manifest_ref(portfolio, root_namespace=namespace),
-                         {**manifest, "files": files, "retired": sorted(retired)}, manifest=True)
-        if receipt:
-            receipts.append(receipt)
-    return {**common, "outcome": "retired", "document_ref": ref.to_dict(), "receipts": receipts}
+def _association_rows(owner, project):
+    refs = owner.store.consumer().find_identity_refs(kind="document-association", payload_matches={
+        ("association", "subject", "authority"): project.authority,
+        ("association", "subject", "kind"): project.kind,
+        ("association", "subject", "id"): project.id,
+        ("association", "namespace"): NAMESPACE})
+    rows = []
+    for ref in refs:
+        head = owner.content.read(_base(ref))
+        payload = head.get("payload") or {} if head else {}
+        if payload.get("active") is False or not payload.get("association"):
+            continue
+        association = DocumentAssociation.from_dict(payload["association"])
+        rows.append((association, head))
+    return rows
 
 
 def _read(owner, portfolio, *, operation="list", path=None, project=None, root_namespace=None,
-          include_retired=False, revision=None):
+          revision=None):
     if operation not in {"list", "read"} or operation == "read" and not path:
         raise ValueError("portfolio documents requires list or read with a path")
-    if (include_retired or revision is not None) and operation != "read":
-        raise ValueError("retired documents and explicit revisions require a read with a path")
     if revision is not None and (not isinstance(revision, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", revision)):
         raise ValueError("document revision must be a safe revision identifier")
     namespace = document_namespace(root_namespace=root_namespace)
-    catalog = _manifest(owner, portfolio)
-    namespaces = [namespace] if namespace is not None else [None, *sorted(catalog.get("roots") or {})]
-    rows = []
     if path is not None:
-        # Qualified keys come from the owner's catalog and project associations.
         if not isinstance(path, str):
             raise ValueError("portfolio document path must be a relative UTF-8 path")
-        prefix, separator, rest = path.partition("/")
-        selected, scoped_separator, local = rest.partition("/")
-        if namespace is None and prefix == ".roots" and separator and scoped_separator and selected in (catalog.get("roots") or {}):
-            _path(local)
+        if path.startswith(".roots/") and namespace is None:
+            pieces = path.split("/", 2)
+            if len(pieces) != 3:
+                raise ValueError("portfolio document path must include a root and file")
+            namespace = document_namespace(root_namespace=pieces[1])
+            path = ".roots/" + namespace + "/" + _path(pieces[2])
         else:
             _path(path)
-    for scope in namespaces:
-        manifest = _manifest(owner, portfolio, root_namespace=scope)
-        paths = set(manifest.get("files") or {})
-        retired = set(manifest.get("retired") or ())
-        if include_retired:
-            paths |= retired
-        for name in sorted(paths):
-            key = name if scope is None or namespace is not None else ".roots/" + scope + "/" + name
-            if operation == "read" and key != path:
+    projects = [owner.graph.current(project)] if project is not None else [
+        record for record in owner.graph.list(kind="project")
+        if _project_portfolio(owner, record.ref) == portfolio]
+    rows, seen = [], set()
+    for record in projects:
+        for association, _ in _association_rows(owner, _base(record.ref)):
+            key = association.key
+            if key in seen or namespace is not None and not key.startswith(".roots/" + namespace + "/"):
                 continue
-            ref = _document_ref(portfolio, name, root_namespace=scope)
-            if project is not None:
-                association = _association(project, name, ref, root_namespace=scope)
-                linked = owner.content.read(ResourceRef(portfolio.authority, "document-association", association.identity))
-                if not linked or linked.get("payload", {}).get("active") is False:
+            visible_path = key
+            if key.startswith(".roots/"):
+                parts = key.split("/", 2)
+                if len(parts) != 3:
                     continue
+                visible_path = key if project is None and root_namespace is None else parts[2]
+            if operation == "read" and visible_path != path and key != path:
+                continue
+            seen.add(key)
+            ref = ResourceRef.from_dict(association.document.ref.to_dict())
             selected_ref = ResourceRef(ref.authority, ref.kind, ref.id, revision) if revision else ref
             head = owner.content.read(selected_ref)
             if not head:
                 continue
             body = head.get("content") if revision else (head.get("revision") or {}).get("content")
-            revision_ref = selected_ref.to_dict() if revision else head["current_revision"]
-            rows.append({"path": key, **({"root_namespace": scope} if scope is not None else {}),
+            if not isinstance(body, str):
+                continue
+            rows.append({"path": visible_path, **({"root_namespace": key.split("/", 2)[1]} if key.startswith(".roots/") else {}),
                          "role": "portfolio-document", "document_ref": ref.to_dict(),
-                         "revision_ref": revision_ref, "bytes": len(body.encode("utf-8")),
-                         **({"retired": True} if name in retired else {}),
-                         **({"content": body} if operation == "read" else {})})
+                         "revision_ref": selected_ref.to_dict() if revision else head["current_revision"],
+                         "bytes": len(body.encode("utf-8")), **({"content": body} if operation == "read" else {})})
     common = {"read_only": True, "provider_called": False, "dispatch": False}
     if operation == "list":
         return {**common, "outcome": "listed", "portfolio_ref": portfolio.to_dict(), "documents": rows}
     return {**common, "outcome": "read", **rows[0]} if rows else {**common, "outcome": "unavailable", "path": path}
 
 
+def _authorized(session, portfolio):
+    portfolio = _base(portfolio)
+    if portfolio.kind != "wrk.portfolio" or portfolio.authority != session.actor.authority:
+        raise PermissionError("portfolio is outside the owner authority")
+    if session.host is None:
+        return portfolio, session.actor
+    if _base(session.host["portfolio_ref"]) != portfolio:
+        raise PermissionError("portfolio is outside the caller's supervision")
+    assignment = session.root_assignment()
+    if (assignment.principal != session.host["principal"] or assignment.role != "orchestrator"
+            or _base(assignment.scope) != portfolio
+            or assignment.generation != session.host.get("root_generation")
+            or getattr(assignment.status, "value", assignment.status) in {"reassigned", "completed", "cancelled"}):
+        raise PermissionError("portfolio documents require the current orchestrator or owner")
+    return portfolio, session.binding.authenticated_actor(session.host["principal"])
+
+
 def portfolio_documents(session, portfolio_ref, *, operation="list", path=None, root_namespace=None,
-                        include_retired=False, revision=None):
+                        revision=None):
     portfolio, _ = _authorized(session, portfolio_ref)
     return _read(session.owner, portfolio, operation=operation, path=path, root_namespace=root_namespace,
-                 include_retired=include_retired, revision=revision)
+                 revision=revision)
 
 
 def project_shared_documents(owner, project_ref, *, operation="list", path=None):
@@ -392,26 +198,38 @@ def project_shared_documents(owner, project_ref, *, operation="list", path=None)
     return _read(owner, portfolio, operation=operation, path=path, project=project)
 
 
+def retire_portfolio_document(session, portfolio_ref, path, *, root_namespace=None):
+    """Remove a shared-document association while retaining its DAT document."""
+    portfolio, actor = _authorized(session, portfolio_ref)
+    path = _path(path)
+    namespace = document_namespace(root_namespace=root_namespace)
+    owner = session.owner
+    receipts = []
+    with session.store.transaction():
+        for record in owner.graph.list(kind="project"):
+            if _project_portfolio(owner, record.ref) != portfolio:
+                continue
+            for association, _ in _association_rows(owner, _base(record.ref)):
+                key = association.key
+                visible = key.split("/", 2)[2] if key.startswith(".roots/") else key
+                if visible != path or namespace is not None and not key.startswith(".roots/" + namespace + "/"):
+                    continue
+                receipt = _link(owner, actor, association, remove=True)
+                if receipt:
+                    receipts.append(receipt)
+    return {"portfolio_ref": portfolio.to_dict(), "path": path, "outcome": "retired" if receipts else "unavailable",
+            "receipts": receipts, "provider_called": False, "dispatch": False}
+
+
 def remove_project_associations(owner, project_ref, portfolio_ref, *, actor):
-    """Owner detach hook; call in the same transaction as supervision removal."""
+    """Owner detach hook; unlink every associated shared document in the transaction."""
     project = _base(project_ref)
     portfolio = _base(portfolio_ref)
     if project.authority != portfolio.authority:
         raise PermissionError("project is outside the portfolio authority")
-    # Revoke every namespace association, including links made through DAT
-    # outside sync. The manifest is sync provenance, not an exhaustive ACL.
-    refs = owner.store.consumer().find_identity_refs(kind="document-association", payload_matches={
-        ("association", "subject", "authority"): project.authority,
-        ("association", "subject", "kind"): project.kind,
-        ("association", "subject", "id"): project.id,
-        ("association", "namespace"): NAMESPACE})
     receipts = []
-    for ref in refs:
-        head = owner.content.read(_base(ref))
-        payload = head.get("payload") or {}
-        if payload.get("active") is False:
-            continue
-        receipt = _link(owner, actor, DocumentAssociation.from_dict(payload["association"]), remove=True)
+    for association, _ in _association_rows(owner, project):
+        receipt = _link(owner, actor, association, remove=True)
         if receipt:
             receipts.append(receipt)
     return receipts

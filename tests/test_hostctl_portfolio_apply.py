@@ -92,23 +92,12 @@ class HostctlPortfolioApplyTests(HostctlFixture):
         setup = gate.payload["fields"]["portfolio_setup"]
         self.assertEqual(setup["completion"]["evidence"], "alpha accepted")
 
-    def test_otto_edit_blocks_apply_without_writing_and_foreign_portfolio_is_refused(self):
+    def test_apply_does_not_copy_portfolio_setup_as_a_shared_document(self):
         code, applied = self._apply()
         self.assertEqual(code, 0, applied)
-        before = self._counts()
-        def alter(session):
-            session.host = None
-            portfolio = ResourceRef(session.store.authority, "wrk.portfolio", self.portfolio_id)
-            ref = _document_ref(portfolio, "portfolio-setup.json",
-                                root_namespace=document_namespace(root=str(self.root)))
-            return _write(session.owner, session.actor, portfolio, ref, "Otto-owned edit\n")
-        self._owner(alter)
-        before = self._counts()
-        code, held = self._apply()
-        self.assertEqual(code, 0, held)
-        self.assertEqual(held["outcome"], "held")
-        self.assertTrue(any(path.endswith("portfolio-setup.json") for path in held["conflicts"]))
-        self.assertEqual(before, self._counts())
+        code, result = self._ottoctl("portfolio", "documents", "--portfolio", self.portfolio_id)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["documents"], [])
         code, refused = self._ottoctl("portfolio", "apply", "--portfolio", "foreign", "--root", str(self.root))
         self.assertNotEqual(code, 0)
 
@@ -176,7 +165,7 @@ class HostctlPortfolioApplyTests(HostctlFixture):
         path.write_text(path.read_text() + "\n" + marker + "\n")
         return path
 
-    def test_apply_of_changed_existing_document_commits_revision_and_baseline_together(self):
+    def test_apply_does_not_mirror_changed_source_documents_after_registration(self):
         import hashlib
         code, applied = self._apply()
         self.assertEqual(code, 0, applied)
@@ -184,67 +173,12 @@ class HostctlPortfolioApplyTests(HostctlFixture):
         new_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         code, changed = self._apply()
         self.assertEqual(code, 0, changed)
-        self.assertEqual(changed["outcome"], "applied", changed)
+        self.assertNotIn("project_sync", changed)
+        self.assertNotIn("shared_documents", changed)
         doc = self._documents("apply-A")["tasklist.md"]
-        self.assertEqual(doc["revision_ref"]["revision"], "rev-2")
-        self.assertEqual(doc["stored_text_sha256"], new_hash)
-        self.assertEqual(doc["registered_raw_sha256"], new_hash)
-        self.assertIs(doc["matches_registered_bytes"], True)
-        self.assertIs(self._documents("apply-B")["tasklist.md"]["matches_registered_bytes"], True)
-        code, again = self._apply()
-        self.assertEqual(code, 0, again)
-        self.assertEqual(again["outcome"], "in_sync", again)
-        code, sync = self._ottoctl("project", "sync-docs", "--project", "apply-A")
-        self.assertEqual(sync["outcome"], "in_sync", sync)
-        self.assertEqual(sync["not_overwritten"], [])
-
-    def test_failed_document_write_keeps_old_baseline_and_later_sync_writes_source(self):
-        import hashlib
-        from unittest import mock
-        from otto.portfolio.intake import OttoPortfolio
-        code, applied = self._apply()
-        self.assertEqual(code, 0, applied)
-        old = self._documents("apply-A")["tasklist.md"]["registered_raw_sha256"]
-        path = self._edit_tasklist()
-        new_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-        real = OttoPortfolio.check_in_project
-        def failing(self_, *args, **kwargs):
-            if str(kwargs.get("request_id", "")).startswith("sync:"):
-                raise RuntimeError("simulated document write failure")
-            return real(self_, *args, **kwargs)
-        with mock.patch.object(OttoPortfolio, "check_in_project", failing):
-            code, failed = self._apply()
-        self.assertNotEqual(code, 0, failed)
-        doc = self._documents("apply-A")["tasklist.md"]
-        self.assertEqual(doc["registered_raw_sha256"], old)
-        self.assertEqual(doc["stored_text_sha256"], old)
         self.assertEqual(doc["revision_ref"]["revision"], "rev-1")
-        code, check = self._ottoctl("project", "sync-docs", "--project", "apply-A", "--check")
-        states = {row["path"]: row["state"] for row in check["documents"]}
-        self.assertEqual(states["tasklist.md"], "changed", check)
-        self.assertEqual(check["not_overwritten"], [])
-        code, synced = self._ottoctl("project", "sync-docs", "--project", "apply-A")
-        self.assertEqual(synced["outcome"], "synced", synced)
-        doc = self._documents("apply-A")["tasklist.md"]
-        self.assertEqual((doc["stored_text_sha256"], doc["registered_raw_sha256"]), (new_hash, new_hash))
-
-    def test_genuine_otto_side_edit_of_existing_document_still_holds_apply(self):
-        from otto.hostctl.cli import _resolve_project
-        code, applied = self._apply()
-        self.assertEqual(code, 0, applied)
-        def edit(session):
-            principal = session.host["principal"]
-            record = _resolve_project(session, "apply-A")
-            opened = session.portfolio.checkout_project(record.ref.to_dict(), actor=principal, request_id="otto-edit:open")
-            done = session.portfolio.check_in_project(opened["project_ref"], session_id=opened["session_id"],
-                project_json=opened["project_json"], actor=principal, request_id="otto-edit:check-in",
-                document_changes=[{"operation": "edit", "path": "plan.md", "content": "# Plan\n\nOtto edit.\n"}])
-            self.assertEqual(done["outcome"], "finished", done)
-        self._owner(edit)
-        code, held = self._apply()
-        self.assertEqual(code, 0, held)
-        self.assertEqual(held["outcome"], "held", held)
-        self.assertIn("apply-A:plan.md", held["conflicts"])
+        self.assertNotEqual(doc["stored_text_sha256"], new_hash)
+        self.assertNotIn("registered_raw_sha256", doc)
 
 
 if __name__ == "__main__":

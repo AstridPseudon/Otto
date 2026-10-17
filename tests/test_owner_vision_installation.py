@@ -123,3 +123,16 @@ class OwnerVisionInstallationTests(unittest.TestCase):
             self.installation.agent_read({**request,"operation":"snapshot"},actor=actor,project_ref=project_ref,grant=grant,membership_reader=membership)
         with self.assertRaises(PermissionError):
             self.installation.agent_read(request,actor=actor,project_ref=ResourceRef("vision-test","work.project","foreign","rev-1"),grant=grant,membership_reader=membership)
+
+    def test_vision_project_document_read_uses_live_association_without_manifest(self):
+        from otto.portfolio.shared_documents import _association, _document_ref, _link, _write, project_shared_documents
+        portfolio = ResourceRef("vision-test", "wrk.portfolio", "vision-shared")
+        project = self.owner.graph.create_project(title="Vision shared docs",
+            logical_request_key="vision-shared-project",
+            metadata={"otto_orchestrator": {"portfolio_ref": portfolio.to_dict()}})
+        document = _document_ref(portfolio, "guide.md")
+        _write(self.owner, self.owner.owner_actor, portfolio, document, "Vision can still read this document.")
+        _link(self.owner, self.owner.owner_actor, _association(project.ref, "guide.md", document))
+        result = project_shared_documents(self.owner, project.ref, operation="read", path="guide.md")
+        self.assertEqual(result["outcome"], "read")
+        self.assertEqual(result["content"], "Vision can still read this document.")

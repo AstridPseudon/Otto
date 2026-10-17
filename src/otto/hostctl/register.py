@@ -171,7 +171,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     custom = {"otto_host_registration": {
         "schema": REGISTRATION_SCHEMA, "run_id": run_id, "mode": run.get("mode"),
         "activation_trigger": run.get("activation_trigger"), "control_root": run.get("control_root"),
-        "source_bundle": bundle.get("root"), "raw_sha256": bundle["raw_sha256"],
+        "source_bundle": bundle.get("root"),
         "activation": "pending: no role occurrence is prepared, no schedule is active, nothing is dispatched"}}
     brief = "\n".join(line for line in [
         "Megado run " + run_id + " (" + str(run.get("mode") or "draft") + ").",
@@ -227,9 +227,15 @@ def register(session: Any, registration: Mapping[str, Any], *, key: Optional[str
                                "provider_called": False, "dispatch": False, "steps": {}}
     principal = session.host_principal()
     existing = _registered_project(session, run_id)
+    source_bundle = registration["custom"]["otto_host_registration"].get("source_bundle")
+    same_folder = _registered_bundle(session, source_bundle) if source_bundle else None
+    if same_folder is not None and (existing is None or same_folder.ref.id != existing.ref.id):
+        raise ValueError("run folder is already registered: " + str(source_bundle))
     if existing is not None:
-        # Replay: the draft and its plan exist; finish only missing steps below.
-        created = {"outcome": "replayed", "project_ref": existing.ref.to_dict(), "workspace": {}}
+        existing_registration = (existing.payload.get("custom") or {}).get("otto_host_registration") or {}
+        if existing_registration.get("source_bundle") == registration["custom"]["otto_host_registration"].get("source_bundle"):
+            raise ValueError("run folder is already registered: " + run_id)
+        raise ValueError("run id is already registered from another folder: " + run_id)
     else:
         created = None
     # 1. The canonical onboarding route: one inert title-and-brief draft whose
@@ -454,6 +460,18 @@ def _registered_project(session: Any, run_id: str) -> Any:
     return None
 
 
+def _registered_bundle(session: Any, source_bundle: str) -> Any:
+    """Find a registered source directory even if its run id was later edited."""
+    from .cli import _project_records
+    source = Path(source_bundle).resolve()
+    for record in _project_records(session):
+        facts = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
+        registered = facts.get("source_bundle")
+        if registered and Path(registered).resolve() == source:
+            return record
+    return None
+
+
 def _task_refs(session: Any, project_record: Any) -> dict[str, Any]:
     refs = {}
     for raw in project_record.payload.get("tasks", ()):
@@ -466,14 +484,17 @@ def _task_refs(session: Any, project_record: Any) -> dict[str, Any]:
 
 def stored_bundle(session: Any, record: Any) -> dict:
     """Otto's stored copies of the run's files, parsed as a bundle (activation input)."""
+    from herzchen.content import domain_contribution as content_contribution
+    from herzchen.content.packets import ContextPacketService
+    from otto.portfolio.documents import ProjectDocumentReader
     from .bundle import parse_files
-    from .sync import _stored_documents
-    registration = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
-    paths = set(registration.get("raw_sha256") or {})
-    documents = _stored_documents(session, record)
+    reader = ProjectDocumentReader(sheet_reader=session.owner.sheet, content_reader=session.owner.content,
+        visibility_reader=ContextPacketService(session.store.domain_handler((content_contribution(),))))
+    actor = session.binding.authenticated_actor(session.host["principal"]) if session.host else session.owner.owner_actor
+    documents = reader.list_documents(record.ref.to_dict(), actor=actor)["documents"]
     files = {}
-    for path in sorted(paths):
-        if path not in documents:
-            raise RuntimeError("stored copy of " + path + " is missing; sync-docs before activation")
-        files[path] = session.owner.content.read(ResourceRef.from_dict(documents[path]["revision_ref"]))["content"]
+    for row in documents:
+        path = next((m.get("key") for m in row.get("memberships") or () if m.get("namespace") == "project.files"), None)
+        if path is not None:
+            files[path] = session.owner.content.read(ResourceRef.from_dict(row["current_revision_ref"]))["content"]
     return parse_files(files)
