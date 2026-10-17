@@ -319,6 +319,79 @@ def test_unresolved_dead_holder_keeps_capacity_claim_until_settled(tmp_path, mon
             handle.close()
 
 
+def test_holder_crash_at_spawn_cannot_launch_command_without_durable_root(tmp_path):
+    marker = tmp_path / "command-ran"
+    command = py(f"open({str(marker)!r}, 'w').write('ran')")
+    code = f"""
+import os, signal, sys
+from otto.hostctl import heavy
+command = {command!r}
+real_popen = heavy.subprocess.Popen
+def crash_after_spawn(args, *a, **kw):
+    child = real_popen(args, *a, **kw)
+    if args == command or (len(args) > 3 and args[1:3] == ['-m', 'otto.hostctl.heavy']
+                           and args[3] == '--_lease_child'):
+        os.kill(os.getpid(), signal.SIGKILL)
+    return child
+heavy.subprocess.Popen = crash_after_spawn
+raise SystemExit(heavy.run(command, weight=1, purpose='crash at spawn',
+                           max_minutes=1, wait=True, owner='test'))
+"""
+    env = dict(os.environ, OTTO_HEAVY_DIR=str(tmp_path / "state"), PYTHONPATH=str(SRC),
+               OTTO_HEAVY_CAPACITY="1")
+    env.pop("OTTO_HEAVY_LEASE", None)
+    holder = subprocess.Popen(py(code), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    holder.wait(timeout=30)
+    holder.stdout.close(); holder.stderr.close()
+    assert holder.returncode == -signal.SIGKILL
+    time.sleep(0.3)
+    assert not marker.exists(), "the requested command ran before exact custody was durable"
+    path = next((tmp_path / "state" / "holders").glob("*.json"))
+    record = json.loads(path.read_text())
+    if record.get("launch_state") == "pending":
+        from otto.hostctl import heavy as module
+        recovered = module._reap_dead_holders(tmp_path / "state")
+        assert recovered[0]["remaining"] == ["launch-pending"]
+        assert path.exists(), "recovery settled an unresolved launch intent"
+    else:
+        assert record["pid"] and record["pgid"] == record["pid"]
+        assert record["processes"][str(record["pid"])]["birth"]
+
+
+def test_requested_command_sees_its_durable_root_identity(tmp_path):
+    code = """
+import json, os
+from pathlib import Path
+path = Path(os.environ['OTTO_HEAVY_DIR']) / 'holders' / (os.environ['OTTO_HEAVY_LEASE'] + '.json')
+record = json.loads(path.read_text())
+assert record['pid'] == os.getpid() == record['pgid']
+assert record['launch_state'] == 'recorded'
+assert record['processes'][str(os.getpid())]['birth']
+"""
+    proc = heavy(tmp_path, "--", *py(code))
+    _, err = proc.communicate(timeout=30)
+    assert proc.returncode == 0, err
+
+
+def test_dead_pending_launch_keeps_its_capacity_claim(tmp_path):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    for sub in ("holders", "waiting", "slots"):
+        (directory / sub).mkdir(parents=True, exist_ok=True)
+    path = directory / "holders" / "pending.json"
+    path.write_text(json.dumps({"lease_id": "pending", "holder_pid": 99999999,
+                                "weight": 1, "launch_state": "pending"}))
+    assert module._reap_dead_holders(directory)[0]["remaining"] == ["launch-pending"]
+    assert path.exists()
+    ticket = directory / "waiting" / "next.json"
+    with ticket.open("w+") as mine:
+        fcntl.flock(mine, fcntl.LOCK_EX)
+        mine.write(json.dumps({"weight": 1, "purpose": "next", "queued_at": time.time()}))
+        mine.flush()
+        assert module._take(directory, 1, 1, ticket.name, False, lambda _backfill: None)[0] is None
+
+
 def test_a_heavy_call_inside_a_heavy_job_runs_straight_through(tmp_path):
     inner = [sys.executable, "-m", "otto.hostctl.heavy", "--no-wait", "--", sys.executable, "-c", "print('inner ran')"]
     proc = heavy(tmp_path, "--", *inner)

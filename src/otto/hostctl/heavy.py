@@ -20,7 +20,9 @@ machine).
 ``slots/<i>.lock``, so the kernel frees it when its holder dies. Each lease names itself in
 ``holders/<id>.json`` (marked ``backfill`` if it took slots ahead of the head).
 
-**Cleanup:** CMD runs in a private session. Its group and observed descendants are recorded with
+**Cleanup:** A private child records its exact process birth in the holder file, then waits for the
+holder to release it before executing CMD. If the holder dies first, CMD never starts. Its group
+and observed descendants are recorded with
 process birth identities in the holder record. TERM + CONT, a grace period, then KILL apply only to
 verified members of that lease. An unresolved dead holder keeps its capacity claim until recovery
 can verify that its processes are gone. ``OTTO_HEAVY_LEASE`` only lets nested heavy calls reuse slots.
@@ -209,8 +211,16 @@ def _observe(record: dict, processes: dict[int, dict], *, seed_root: bool = Fals
 
 def _write_holder(path: Path, record: dict) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(record, indent=1))
+    with temporary.open("w") as handle:
+        handle.write(json.dumps(record, indent=1))
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _alive(pid: int) -> bool:
@@ -330,6 +340,12 @@ def _reap_dead_holders(directory: Path) -> list[dict]:
         for holder in _holders(directory):
             if holder.get("holder_pid") and not _holder_alive(holder):
                 path = directory / "holders" / f"{holder['lease_id']}.json"
+                if holder.get("launch_state") == "pending":
+                    result = {"reaped": [], "remaining": ["launch-pending"], "sweep": "unavailable"}
+                    holder["unresolved"] = result
+                    _write_holder(path, holder)
+                    cleaned.append({"owner": holder.get("owner"), "purpose": holder.get("purpose"), **result})
+                    continue
                 result = stop_lease(holder, path)
                 if result.get("remaining") or result.get("sweep") == "unavailable":
                     holder["unresolved"] = result
@@ -441,6 +457,72 @@ def _describe(holders: list[dict]) -> str:
                      f"{h.get('started_at', '?')})" for h in holders) or "nobody (memory pressure)"
 
 
+def _lease_child(gate_fd: int, ready_fd: int, holder_file: Path, token: str, command: list[str]) -> int:
+    """Record this exact private-group root before the requested command is allowed to exec."""
+    try:
+        with open(holder_file.parent.parent / "reap.lock", "a+") as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX)
+            record = json.loads(holder_file.read_text())
+            if record.get("launch_state") != "pending" or record.get("launch_token") != token:
+                return 125
+            identity = process_identity(os.getpid())
+            if os.getpgid(0) != os.getpid():
+                return 125
+            record.pop("unresolved", None)
+            record.update(pid=os.getpid(), pgid=os.getpid(), launch_state="recorded",
+                          processes={str(os.getpid()): {"birth": list(identity.birth), "pgid": os.getpid()}})
+            _write_holder(holder_file, record)
+        os.write(ready_fd, b"1")
+        os.close(ready_fd)
+        ready_fd = -1
+        if os.read(gate_fd, 1) != b"1":
+            return 125  # holder died before release; the requested command never ran
+    finally:
+        os.close(gate_fd)
+        if ready_fd >= 0:
+            os.close(ready_fd)
+    try:
+        os.execvpe(command[0], command, os.environ)
+    except OSError as exc:
+        print(f"heavy: could not execute {command[0]}: {exc}", file=sys.stderr)
+        return 127
+    return 127
+
+
+def _launch_child(command: list[str], env: dict, holder_file: Path, record: dict) -> tuple[subprocess.Popen, dict]:
+    token = uuid.uuid4().hex
+    record.update(launch_state="pending", launch_token=token)
+    _write_holder(holder_file, record)
+    gate_read, gate_write = os.pipe()
+    ready_read, ready_write = os.pipe()
+    child = None
+    try:
+        child = subprocess.Popen([sys.executable, "-m", "otto.hostctl.heavy", "--_lease_child",
+                                  str(gate_read), str(ready_write), str(holder_file), token, *command],
+                                 env=env, start_new_session=True, pass_fds=(gate_read, ready_write))
+        os.close(gate_read)
+        gate_read = -1
+        os.close(ready_write)
+        ready_write = -1
+        if os.read(ready_read, 1) != b"1":
+            raise RuntimeError("heavy child could not record its launch identity")
+        recorded = json.loads(holder_file.read_text())
+        if (recorded.get("launch_token") != token or recorded.get("launch_state") != "recorded"
+                or recorded.get("pid") != child.pid
+                or not recorded.get("processes", {}).get(str(child.pid), {}).get("birth")):
+            raise RuntimeError("heavy child launch identity is not durable")
+        os.write(gate_write, b"1")
+        return child, recorded
+    except Exception:
+        if child is None:
+            holder_file.unlink(missing_ok=True)
+        raise
+    finally:
+        for fd in (gate_read, gate_write, ready_read, ready_write):
+            if fd >= 0:
+                os.close(fd)
+
+
 def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wait: bool, owner: str) -> int:
     if os.environ.get(LEASE_ENV):
         # Already inside a heavy job (e.g. a journey that renders frames): it holds slots; run straight through.
@@ -511,15 +593,13 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     started = record["admitted_ns"] / 1e9
     record["machine_before"] = machine_state()
     env = dict(os.environ, **{LEASE_ENV: lease_id})
-    child = subprocess.Popen(command, env=env, start_new_session=True)
-    record.update(pid=child.pid, pgid=child.pid)
-    birth = _birth_at(child.pid, os.getpid(), child.pid)
-    if birth is not None:
-        record["processes"] = {str(child.pid): {"birth": birth, "pgid": child.pid}}
-    processes = _processes()
-    if processes is not None:
-        _observe(record, processes, seed_root=True)
-    _write_holder(holder_file, record)
+    try:
+        child, record = _launch_child(command, env, holder_file, record)
+    except Exception:
+        for handle in slots or []:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
+        raise
 
     outcome, code = "exited", None
     stop_signal: list[int] = []
@@ -602,4 +682,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--_lease_child"]:
+        raise SystemExit(_lease_child(int(sys.argv[2]), int(sys.argv[3]), Path(sys.argv[4]),
+                                      sys.argv[5], sys.argv[6:]))
     raise SystemExit(main())
