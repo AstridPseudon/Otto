@@ -374,8 +374,8 @@ def test_worker_facade_refuses_foreign_assignment_token(monkeypatch, tmp_path):
     refused = facade.call(foreign, "check")
 
     assert refused["ok"] is False
-    assert refused["error"] == "LookupError"
-    assert refused["detail"] == "assignment has no active dispatch record"
+    assert refused["error"] == "owner_unavailable"
+    assert refused["detail"] == "LookupError: assignment has no active dispatch record"
     assert record.assignment == "assignment-owned-by-worker"
     assert _run(line, "rev-parse", "refs/heads/main") == base, "foreign token advanced the project's line"
 

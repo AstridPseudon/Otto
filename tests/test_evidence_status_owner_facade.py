@@ -126,7 +126,7 @@ class EvidenceStatusOwnerFacadeTests(unittest.TestCase):
                 capability.call({"handle": {"view": "evidence-status", "reference": reference}},
                                 root=root, actor=self.f.actor)
 
-    def test_tool_facade_preserves_owner_error_code_and_message(self):
+    def test_tool_facade_names_the_owner_error_in_its_detail(self):
         from herzchen.fleet.landing import LandingError
         from herzchen.fleet.tools.facade import LandingOwnerPort, ToolFacade
         from herzchen.fleet.tools.rules import DONE, FeedbackLedger, ToolSpec
@@ -147,8 +147,8 @@ class EvidenceStatusOwnerFacadeTests(unittest.TestCase):
 
         self.assertEqual(facade.call(token, "done"), {
             "ok": False,
-            "error": "LandingError",
-            "detail": "owner assessment policy does not bind this task: local assessment policy task content is stale",
+            "error": "owner_unavailable",
+            "detail": "LandingError: owner assessment policy does not bind this task: local assessment policy task content is stale",
         })
 
     def test_tool_facade_keeps_generic_fallback_for_unclassified_owner_errors(self):

@@ -216,11 +216,16 @@ class ToolFacade:
                 "result": result,
             }
         except Exception as exc:
-            code = getattr(exc, "code", type(exc).__name__)
+            # A domain error's own code is a stable answer; anything else stays owner_unavailable, with the
+            # exception named in the detail so a failure is diagnosable (the bare type hid a landing refusal).
+            code = getattr(exc, "code", None)
             message = getattr(exc, "message", None)
             if not isinstance(message, str) or not message:
                 message = str(exc)
-            if isinstance(code, str) and code and isinstance(message, str) and message:
+            if not (isinstance(code, str) and code):
+                code = "owner_unavailable"
+                message = type(exc).__name__ + (": " + message if message else "")
+            if isinstance(message, str) and message:
                 return {"ok": False, "error": code, "detail": message}
             return {"ok": False, "error": "owner_unavailable", "detail": type(exc).__name__}
 
