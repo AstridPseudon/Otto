@@ -52,6 +52,8 @@ Astra's eighth pass found nondefault profiles could omit `adapter`, pass load va
 
 Astra's ninth pass found a truthy non-string run `model_profile` raised TypeError on profile lookup, while a falsey malformed list silently chose the default. PK3R-UX12 validates explicit non-string run values before lookup and preserves the refusal through both envelopes. Its tests cover list, mapping and empty-list values.
 
+Astra's tenth pass found profile fields consumed directly by run templates and host admission were still optional/loosely typed. Missing assurance/policy values or malformed adapter and launcher fields could cause generic exceptions after source verification. PK3R-UX13 will validate these consumed fields at load time.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
