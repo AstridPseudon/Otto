@@ -48,6 +48,10 @@ spec = importlib.util.spec_from_file_location("perch_report", BOOTSTRAP / "perch
 perch_report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(perch_report)
 
+stage3_spec = importlib.util.spec_from_file_location("perch_stage3_report", BOOTSTRAP / "perch_stage3_report.py")
+stage3_report = importlib.util.module_from_spec(stage3_spec)
+stage3_spec.loader.exec_module(stage3_report)
+
 NAMES = ("staging-ready", "no-leaked-process", "timeline-events", "labs-left-behind", "harness-pool-within-limit",
          "store-matches-stage", "staging-at-rest-clean", "status-while-up", "status-after-kill-is-stale",
          "restart-after-kill-keeps-store", "status-after-stop", "refused-start-names-its-reason")
@@ -319,6 +323,172 @@ def clean_stage2_raw(root):
     return raw
 
 
+def clean_stage3_owner_evidence(*, extra_check=False):
+    """Normalized rows copied from owner lab, facade, Due, landing and verified runner sources."""
+    aliases = ("A", "B", "C")
+    checks = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))["stages"]["3"]["checks"]
+    project_ref = {"authority": "owner", "kind": "work.project", "id": "project-3", "revision": "rev-project"}
+    task_refs = {alias: {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
+                         "revision": "rev-task-" + alias} for alias in aliases}
+    assignment_refs = {alias: {"authority": "owner", "kind": "wrk.assignment", "id": "assignment-" + alias,
+                               "revision": "rev-assignment-" + alias} for alias in aliases}
+    expected = {alias: {"task_ref": task_refs[alias], "assignment_ref": assignment_refs[alias],
+                        "schedule_id": "due-" + alias, "check_argv": checks[alias]} for alias in aliases}
+    labs, facade_calls, runners, landings, dues = [], [], [], [], []
+    intervals = {"A": (100.0, 120.0), "B": (105.0, 125.0), "C": (130.0, 140.0)}
+    for alias in aliases:
+        run_id = "run-" + alias
+        commit = (alias.lower() * 40)
+        labs.append({"project_ref": project_ref, "task_ref": task_refs[alias],
+                     "assignment_ref": assignment_refs[alias],
+                     "started_at": "2026-10-18T10:00:00+00:00",
+                     "ended_at": "2026-10-18T10:00:02+00:00",
+                     "elapsed_seconds": 2.0, "path": "/owner/labs/" + alias, "apparent_bytes": 512,
+                     "size_rule": "sum st_size of regular files recursively, including .git; symlinks excluded",
+                     "lab_commit": commit})
+        record = {"run_id": run_id, "seq": len(runners) + 1, "binding": "binding-" + alias,
+                  "argv": checks[alias], "cwd": "/owner/labs/" + alias,
+                  "commit": commit, "task": task_refs[alias]["id"], "purpose": "admitted task check", "units": 1,
+                  "weight_requested": "heavy", "max_seconds": 30, "state": "settled",
+                  "outcome": "exited", "exit_code": 0, "started_at": intervals[alias][0],
+                  "settled_at": intervals[alias][1], "seal": "verified-seal-" + alias}
+        # `verified` is copied only for a ResultStore.all_records() row, never inferred from a harness event.
+        runners.append({"verified": True, "record": record})
+        done_record = json.loads(json.dumps(record))
+        done_record.update(run_id=run_id + "-done", seq=len(runners) + 1, binding="binding-" + alias + "-done",
+                           started_at=150.0 + aliases.index(alias) * 10,
+                           settled_at=152.0 + aliases.index(alias) * 10)
+        runners.append({"verified": True, "record": done_record})
+        receipt_bytes = json.dumps(done_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        receipt_digest = hashlib.sha256(receipt_bytes).hexdigest()
+        facade_calls.extend([
+            {"method": "task", "task_ref": task_refs[alias], "assignment_ref": assignment_refs[alias],
+             "result": {"ok": True, "kind": "task", "result": {"task": alias}}},
+            {"method": "check", "task_ref": task_refs[alias], "assignment_ref": assignment_refs[alias],
+             "runner_run_id": run_id, "result": {"ok": True, "kind": "check",
+                                                        "result": {"ok": True, "run_id": run_id, "commit": commit}}},
+            {"method": "done", "task_ref": task_refs[alias], "assignment_ref": assignment_refs[alias],
+             "runner_run_id": run_id + "-done", "result": {"ok": True, "kind": "done",
+                                                                 "result": {"ok": True, "landed": True,
+                                                                            "runner_run_id": run_id + "-done"}}},
+        ])
+        landings.append({"task_ref": task_refs[alias], "assignment_ref": assignment_refs[alias],
+                         "lab_commit": commit, "runner_run_id": run_id + "-done",
+                         "evidence": {"representation": "managed", "verification": "full-verified",
+                                      "actual_digest": receipt_digest,
+                                      "manifest": {"byte_digest": receipt_digest,
+                                                   "byte_length": len(receipt_bytes)}}})
+        dues.append({"schedule_id": "due-" + alias, "role": "worker",
+                     "project_ref": project_ref["id"],
+                     "target": {"project_ref": project_ref, "task_ref": task_refs[alias]},
+                     "assignment_ref": assignment_refs[alias],
+                     "requested_model": "claude-haiku-5-5", "completion_state": "succeeded",
+                     "generation": 7, "stop_state": "completed",
+                     "last_result": {"outcome": "succeeded", "observed_model": "claude-haiku-5-5"},
+                     "host_evidence": {"gateway_attempt": {"state": "result", "generation": 7,
+                                                              "assignment_ref": assignment_refs[alias]}}})
+    if extra_check:
+        record = json.loads(json.dumps(runners[0]["record"]))
+        record.update(run_id="run-A2", seq=4, binding="binding-A2", started_at=110.0, settled_at=115.0)
+        runners.append({"verified": True, "record": record})
+        check = {"method": "check", "task_ref": task_refs["A"],
+                 "assignment_ref": assignment_refs["A"], "runner_run_id": "run-A2",
+                 "result": {"ok": True, "kind": "check", "result": {
+                     "ok": True, "run_id": "run-A2", "commit": record["commit"]}}}
+        done_index = next(i for i, call in enumerate(facade_calls)
+                          if call["method"] == "done" and call["task_ref"] == task_refs["A"])
+        facade_calls.insert(done_index, check)
+    evidence = {"project_ref": project_ref, "labs": labs, "facade_calls": facade_calls,
+                "runners": runners, "landings": landings, "dues": dues, "heavy_headroom": 3,
+                "host_admission": {"outcome": "admitted", "host": {"adapters": {"claude-code": {
+                    "launcher": "/opt/claude/bin/claude", "qualified_versions": ["2.1.0"]}}}}}
+    return evidence, expected
+
+
+def clean_stage3_raw(root):
+    """Owner-shaped stage 3 sources for an all-pass stage-3 verdict fixture."""
+    raw = Path(root)
+    raw.mkdir(parents=True, exist_ok=True)
+    evidence, expected = clean_stage3_owner_evidence()
+    project = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))
+    rows = []
+    for alias, lab in zip("ABC", evidence["labs"]):
+        creation_id = "creation-" + alias
+        rows.append({"schema": "otto.owner-lab-creation.v1", "creation_record_id": creation_id,
+                     **{key: lab[key] for key in ("project_ref", "task_ref", "started_at", "ended_at",
+                                                   "elapsed_seconds", "path", "apparent_bytes", "size_rule")}})
+        rows.append({"schema": "otto.owner-lab-assignment.v1", "creation_record_id": creation_id,
+                     "project_ref": lab["project_ref"], "task_ref": lab["task_ref"],
+                     "assignment_ref": lab["assignment_ref"], "schedule_id": expected[alias]["schedule_id"],
+                     "generation": 7})
+    runner_by_id = {r["record"]["run_id"]: r["record"] for r in evidence["runners"]}
+    for call in evidence["facade_calls"]:
+        method = call["method"]
+        nested = {"ok": True}
+        if method == "check":
+            nested.update(run_id=call["runner_run_id"], commit=runner_by_id[call["runner_run_id"]]["commit"])
+        elif method == "done":
+            nested.update(landed=True, runner_run_id=call["runner_run_id"])
+        rows.append({"schema": "otto.owner-facade-call.v1", "kind": method,
+                     "operation": {"task": "effective-context", "check": "worker-check",
+                                   "done": "worker-done"}[method],
+                     "project_ref": evidence["project_ref"], "task_ref": call["task_ref"],
+                     "assignment_ref": call["assignment_ref"],
+                     "result": {"ok": True, "kind": method, "result": nested}})
+    for landing in evidence["landings"]:
+        rows.append({"schema": "otto.owner-landing-evidence.v1",
+                     "project_ref": evidence["project_ref"], **landing})
+    values = {
+        "stage3-registration.json": {"project_ref": evidence["project_ref"]},
+        "stage3-review-ref.json": {"authority": "owner", "kind": "dat.content.document",
+                                    "id": "review-stage3", "revision": "rev-review"},
+        "stage3-runner-records.json": {"records": [r["record"] for r in evidence["runners"]],
+                                       "invalid_run_ids": [], "verification": "ResultStore.all_records"},
+        "stage3-project-schedules.json": {"outcome": "read", "project_ref": evidence["project_ref"],
+                                          "schedules": evidence["dues"]},
+        "stage3-host-admission.json": evidence["host_admission"],
+        "stage3-owner-status.json": {"outcome": "running", "native_capacity": {
+            "worker_limit": 4, "heavy_limit": 3}},
+        "stage3-installation.json": {"capacity": project["stages"]["3"]["capacity"]},
+        "stage3-activation.json": {"activation": {"steps": {"tasks": {"task_refs": {
+            alias: pin["task_ref"] for alias, pin in expected.items()}}}}},
+        "stage3-project-status.json": {"outcome": "read", "tasks": [
+            {"id": alias, "repo": "toy", "branch": "canon/main", "lifecycle": "completed",
+             "dispatch": {"state": "landed"}}
+            for alias in "ABC"]},
+        "config.json": {"stage": "3", "fake": False, "staging_restart": 0},
+        "notes.json": {"stage3-worker-mode": "real", "stage3-owner-route": "completed"},
+        "timeline.json": {"error": None, "store_events": 6,
+                          "work_tasks": [{"alias": alias, "admitted_revision": "rev-task-" + alias}
+                                         for alias in "ABC"],
+                          "tasks": [{"task_id": "assignment-" + alias, "complete": True, "gaps": []}
+                                    for alias in "ABC"]},
+        "stage3-store-events.json": {"error": None, "tasks": {
+            "task-" + alias: alias for alias in "ABC"}},
+        "stage3-store-before.json": {"error": None, "bytes": 1000},
+        "stage3-store-after.json": {"error": None, "bytes": 2000},
+        "store-at-rest.json": {"error": None, "bytes": 2000},
+        "at-rest.json": {"error": None, "home_run": ["service.json", "generation", "service-stop",
+                                                      "operator-admission.jsonl"],
+                         "service_state": "closed", "sockets": [], "store_holders": {}},
+    }
+    for alias, pin in expected.items():
+        values["stage3-admit-" + alias + ".json"] = {
+            "outcome": "admitted", "admitted_revision": pin["task_ref"]["revision"],
+            "task_ref": pin["task_ref"]}
+    for name, value in values.items():
+        (raw / name).write_text(json.dumps(value), encoding="utf-8")
+    (raw / "stage3-owner-fleet-evidence.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    (raw / "stage3-owner-operator-admission.jsonl").write_text(
+        "".join(json.dumps({"task": expected[alias]["task_ref"]["id"],
+                            "revision": expected[alias]["task_ref"]["revision"],
+                            "review": "review-stage3", "prover_result": "approved",
+                            "outcome": "admitted"}) + "\n" for alias in "ABC"), encoding="utf-8")
+    (raw / "leftovers.txt").write_text("", encoding="utf-8")
+    return raw, project, rows, expected
+
+
 def statuses(raw):
     return {r["name"]: r["status"] for r in perch_report.assertions(Path(raw))}
 
@@ -540,6 +710,437 @@ class AssertionKindTests(unittest.TestCase):
         policy = stage["run_policy"]["assessment_accounting"]
         self.assertEqual(policy["scope_mode"], "check-accepted")
         self.assertEqual(policy["task_criterion_pairs"], ["A/C-A", "B/C-B", "C/C-C"])
+
+    def test_stage_three_canary_declares_independent_work_and_typed_checks(self):
+        project = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))
+        stage = project["stages"]["3"]
+        self.assertEqual(stage["tasks"], ["A", "B", "C"])
+        self.assertEqual((stage["repository"], stage["branch"]), ("toy", "canon/main"))
+        self.assertEqual(stage["admission"]["admitted"], ["A", "B", "C"])
+        self.assertEqual(stage["dependencies"], {"A": [], "B": [], "C": ["A", "B"]})
+        self.assertEqual(stage["expected_completed"], ["A", "B", "C"])
+        self.assertEqual(stage["store"]["store_work_tasks"], ["A", "B", "C"])
+        self.assertEqual(stage["store"]["store_assignment_tasks_min"], 3)
+        accounting = stage["run_policy"]["assessment_accounting"]
+        self.assertEqual(accounting["scope_mode"], "check-accepted")
+        self.assertEqual(accounting["pool_id"], "perch-stage3-checks")
+        self.assertEqual(accounting["capacity_units"], 3)
+        self.assertEqual(accounting["cumulative_allowance_units"], 9)
+        self.assertEqual(accounting["task_criterion_pairs"], ["A/C-A", "B/C-B", "C/C-C"])
+        self.assertIn("existing toy/mathx.py", stage["task_specs"]["A"]["instructions"])
+        self.assertIn("native Edit tool", stage["task_specs"]["A"]["instructions"])
+        self.assertIn("do not use Write", stage["task_specs"]["A"]["instructions"])
+        self.assertIn("toy/labels.py", stage["task_specs"]["B"]["instructions"])
+        self.assertIn("native Write tool", stage["task_specs"]["B"]["instructions"])
+        self.assertIn("then use the native Edit tool", stage["task_specs"]["B"]["instructions"])
+        self.assertIn("toy/summary.py", stage["task_specs"]["C"]["instructions"])
+        self.assertEqual(set(stage["checks"]), {"A", "B", "C"})
+        for alias, required in (("A", ("clamp(-1, 0, 5)",)),
+                                ("B", ("label_case('  hello WORLD  ')",)),
+                                ("C", ("clamp(9, 0, 5)", "label_case(' hello WORLD ')",
+                                       "summary_line(9, 0, 5"))):
+            with self.subTest(task=alias):
+                argv = stage["checks"][alias]
+                self.assertEqual(argv[:2], ["python3", "-c"])
+                for behavior in required:
+                    self.assertIn(behavior, argv[2])
+                self.assertIn("assert", argv[2])
+                self.assertNotEqual(argv, ["/usr/bin/true"])
+
+    def test_stage_three_rejects_unknown_or_failed_owner_due_with_reason(self):
+        task = {"authority": "owner", "kind": "work.task",
+                "id": "task-A", "revision": "rev-A"}
+        assignment = {"authority": "owner", "kind": "wrk.assignment",
+                      "id": "assignment-A", "revision": "rev-A"}
+        expected = {"A": {"task_ref": task, "assignment_ref": assignment,
+                          "schedule_id": "due-A"}}
+        completed = {
+            "schedule_id": "due-A", "role": "worker",
+            "target": {"task_ref": task}, "assignment_ref": assignment,
+            "requested_model": "claude-haiku-5-5",
+            "generation": 7,
+            "completion_state": "succeeded", "stop_state": "completed",
+            "last_result": {"outcome": "succeeded", "observed_model": "claude-haiku-5-5"},
+            "host_evidence": {"gateway_attempt": {"state": "result", "generation": 7,
+                                                     "assignment_ref": assignment}},
+        }
+        self.assertEqual(stage3_report.stage3_due_failures([completed], expected), [])
+
+        for state in ("unknown", "failed"):
+            with self.subTest(state=state):
+                doctored = json.loads(json.dumps(completed))
+                doctored["completion_state"] = state
+                doctored["last_result"] = {
+                    "outcome": state, "reason": "owner gateway lost the worker result"
+                }
+                failures = stage3_report.stage3_due_failures([doctored], expected)
+                self.assertEqual(len(failures), 1)
+                self.assertIn("A", failures[0])
+                self.assertIn(state, failures[0])
+                self.assertIn("owner gateway lost the worker result", failures[0])
+
+    def test_stage_three_owner_completion_cli_distinguishes_complete_pending_and_terminal_failure(self):
+        evidence, expected = clean_stage3_owner_evidence()
+        task_refs = {alias: value["task_ref"] for alias, value in expected.items()}
+        activation = {"activation": {"steps": {"tasks": {"task_refs": task_refs}}},
+                      "operating_setup": {"setup": {"roles": {"manager": "manager-due"}}}}
+        status = {"outcome": "read", "tasks": [
+            {"id": alias, "lifecycle": "completed", "dispatch": {"state": "landed"}}
+            for alias in ("A", "B", "C")]}
+        schedules = {"outcome": "read", "schedules": evidence["dues"]}
+        for alias, value in expected.items():
+            (self.tmp / ("stage3-admit-" + alias + ".json")).write_text(json.dumps({
+                "outcome": "admitted", "admitted_revision": value["task_ref"]["revision"],
+                "task_ref": value["task_ref"]}), encoding="utf-8")
+        status_path, schedules_path, activation_path = (self.tmp / "status.json", self.tmp / "schedules.json",
+                                                       self.tmp / "activation.json")
+        status_path.write_text(json.dumps(status), encoding="utf-8")
+        schedules_path.write_text(json.dumps(schedules), encoding="utf-8")
+        activation_path.write_text(json.dumps(activation), encoding="utf-8")
+        command = [sys.executable, "-I", str(BOOTSTRAP / "perch_stage3_report.py"), "stage3-owner-complete",
+                   "--status", str(status_path), "--schedules", str(schedules_path),
+                   "--activation", str(activation_path), "--admissions", str(self.tmp)]
+
+        def invoke():
+            return subprocess.run(command, text=True, capture_output=True)
+
+        self.assertEqual(invoke().returncode, 0)
+        missing = schedules["schedules"].pop(0)
+        schedules_path.write_text(json.dumps(schedules), encoding="utf-8")
+        pending = invoke()
+        self.assertEqual(pending.returncode, 1)
+        self.assertIn("has no owner worker Due yet", pending.stdout)
+        schedules["schedules"].insert(0, missing)
+        schedules["schedules"][0]["completion_state"] = "pending"
+        schedules["schedules"][0]["last_result"] = {"outcome": "pending"}
+        schedules_path.write_text(json.dumps(schedules), encoding="utf-8")
+        self.assertEqual(invoke().returncode, 1)
+        schedules["schedules"][0]["completion_state"] = "unknown"
+        schedules["schedules"][0]["last_result"] = {
+            "outcome": "unknown", "reason": "owner gateway lost the worker result"}
+        schedules_path.write_text(json.dumps(schedules), encoding="utf-8")
+        failed = invoke()
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("owner gateway lost the worker result", failed.stdout + failed.stderr)
+
+    def test_stage_three_owner_evidence_accepts_complete_owner_joins(self):
+        evidence, expected = clean_stage3_owner_evidence()
+        self.assertEqual(stage3_report.stage3_evidence_failures(evidence, expected), [])
+
+    def test_stage_three_normalization_rejects_corrupt_raw_owner_lab_measurement(self):
+        evidence, expected = clean_stage3_owner_evidence()
+        raw = self.tmp / "stage3-normalize"
+        raw.mkdir()
+        rows = []
+        for index, lab in enumerate(evidence["labs"]):
+            creation_id = "creation-%s" % index
+            rows.extend([
+                {"schema": "otto.owner-lab-creation.v1", "creation_record_id": creation_id,
+                 **{key: lab[key] for key in ("project_ref", "task_ref", "started_at", "ended_at",
+                                               "elapsed_seconds", "path", "apparent_bytes", "size_rule")}},
+                {"schema": "otto.owner-lab-assignment.v1", "creation_record_id": creation_id,
+                 "project_ref": lab["project_ref"], "task_ref": lab["task_ref"],
+                 "assignment_ref": lab["assignment_ref"], "schedule_id": expected["ABC"[index]]["schedule_id"],
+                 "generation": 1},
+            ])
+        for call in evidence["facade_calls"]:
+            rows.append({"schema": "otto.owner-facade-call.v1", "operation": "worker-" + call["method"],
+                         "project_ref": evidence["project_ref"], "task_ref": call["task_ref"],
+                         "assignment_ref": call["assignment_ref"],
+                         "result": {**call["result"], "runner_run_id": call.get("runner_run_id")}})
+        for landing in evidence["landings"]:
+            rows.append({"schema": "otto.owner-landing-evidence.v1",
+                         "project_ref": evidence["project_ref"], **landing})
+        (raw / "stage3-runner-records.json").write_text(json.dumps({
+            "records": [runner["record"] for runner in evidence["runners"]],
+            "invalid_run_ids": [], "verification": "ResultStore.all_records"
+        }), encoding="utf-8")
+        (raw / "stage3-project-schedules.json").write_text(json.dumps({
+            "project_ref": evidence["project_ref"], "schedules": evidence["dues"]}), encoding="utf-8")
+        (raw / "stage3-registration.json").write_text(json.dumps({"project_ref": evidence["project_ref"]}),
+                                                       encoding="utf-8")
+        (raw / "stage3-host-admission.json").write_text(json.dumps(evidence["host_admission"]), encoding="utf-8")
+        source = raw / "stage3-owner-fleet-evidence.jsonl"
+        source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        normalized, failures = stage3_report.stage3_normalize_owner_records(raw, expected)
+        self.assertEqual(failures, [], failures)
+        # A zero byte measurement in an owner creation record must fail from the
+        # copied source, after the same source passed without corruption.
+        next(row for row in rows if row.get("schema") == "otto.owner-lab-creation.v1")["apparent_bytes"] = 0
+        source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        normalized, failures = stage3_report.stage3_normalize_owner_records(raw, expected)
+        self.assertEqual(len(normalized["labs"]), 3)
+        self.assertTrue(failures)
+        self.assertTrue(any("apparent_bytes" in failure or "measured" in failure for failure in failures),
+                        failures)
+
+    def test_stage_three_verdict_rows_fail_on_doctored_owner_sources(self):
+        raw, project, rows, _expected = clean_stage3_raw(self.tmp / "stage3-verdict")
+
+        def verdict():
+            return {row["name"]: row for row in stage3_report._stage3_assertions(raw, project)}
+
+        self.assertTrue(all(row["status"] == "pass" for row in verdict().values()), verdict())
+        owner_path = raw / "stage3-owner-fleet-evidence.jsonl"
+
+        def write_rows(value):
+            owner_path.write_text("".join(json.dumps(row) + "\n" for row in value), encoding="utf-8")
+
+        cases = (
+            ("stage3-exact-owner-route", "notes.json", lambda v: v.update(**{"stage3-owner-route": "failed"})),
+            ("stage3-exact-owner-route", "config.json", lambda v: v.update(fake=True)),
+            ("stage3-exact-owner-route", "stage3-project-status.json", lambda v: v["tasks"][0].update(repo="other")),
+            ("stage3-owner-labs", None, lambda v: next(r for r in v if r.get("schema") ==
+                "otto.owner-lab-creation.v1").update(apparent_bytes=0)),
+            ("stage3-facade-sequence", None, lambda v: v.__setitem__(slice(None), [r for r in v if not (
+                r.get("schema") == "otto.owner-facade-call.v1" and r.get("kind") == "task"
+                and r.get("task_ref", {}).get("id") == "task-A")])),
+            ("stage3-runner-capacity", "stage3-runner-records.json", lambda v: v["records"][0].update(units=0)),
+            ("stage3-runner-capacity", "stage3-owner-status.json", lambda v: v["native_capacity"].update(heavy_limit=1)),
+            ("stage3-managed-landing", None, lambda v: next(r for r in v if r.get("schema") ==
+                "otto.owner-landing-evidence.v1")["evidence"].update(actual_digest="0" * 64)),
+            ("stage3-real-haiku", "stage3-project-schedules.json", lambda v: v["schedules"][0][
+                "last_result"].update(observed_model="fake-claude")),
+            ("stage3-exact-owner-route", "stage3-project-schedules.json", lambda v: v["schedules"][0][
+                "target"]["project_ref"].update(id="another-project")),
+            ("stage3-due-completion", "stage3-project-schedules.json", lambda v: v["schedules"][0].update(
+                completion_state="unknown", last_result={"outcome": "unknown", "reason": "lost"})),
+            ("stage3-store-and-at-rest", "timeline.json", lambda v: v["work_tasks"].pop()),
+        )
+        for name, file_name, doctor in cases:
+            with self.subTest(assertion=name):
+                write_rows(rows)
+                path = raw / file_name if file_name else owner_path
+                original = path.read_text(encoding="utf-8")
+                value = json.loads(original) if file_name else json.loads(json.dumps(rows))
+                doctor(value)
+                path.write_text(json.dumps(value) if file_name else "".join(
+                    json.dumps(row) + "\n" for row in value), encoding="utf-8")
+                self.assertEqual(verdict()[name]["status"], "fail", name)
+                path.write_text(original, encoding="utf-8")
+                self.assertTrue(all(row["status"] == "pass" for row in verdict().values()), name)
+        operator_path = raw / "stage3-owner-operator-admission.jsonl"
+        original = operator_path.read_text(encoding="utf-8")
+        owner_rows = [json.loads(line) for line in original.splitlines()]
+        owner_rows[0]["prover_result"] = "unavailable"
+        operator_path.write_text("".join(json.dumps(row) + "\n" for row in owner_rows), encoding="utf-8")
+        self.assertEqual(verdict()["stage3-exact-owner-route"]["status"], "fail")
+        operator_path.write_text(original, encoding="utf-8")
+        self.assertTrue(all(row["status"] == "pass" for row in verdict().values()))
+
+    def test_stage_three_joins_admitted_task_across_owner_revision_changes(self):
+        raw, _project, rows, expected = clean_stage3_raw(self.tmp / "stage3-revisions")
+        admitted_revision = expected["A"]["task_ref"]["revision"]
+        activation = json.loads((raw / "stage3-activation.json").read_text(encoding="utf-8"))
+        schedules_path = raw / "stage3-project-schedules.json"
+        schedules = json.loads(schedules_path.read_text(encoding="utf-8"))
+        schedules["schedules"][0]["target"]["task_ref"]["revision"] = "rev-after-admission"
+        schedules["schedules"][0]["target"]["project_ref"]["revision"] = "rev-project-after-save"
+        schedules_path.write_text(json.dumps(schedules), encoding="utf-8")
+        for row in rows:
+            if row.get("task_ref", {}).get("id") == "task-A":
+                row["task_ref"]["revision"] = "rev-after-lifecycle"
+            row["project_ref"]["revision"] = "rev-project-after-save"
+        owner_path = raw / "stage3-owner-fleet-evidence.jsonl"
+        owner_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        pins = stage3_report.stage3_expected(activation, raw, schedules)
+        for alias, pin in pins.items():
+            pin["check_argv"] = expected[alias]["check_argv"]
+        self.assertEqual(pins["A"]["admitted_revision"], admitted_revision)
+        self.assertEqual(pins["A"]["task_ref"]["revision"], "rev-after-admission")
+        _, failures = stage3_report.stage3_normalize_owner_records(raw, pins, 3)
+        self.assertEqual(failures, [])
+        rows[0]["task_ref"]["id"] = "another-task"
+        owner_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        _, failures = stage3_report.stage3_normalize_owner_records(raw, pins, 3)
+        self.assertTrue(failures, "a different owner task identity cannot pass the lab join")
+
+    def test_stage_three_report_cli_rejects_doctored_owner_receipt(self):
+        raw, _project, _rows, _expected = clean_stage3_raw(self.tmp / "stage3-cli")
+        command = [sys.executable, "-I", str(BOOTSTRAP / "perch_stage3_report.py"), "check",
+                   "--raw", str(raw), "--project", str(BOOTSTRAP / "canary" / "project.json")]
+        passed = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        source = raw / "stage3-runner-records.json"
+        receipt = json.loads(source.read_text(encoding="utf-8"))
+        receipt["invalid_run_ids"] = [receipt["records"][0]["run_id"]]
+        source.write_text(json.dumps(receipt), encoding="utf-8")
+        failed = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+        self.assertIn("FAIL stage3-runner-capacity", failed.stdout)
+
+    def test_stage_three_host_read_resolves_one_retained_owner_request(self):
+        import re
+        import shlex
+
+        shell = PERCH.read_text(encoding="utf-8")
+        match = re.search(r"(?ms)^stage3_read_host\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(match)
+        request_id = "a" * 32
+
+        def run(doctored):
+            raw = self.tmp / ("stage3-read-bad" if doctored else "stage3-read-good")
+            raw.mkdir()
+            pending = json.dumps({"outcome": "pending", "terminal": False, "request_id": request_id})
+            answer = (json.dumps({"outcome": "pending", "terminal": False, "request_id": "b" * 32})
+                      if doctored else json.dumps({"outcome": "read", "schedules": []}))
+            script = "\n".join((
+                "set -euo pipefail",
+                "RAW=" + shlex.quote(str(raw)),
+                "PY=" + shlex.quote(sys.executable),
+                "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+                "epoch_now() { date +%s; }",
+                "stage2_owner_alive() { return 0; }",
+                "sleep() { :; }",
+                "stage2_host_client() {",
+                '  printf "%s\\n" "$*" >> "$RAW/commands"',
+                '  case "$*" in *request-status*) printf "%s\\n" ' + shlex.quote(answer) + " ;;",
+                '    *) printf "%s\\n" ' + shlex.quote(pending) + " ;; esac",
+                "}",
+                match.group(),
+                'stage3_read_host claude-code "$RAW/schedules.json" "$(( $(date +%s) + 30 ))" schedules --project perch-stage3',
+            ))
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            return raw, result
+
+        raw, passed = run(False)
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        self.assertEqual(json.loads((raw / "schedules.json").read_text())["outcome"], "read")
+        commands = (raw / "commands").read_text().splitlines()
+        self.assertEqual(len(commands), 2)
+        self.assertIn("request-status --request-id " + request_id, commands[1])
+        raw, failed = run(True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertFalse((raw / "schedules.json").exists())
+
+    def test_stage_three_owner_evidence_rejects_missing_or_unmeasured_labs(self):
+        cases = (
+            ("missing lab record", lambda evidence: evidence["labs"].pop()),
+            ("zero apparent bytes", lambda evidence: evidence["labs"][0].update(apparent_bytes=0)),
+            ("zero elapsed time", lambda evidence: evidence["labs"][0].update(elapsed_seconds=0)),
+            ("missing size rule", lambda evidence: evidence["labs"][0].pop("size_rule")),
+            ("reversed creation times", lambda evidence: evidence["labs"][0].update(
+                started_at="2026-10-18T10:00:03+00:00")),
+            ("lab bound to another assignment", lambda evidence: evidence["labs"][0].update(
+                assignment_ref={"authority": "owner", "kind": "wrk.assignment", "id": "wrong",
+                                "revision": "rev-wrong"})),
+        )
+        for label, doctor in cases:
+            with self.subTest(label=label):
+                evidence, expected = clean_stage3_owner_evidence()
+                doctor(evidence)
+                self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected), label)
+
+    def test_stage_three_owner_evidence_requires_assignment_bound_facade_call_sequence(self):
+        cases = (
+            ("task call missing", lambda evidence: evidence["facade_calls"].pop(0)),
+            ("check bound to other runner", lambda evidence: evidence["facade_calls"][1].update(
+                runner_run_id="wrong-run")),
+            ("done before check", lambda evidence: evidence["facade_calls"].__setitem__(
+                slice(1, 3), list(reversed(evidence["facade_calls"][1:3])))),
+            ("call bound to wrong assignment", lambda evidence: evidence["facade_calls"][0].update(
+                assignment_ref={"authority": "owner", "kind": "wrk.assignment", "id": "wrong",
+                                "revision": "rev-wrong"})),
+            ("check response failed", lambda evidence: evidence["facade_calls"][1]["result"][
+                "result"].update(ok=False)),
+            ("done response did not land", lambda evidence: evidence["facade_calls"][2]["result"][
+                "result"].update(landed=False)),
+            ("facade response refused", lambda evidence: evidence["facade_calls"][0]["result"].update(ok=False)),
+        )
+        for label, doctor in cases:
+            with self.subTest(label=label):
+                evidence, expected = clean_stage3_owner_evidence()
+                doctor(evidence)
+                self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected), label)
+
+    def test_stage_three_owner_evidence_requires_verified_successful_runner_and_overlap(self):
+        cases = (
+            ("runner missing for a check", lambda evidence: evidence["runners"].pop(0)),
+            ("duplicate runner for a check", lambda evidence: evidence["runners"].append(
+                json.loads(json.dumps(evidence["runners"][0])))),
+            ("unverified runner", lambda evidence: evidence["runners"][0].update(verified=False)),
+            ("wrong lab commit", lambda evidence: evidence["runners"][0]["record"].update(commit="f" * 40)),
+            ("wrong typed check", lambda evidence: evidence["runners"][0]["record"].update(argv=["/usr/bin/true"])),
+            ("runner did not settle successfully", lambda evidence: evidence["runners"][0]["record"].update(
+                state="unknown", outcome="interrupted", exit_code=None)),
+            ("no heavy units", lambda evidence: evidence["runners"][0]["record"].update(units=0)),
+            ("overlap exceeds headroom", lambda evidence: evidence.update(heavy_headroom=1)),
+            ("no overlapping heavy units", lambda evidence: evidence["runners"][2]["record"].update(
+                started_at=120.0)),
+        )
+        for label, doctor in cases:
+            with self.subTest(label=label):
+                evidence, expected = clean_stage3_owner_evidence()
+                doctor(evidence)
+                self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected), label)
+
+        evidence, expected = clean_stage3_owner_evidence(extra_check=True)
+        self.assertEqual(stage3_report.stage3_evidence_failures(evidence, expected), [])
+        late_check = evidence["facade_calls"].pop(2)
+        evidence["facade_calls"].insert(3, late_check)
+        self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected),
+                        "a later check cannot appear after done")
+        evidence, expected = clean_stage3_owner_evidence(extra_check=True)
+        a_checks = [call for call in evidence["facade_calls"]
+                    if call["method"] == "check" and call["task_ref"]["id"] == "task-A"]
+        self.assertEqual(len(a_checks), 2)
+        evidence["facade_calls"][next(i for i, call in enumerate(evidence["facade_calls"])
+                                         if call is a_checks[1])]["runner_run_id"] = "run-A"
+        self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected),
+                        "two check calls cannot reuse the same runner receipt")
+
+    def test_stage_three_owner_evidence_requires_full_managed_landing_receipt(self):
+        cases = (
+            ("wrong evidence digest", lambda evidence: evidence["landings"][0]["evidence"].update(
+                actual_digest="0" * 64)),
+            ("wrong manifest digest", lambda evidence: evidence["landings"][0]["evidence"]["manifest"].update(
+                byte_digest="0" * 64)),
+            ("wrong full length", lambda evidence: evidence["landings"][0]["evidence"]["manifest"].update(
+                byte_length=1)),
+            ("not fully verified", lambda evidence: evidence["landings"][0]["evidence"].update(
+                verification="partial")),
+            ("unmanaged representation", lambda evidence: evidence["landings"][0]["evidence"].update(
+                representation="external")),
+            ("landing points at another runner", lambda evidence: evidence["landings"][0].update(
+                runner_run_id="wrong-run")),
+            ("landing points at check runner instead of done runner",
+             lambda evidence: evidence["landings"][0].update(runner_run_id="run-A")),
+        )
+        for label, doctor in cases:
+            with self.subTest(label=label):
+                evidence, expected = clean_stage3_owner_evidence()
+                doctor(evidence)
+                self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected), label)
+
+    def test_stage_three_owner_evidence_requires_real_haiku_due_for_each_assignment(self):
+        cases = (
+            ("wrong worker model", lambda evidence: evidence["dues"][0].update(
+                requested_model="fake-claude")),
+            ("wrong observed model", lambda evidence: evidence["dues"][0]["last_result"].update(
+                observed_model="fake-claude")),
+            ("missing gateway result", lambda evidence: evidence["dues"][0]["host_evidence"].update(
+                gateway_attempt={"state": "failed"})),
+            ("wrong gateway generation", lambda evidence: evidence["dues"][0]["host_evidence"][
+                "gateway_attempt"].update(generation=999)),
+            ("gateway bound to another assignment", lambda evidence: evidence["dues"][0]["host_evidence"][
+                "gateway_attempt"].update(assignment_ref={"authority": "owner", "kind": "wrk.assignment",
+                                                            "id": "wrong", "revision": "wrong"})),
+            ("due bound to another assignment", lambda evidence: evidence["dues"][0].update(
+                assignment_ref={"authority": "owner", "kind": "wrk.assignment", "id": "wrong",
+                                "revision": "rev-wrong"})),
+            ("due missing", lambda evidence: evidence["dues"].pop()),
+            ("fake pinned launcher", lambda evidence: evidence["host_admission"]["host"]["adapters"][
+                "claude-code"].update(launcher="/tmp/fake-claude")),
+            ("relative pinned launcher", lambda evidence: evidence["host_admission"]["host"]["adapters"][
+                "claude-code"].update(launcher="claude")),
+            ("missing qualified version", lambda evidence: evidence["host_admission"]["host"]["adapters"][
+                "claude-code"].update(qualified_versions=[])),
+        )
+        for label, doctor in cases:
+            with self.subTest(label=label):
+                evidence, expected = clean_stage3_owner_evidence()
+                doctor(evidence)
+                self.assertTrue(stage3_report.stage3_evidence_failures(evidence, expected), label)
 
     def test_stage_two_bundle_maps_repository_branch_and_check_policy(self):
         project = json.loads((BOOTSTRAP / "canary" / "project.json").read_text(encoding="utf-8"))

@@ -72,6 +72,45 @@
       "kill_task": "C",
       "wipe": true
     },
+    "3": {
+      "tasks": ["A", "B", "C"],
+      "host": "claude-code",
+      "repository": "toy",
+      "branch": "canon/main",
+      "pool_limit": 4,
+      "manager_reserve": 1,
+      "capacity": {"turn_units": 4, "manager_reserve": 1,
+                   "heavy_headroom": 3, "worker_floor": 1},
+      "store": {"store_events_min": 6, "store_work_tasks": ["A", "B", "C"],
+                "store_assignment_tasks_min": 3, "store_growth_max": 2097152},
+      "scenarios": ["owner-driven-canary"],
+      "run_policy": {
+        "assessment_accounting": {
+          "kind": "owner_local_bookkeeping",
+          "purpose": "Canary check-accepted dispatch evidence",
+          "local_only": true,
+          "pool_id": "perch-stage3-checks",
+          "capacity_units": 3,
+          "cumulative_allowance_units": 9,
+          "scope_mode": "check-accepted",
+          "task_criterion_pairs": ["A/C-A", "B/C-B", "C/C-C"]
+        }
+      },
+      "admission": {"admitted": ["A", "B", "C"]},
+      "dependencies": {"A": [], "B": [], "C": ["A", "B"]},
+      "expected_completed": ["A", "B", "C"],
+      "task_specs": {
+        "A": {"title": "Add clamp to toy.mathx", "instructions": "Use the native Edit tool on the existing toy/mathx.py module; do not use Write for this task. Add clamp(value, low, high), returning low when value is below low, high when above high, and value otherwise. Preserve add and the stage 4 conflict slot.", "acceptance": "clamp handles below-range, in-range, and above-range values."},
+        "B": {"title": "Add label_case to toy.labels", "instructions": "Use the native Write tool to create toy/labels.py, then use the native Edit tool on that same file to reach its final behavior. Implement label_case(text), which strips surrounding whitespace and returns the remaining text in title case. Keep this change in toy/labels.py, separate from task A's file.", "acceptance": "label_case strips whitespace and title-cases words."},
+        "C": {"title": "Add a clamped summary", "instructions": "After tasks A and B land, create toy/summary.py with summary_line(value, low, high, label). It returns label_case(label) + ': ' + str(clamp(value, low, high)), importing clamp from toy.mathx and label_case from toy.labels.", "acceptance": "summary_line uses clamp and label_case and returns the formatted clamped value."}
+      },
+      "checks": {
+        "A": ["python3", "-c", "from toy.mathx import clamp; from pathlib import Path; import time; assert clamp(-1, 0, 5) == 0 and clamp(3, 0, 5) == 3 and clamp(9, 0, 5) == 5; p = Path.cwd().parent / '.perch-stage3-checks'; p.mkdir(exist_ok=True); (p / 'A').touch(); deadline = time.monotonic() + 120; exec(\"while not (p / 'B').exists() and time.monotonic() < deadline: time.sleep(0.1)\"); assert (p / 'B').exists(), 'B check did not overlap A'"],
+        "B": ["python3", "-c", "from toy.labels import label_case; from pathlib import Path; import time; assert label_case('  hello WORLD  ') == 'Hello World'; p = Path.cwd().parent / '.perch-stage3-checks'; p.mkdir(exist_ok=True); (p / 'B').touch(); deadline = time.monotonic() + 120; exec(\"while not (p / 'A').exists() and time.monotonic() < deadline: time.sleep(0.1)\"); assert (p / 'A').exists(), 'A check did not overlap B'"],
+        "C": ["python3", "-c", "from toy.mathx import clamp; from toy.labels import label_case; from toy.summary import summary_line; assert clamp(9, 0, 5) == 5 and label_case(' hello WORLD ') == 'Hello World' and summary_line(9, 0, 5, '  hello WORLD ') == 'Hello World: 5'"]
+      },
+      "wipe": true
+    },
     "4": {
       "tasks": ["canary-stage4-happy", "canary-stage4-conflict"],
       "store": {"store_events": 0, "store_tasks": 0, "store_bytes_max": 262144},

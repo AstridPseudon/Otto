@@ -169,6 +169,7 @@ class ToolFacade:
         owner: OwnerPort,
         book: TokenBook,
         ledger: FeedbackLedger,
+        audit: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         by_name: dict[str, ToolSpec] = {}
         for spec in tools:
@@ -191,6 +192,7 @@ class ToolFacade:
         self._owner = owner
         self._book = book
         self._ledger = ledger
+        self._audit = audit
 
     def listing(self, token: object) -> list[dict] | dict:
         """The tools the token's role may call, in the role's order. A bad token returns a refusal."""
@@ -228,16 +230,18 @@ class ToolFacade:
         payload = json.loads(json.dumps(dict(args)))
 
         assignment = grant.assignment
+        audit_base = {"assignment_id": assignment, "tool": spec.name, "kind": spec.kind,
+                      "operation": spec.operation}
         try:
             reply = self._owner.call(spec.operation, assignment, payload, feedback=(spec.kind == CHECK))
             if not isinstance(reply, Mapping):
                 raise TypeError("owner reply must be a mapping")
             result = _clean(json.loads(json.dumps(reply)))
             if spec.kind == TASK:
-                return {"ok": True, "tool": spec.name, "kind": TASK, "result": result}
-            if spec.kind == CHECK:
+                response = {"ok": True, "tool": spec.name, "kind": TASK, "result": result}
+            elif spec.kind == CHECK:
                 self._ledger.record(assignment, spec.name, reply)
-                return {
+                response = {
                     "ok": True,
                     "tool": spec.name,
                     "kind": CHECK,
@@ -245,14 +249,15 @@ class ToolFacade:
                     "accepted": False,
                     "result": result,
                 }
-            return {
-                "ok": True,
-                "tool": spec.name,
-                "kind": DONE,
-                "submitted": True,
-                "accepted": False,
-                "result": result,
-            }
+            else:
+                response = {
+                    "ok": True,
+                    "tool": spec.name,
+                    "kind": DONE,
+                    "submitted": True,
+                    "accepted": False,
+                    "result": result,
+                }
         except Exception as exc:
             # Only class-declared owner error codes are classified. Generic
             # exceptions can acquire arbitrary instance code/message fields that
@@ -263,8 +268,12 @@ class ToolFacade:
             if isinstance(exc, LandingError):
                 message = exc.message
             if isinstance(code, str) and code and isinstance(message, str) and message:
-                return {"ok": False, "error": code, "detail": message}
-            return _refusal("owner_unavailable", type(exc).__name__)
+                response = {"ok": False, "error": code, "detail": message}
+            else:
+                response = _refusal("owner_unavailable", type(exc).__name__)
+        if self._audit is not None:
+            self._audit({**audit_base, "result": response})
+        return response
 
     def _allowed(self, role: str, tool: object) -> ToolSpec | None:
         if not isinstance(tool, str):

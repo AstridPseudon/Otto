@@ -5,7 +5,8 @@
 # runs the stage's scenario against staging, stops the staging Otto, and writes
 # ops/perch/STAGE/UTC-TIME/report.md with raw evidence beside it. Stages 0 and 1
 # use the harness worker; stage 2 prepares a registered and activated owner
-# project and exercises task admission through the operator command. The canary
+# project and exercises task admission through the operator command. Stage 3
+# uses the same owner route with real Haiku workers. The canary
 # project is ops/bootstrap/canary/project.json.
 # --fake: the harness worker is fake (real commits in the lab, no model).
 # A stage's scenarios add steps of their own: staging-lifecycle (stage 0) reads the status, KILLs the Otto,
@@ -20,6 +21,7 @@ set -euo pipefail
 
 CANARY="$HERE/canary"
 REPORT_PY="$HERE/perch_report.py"
+STAGE3_PY="$HERE/perch_stage3_report.py"
 STAGING="$HERE/staging.sh"
 STAGE_ROOT="${OTTO_STAGING_ROOT:-$LABS_DIR/_staging}"
 OUT_ROOT="${PERCH_OUT:-$HERE/../perch}"
@@ -34,6 +36,7 @@ usage() { echo "usage: perch.sh STAGE|all [--fake]" >&2; exit 2; }
 
 has_fault() { case ",$FAULTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+epoch_now() { date +%s; }
 
 # Stop what this run started and may still hold; runs on every exit. Pids are numbers, so the words split.
 stop_background() {
@@ -72,7 +75,7 @@ stop_hold() { kill "$1" 2>/dev/null || true; pool_mark -1; }
 restart_staging() {  # STAGE
   local t rc=0 ref="$STAGING_REF" fake_presence=0 repo_path=""
   if [ "$1" = 2 ] && [ -n "$FAKE" ]; then fake_presence=1; fi
-  if [ "$1" = 2 ]; then repo_path="$CANON"; fi
+  if [ "$1" = 2 ] || [ "$1" = 3 ]; then repo_path="$CANON"; fi
   # A seeded staging fault pins a ref that does not exist, so the restart fails before it starts anything.
   has_fault staging && ref="refs/heads/perch-seeded-missing-ref"
   t="$(date +%s)"
@@ -83,6 +86,7 @@ restart_staging() {  # STAGE
   if [ "$rc" -eq 0 ]; then
     OTTO_STAGING_REF="$ref" OTTO_STAGING_FAKE_PRESENCE="$fake_presence" \
       OTTO_STAGING_STAGE2_SETUP="$([ "$1" = 2 ] && echo 1 || echo 0)" \
+      OTTO_STAGING_CAPACITY_STAGE="$([ "$1" = 2 ] && echo 2 || { [ "$1" = 3 ] && echo 3 || echo ''; })" \
       OTTO_STAGING_CANARY_REPO="$repo_path" \
       bash "$STAGING" restart < /dev/null >> "$RAW/staging-restart.log" 2>&1 || rc=$?
   fi
@@ -180,165 +184,304 @@ stage2_operator_request_status() {  # REQUEST_ID
 # map its disposable repository, register the run bundle, then activate it. Every
 # command's raw answer is kept so a failed prerequisite is visible in the report.
 stage2_setup() {
-  local host bundle rc=0 launcher_args=()
-  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '"')"
+  local stage="${1:-2}" prefix="stage${1:-2}" run_id="perch-stage${1:-2}" host bundle rc=0 launcher_args=()
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key host | tr -d '"')"
   bundle="$CANARY_DIR/project"
-  "$PY" -I "$REPORT_PY" stage2-bundle --project "$CANARY/project.json" --out "$bundle" > "$RAW/stage2-bundle-path.txt"
-  if [ -n "$FAKE" ]; then
+  if [ "$stage" = 3 ]; then
+    "$PY" -I "$STAGE3_PY" stage3-bundle --project "$CANARY/project.json" --out "$bundle" > "$RAW/$prefix-bundle-path.txt"
+  else
+    "$PY" -I "$REPORT_PY" stage2-bundle --project "$CANARY/project.json" --out "$bundle" > "$RAW/$prefix-bundle-path.txt"
+  fi
+  if [ -n "$FAKE" ] && [ "$stage" = 2 ]; then
     cp "$HERE/perch_fake_claude.py" "$CANARY_DIR/perch-fake-claude.py"
     if ! /usr/bin/cc -std=c11 -O2 -Wall -Wextra "-DPERCH_PYTHON=\"$PY\"" \
         "$HERE/perch_fake_claude_launcher.c" -o "$CANARY_DIR/perch-fake-claude" \
-        > "$RAW/stage2-fake-launcher-build.log" 2>&1; then
-      echo "fake Claude launcher build failed; see stage2-fake-launcher-build.log" >> "$RAW/stage2-setup-errors.txt"
+        > "$RAW/$prefix-fake-launcher-build.log" 2>&1; then
+      echo "fake Claude launcher build failed; see $prefix-fake-launcher-build.log" >> "$RAW/$prefix-setup-errors.txt"
       return 1
     fi
     launcher_args=(--launcher "$CANARY_DIR/perch-fake-claude")
   fi
   # The owner reloads its installation when admitting a host. Map toy first so
   # the live activation view and dispatch registry receive the same checkout.
-  if cold_client repo map --name toy --path "$CANON" > "$RAW/stage2-repository-map.json" 2> "$RAW/stage2-setup-errors.txt"; then :; else
+  if cold_client repo map --name toy --path "$CANON" > "$RAW/$prefix-repository-map.json" 2> "$RAW/$prefix-setup-errors.txt"; then :; else
     rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     if cold_client service admit-host --host "$host" --client-home "$CANARY_DIR/client" \
-        "${launcher_args[@]}" > "$RAW/stage2-host-admission.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+        ${launcher_args[@]+"${launcher_args[@]}"} > "$RAW/$prefix-host-admission.json" 2>> "$RAW/$prefix-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
-    if stage2_host_client --host "$host" project register --bundle "$bundle" --worktree "$CANON" > "$RAW/stage2-registration.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+    if stage2_host_client --host "$host" project register --bundle "$bundle" --worktree "$CANON" > "$RAW/$prefix-registration.json" 2>> "$RAW/$prefix-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
-    if "$PY" -I "$REPORT_PY" stage2-plan-save --project "$CANARY/project.json" \
-        --registration "$RAW/stage2-registration.json" --out "$RAW/stage2-plan-save.input.json" \
-        2>> "$RAW/stage2-setup-errors.txt" \
+    if { if [ "$stage" = 3 ]; then
+           "$PY" -I "$STAGE3_PY" stage3-plan-save --project "$CANARY/project.json" \
+             --registration "$RAW/$prefix-registration.json" --out "$RAW/$prefix-plan-save.input.json"
+         else
+           "$PY" -I "$REPORT_PY" stage2-plan-save --project "$CANARY/project.json" \
+             --registration "$RAW/$prefix-registration.json" --out "$RAW/$prefix-plan-save.input.json"
+         fi; } 2>> "$RAW/$prefix-setup-errors.txt" \
         && stage2_host_client --host "$host" portfolio --portfolio "$host-portfolio" \
-          save "$RAW/stage2-plan-save.input.json" > "$RAW/stage2-plan-save.json" \
-          2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+          save "$RAW/$prefix-plan-save.input.json" > "$RAW/$prefix-plan-save.json" \
+          2>> "$RAW/$prefix-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
-    if stage2_host_client --host "$host" project activate --project perch-stage2 --worktree "$CANON" > "$RAW/stage2-activation.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+    if stage2_host_client --host "$host" project activate --project "$run_id" --worktree "$CANON" > "$RAW/$prefix-activation.json" 2>> "$RAW/$prefix-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
-    if stage2_host_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-project-status.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+    if stage2_host_client --host "$host" project status --project "$run_id" > "$RAW/$prefix-project-status.json" 2>> "$RAW/$prefix-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
-    if "$PY" -I "$REPORT_PY" stage2-review-ref --status "$RAW/stage2-project-status.json" \
-        --activation "$RAW/stage2-activation.json" --bundle "$bundle" \
-        > "$RAW/stage2-review-ref.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else rc=$?; fi
+    if "$PY" -I "$REPORT_PY" stage2-review-ref --status "$RAW/$prefix-project-status.json" \
+        --activation "$RAW/$prefix-activation.json" --bundle "$bundle" \
+        > "$RAW/$prefix-review-ref.json" 2>> "$RAW/$prefix-setup-errors.txt"; then :; else rc=$?; fi
   fi
   if [ "$rc" -eq 0 ]; then
-    cp "$STAGE_ROOT/home/installation.json" "$RAW/stage2-installation.json"
-    "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage2-store-before.json"
-    stage2_capture_fds before || rc=$?
+    cp "$STAGE_ROOT/home/installation.json" "$RAW/$prefix-installation.json"
+    "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/$prefix-store-before.json"
+    if [ "$stage" = 2 ]; then stage2_capture_fds before || rc=$?; fi
     if [ "$rc" -eq 0 ]; then
-      "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value ran
+      "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "$prefix-setup" --value ran
     fi
   else
-    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage2-setup --value "failed: owner CLI setup exited $rc"
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "$prefix-setup" --value "failed: owner CLI setup exited $rc"
   fi
   return "$rc"
 }
 
-stage2_wait_admission_boundary() {  # TASK
-  local task="$1" status="$RAW/stage2-admit-$1-boundary-status.json"
-  while :; do
-    if cold_client service status > "$status" 2>> "$RAW/stage2-setup-errors.txt"; then
-      if "$PY" -I "$REPORT_PY" stage2-boundary-closed --status "$status" > /dev/null 2>&1; then
-        return 0
-      fi
+stage2_wait_admission_boundary() {  # PREFIX TASK CUTOFF
+  local prefix="$1" task="$2" cutoff="$3" status="$RAW/$1-admit-$2-boundary-status.json"
+  while [ "$cutoff" = 0 ] || [ "$(epoch_now)" -lt "$cutoff" ]; do
+    if ! cold_client service status > "$status" 2>> "$RAW/$prefix-setup-errors.txt"; then
+      echo "owner status failed while waiting for the $task admission boundary" >> "$RAW/$prefix-setup-errors.txt"
+      return 1
+    fi
+    if "$PY" -I "$REPORT_PY" stage2-boundary-closed --status "$status" > /dev/null 2>&1; then
+      return 0
     fi
     if ! stage2_owner_alive; then
-      echo "owner exited before the $task admission boundary closed; see stage2-admit-$task-boundary-status.json" >> "$RAW/stage2-setup-errors.txt"
+      echo "owner exited before the $task admission boundary closed; see $(basename "$status")" >> "$RAW/$prefix-setup-errors.txt"
       if [ -f "$STAGE_ROOT/run/staging.log" ]; then
-        tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
+        tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/$prefix-owner-log-tail.txt"
       fi
       return 1
     fi
     sleep 0.5
   done
+  echo "owner admission boundary stayed open for $task within the poll budget; see $prefix-admit-$task-boundary-status.json" >> "$RAW/$prefix-setup-errors.txt"
+  if [ -f "$STAGE_ROOT/run/staging.log" ]; then
+    tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/$prefix-owner-log-tail.txt"
+  fi
+  return 1
 }
 
-stage2_submit_admission() {  # HOST TASK REF REVIEW_REF ATTEMPT
-  local host="$1" task="$2" ref="$3" review_ref="$4" attempt="$5" rc
-  local request_key="perch-stage2-admit-$task" receipt="$RAW/stage2-admit-$task-attempt-$attempt.json"
-  printf '%s\n' "$request_key" > "$RAW/stage2-admit-$task-attempt-$attempt.request-key"
+stage3_read_host() {  # HOST OUTPUT CUTOFF PROJECT-READ-COMMAND ...
+  local host="$1" output="$2" cutoff="$3" request_id="" next_request="" pending="${2}.request" expected_args=()
+  shift 3
+  stage2_host_client --host "$host" --wait-seconds 0 "$@" \
+    > "$pending" 2>> "$RAW/stage3-setup-errors.txt" || return 1
+  while :; do
+    expected_args=()
+    [ -z "$request_id" ] || expected_args=(--expected-request-id "$request_id")
+    next_request="$("$PY" -I "$REPORT_PY" stage2-dispatch-request --status "$pending" \
+      ${expected_args[@]+"${expected_args[@]}"} 2>> "$RAW/stage3-setup-errors.txt")" || return 1
+    request_id="$next_request"
+    if [ -z "$request_id" ]; then
+      cp "$pending" "$output"
+      return 0
+    fi
+    if [ "$(epoch_now)" -ge "$cutoff" ] || ! stage2_owner_alive; then
+      echo "owner project read retained request $request_id stayed pending for $*" >> "$RAW/stage3-setup-errors.txt"
+      return 1
+    fi
+    sleep 0.5
+    stage2_host_client --host "$host" --wait-seconds 0 request-status --request-id "$request_id" \
+      > "$pending" 2>> "$RAW/stage3-setup-errors.txt" || return 1
+  done
+}
+
+# Stage 3 captures the owner's durable records before shutdown. This copy is
+# intentionally source evidence; the report validates identities and joins.
+stage3_capture_owner_evidence() {
+  local path cutoff=$(( $(epoch_now) + 30 ))
+  for path in \
+      "$STAGE_ROOT/home/run/operator-admission.jsonl"; do
+    [ ! -e "$path" ] || cp "$path" "$RAW/stage3-owner-$(basename "$path")"
+  done
+  path="$STAGE_ROOT/home/evidence/owner-fleet-evidence.jsonl"
+  [ ! -e "$path" ] || cp "$path" "$RAW/stage3-owner-fleet-evidence.jsonl"
+  # Exclude seal.key: raw run rows plus the owner's read-only verification
+  # projection preserve the proof without publishing the signing secret.
+  if [ -d "$STAGE_ROOT/home/runner-results/runs" ]; then
+    mkdir -p "$RAW/stage3-runner-results/runs"
+    cp "$STAGE_ROOT/home/runner-results/runs"/*.json "$RAW/stage3-runner-results/runs/" 2>/dev/null || true
+  fi
+  env -i PATH="$PATH" HOME="$HOME" PYTHONPATH="$STAGE_ROOT/tree/src" "$PY" -c \
+    'import json,sys; from pathlib import Path; root=Path(sys.argv[1]); out={"source":str(root),"records":[],"invalid_run_ids":[],"verification":"ResultStore.all_records"};
+if not (root/"seal.key").is_file() or not (root/"runs").is_dir(): out["verification"]="missing source records";
+else:
+ from herzchen.fleet.runner.store import ResultStore
+ out["records"],out["invalid_run_ids"]=ResultStore(root).all_records()
+print(json.dumps(out,sort_keys=True))' \
+    "$STAGE_ROOT/home/runner-results" > "$RAW/stage3-runner-records.json" 2>> "$RAW/stage3-setup-errors.txt" || true
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage3-store-after.json"
+  stage3_read_host "$STAGE3_HOST" "$RAW/stage3-project-status.json" "$cutoff" project status --project perch-stage3 || true
+  stage3_read_host "$STAGE3_HOST" "$RAW/stage3-project-schedules.json" "$cutoff" schedules --project perch-stage3 || true
+  cold_client service status > "$RAW/stage3-owner-status.json" 2>> "$RAW/stage3-setup-errors.txt" || true
+}
+
+stage3_run_owner() {
+  local host run_id=perch-stage3 schedule deadline poll_rc
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 3 --key host | tr -d '\"')"
+  STAGE3_HOST="$host"
+  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-worker-mode --value "$([ -n "$FAKE" ] && echo fake || echo real)"
+  if [ -n "$FAKE" ]; then
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: fake worker cannot satisfy real-worker stage 3"
+    return 1
+  fi
+  if ! "$PY" -I "$STAGE3_PY" stage3-owner-complete --help \
+      > "$RAW/stage3-owner-completion-helper.txt" 2>&1; then
+    cat "$RAW/stage3-owner-completion-helper.txt" >> "$RAW/stage3-setup-errors.txt"
+    stage3_capture_owner_evidence || true
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: stage3-owner-complete helper is unavailable"
+    return 1
+  fi
+  if ! stage2_setup 3; then
+    stage3_capture_owner_evidence || true
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: owner setup failed; see stage3-setup-errors.txt"
+    return 1
+  fi
+  if ! stage2_admit_tasks "" 3; then
+    stage3_capture_owner_evidence || true
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: owner admission failed; see stage3-setup-errors.txt and stage3-admit-*.json"
+    return 1
+  fi
+  schedule="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["operating_setup"]["setup"]["roles"]["manager"])' "$RAW/stage3-activation.json")" || return 1
+  stage2_host_client --host "$host" --wait-seconds 0 manager --project "$run_id" \
+    start-manager --schedule-id "$schedule" > "$RAW/stage3-manager-start.json" \
+    2>> "$RAW/stage3-setup-errors.txt" || return 1
+  deadline=$(( $(date +%s) + 900 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    stage3_read_host "$host" "$RAW/stage3-project-status.json" "$deadline" project status --project "$run_id" || return 1
+    stage3_read_host "$host" "$RAW/stage3-project-schedules.json" "$deadline" schedules --project "$run_id" || return 1
+    poll_rc=0
+    "$PY" -I "$STAGE3_PY" stage3-owner-complete --status "$RAW/stage3-project-status.json" \
+        --schedules "$RAW/stage3-project-schedules.json" --activation "$RAW/stage3-activation.json" \
+        --admissions "$RAW" > "$RAW/stage3-owner-completion-check.txt" \
+        2> "$RAW/stage3-owner-completion-error.txt" || poll_rc=$?
+    case "$poll_rc" in
+      0)
+      stage3_capture_owner_evidence
+      "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value completed
+      return 0
+      ;;
+      1) sleep 1 ;;
+      2)
+        cat "$RAW/stage3-owner-completion-check.txt" "$RAW/stage3-owner-completion-error.txt" >> "$RAW/stage3-setup-errors.txt"
+        stage3_capture_owner_evidence || true
+        "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: owner Due reached failed or unknown terminal state; see stage3-setup-errors.txt"
+        return 1
+        ;;
+      *)
+        cat "$RAW/stage3-owner-completion-check.txt" "$RAW/stage3-owner-completion-error.txt" >> "$RAW/stage3-setup-errors.txt"
+        echo "stage3-owner-complete CLI failed with unexpected exit $poll_rc" >> "$RAW/stage3-setup-errors.txt"
+        stage3_capture_owner_evidence || true
+        "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: stage3-owner-complete CLI error (exit $poll_rc); see stage3-setup-errors.txt"
+        return 1
+        ;;
+    esac
+  done
+  stage3_capture_owner_evidence
+  echo "owner stage-3 tasks did not all complete within 900 seconds" >> "$RAW/stage3-setup-errors.txt"
+  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: owner task lifecycle poll timed out"
+  return 1
+}
+
+stage2_submit_admission() {  # PREFIX HOST TASK REF REVIEW_REF ATTEMPT
+  local prefix="$1" host="$2" task="$3" ref="$4" review_ref="$5" attempt="$6" rc
+  local request_key="perch-${prefix}-admit-$task" receipt="$RAW/$prefix-admit-$task-attempt-$attempt.json"
+  printf '%s\n' "$request_key" > "$RAW/$prefix-admit-$task-attempt-$attempt.request-key"
   if cold_client --host "$host" --wait-seconds 0 service admit --task-ref "$ref" \
       --revision "$("$PY" -I -c 'import json,sys; print(json.load(sys.stdin)["revision"])' <<< "$ref")" \
       --review-ref "$review_ref" --request-key "$request_key" \
-      > "$receipt" 2>> "$RAW/stage2-setup-errors.txt"; then
+      > "$receipt" 2>> "$RAW/$prefix-setup-errors.txt"; then
     return 0
   else
     rc=$?
   fi
-  [ ! -s "$receipt" ] || cp "$receipt" "$RAW/stage2-admit-$task.json"
-  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: owner service admit exited $rc"
+  [ ! -s "$receipt" ] || cp "$receipt" "$RAW/$prefix-admit-$task.json"
+  "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "$prefix-admit-$task" --value "failed: owner service admit exited $rc"
   return "$rc"
 }
 
 stage2_admit_tasks() {
-  local host task ref review_ref attempt receipt request_id next_request retained selected
-  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
-  review_ref="$(cat "$RAW/stage2-review-ref.json")"
-  selected="${1:-$("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2)}"
-  # Submit the selected tasks before waiting for their results. A pending
-  # admission retains its one owner-lane request.
+  local stage="${2:-2}" prefix="stage${2:-2}" host task ref review_ref attempt cutoff receipt request_id next_request retained selected
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key host | tr -d '"')"
+  review_ref="$(cat "$RAW/$prefix-review-ref.json")"
+  selected="${1:-$("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage "$stage")}"
+  # Submit each exact activated task once; poll its retained owner-lane request.
   for task in $selected; do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
-      "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
-    # The operator command is the sole task admission route. It performs the
-    # owner-local presence proof and verifies the selected exact revision.
-    stage2_submit_admission "$host" "$task" "$ref" "$review_ref" 1 || return $?
-    cp "$RAW/stage2-admit-$task-attempt-1.json" "$RAW/stage2-admit-$task.json"
+      "$RAW/$prefix-activation.json" "$task" 2>> "$RAW/$prefix-setup-errors.txt")" || return 1
+    if [ "$stage" = 2 ]; then
+      printf '0\n' > "$RAW/$prefix-admit-$task-cutoff"
+    else
+      printf '%s\n' "$(( $(epoch_now) + 180 ))" > "$RAW/$prefix-admit-$task-cutoff"
+    fi
+    stage2_submit_admission "$prefix" "$host" "$task" "$ref" "$review_ref" 1 || return $?
+    cp "$RAW/$prefix-admit-$task-attempt-1.json" "$RAW/$prefix-admit-$task.json"
   done
   for task in $selected; do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
-      "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
+      "$RAW/$prefix-activation.json" "$task" 2>> "$RAW/$prefix-setup-errors.txt")" || return 1
     attempt=0
+    cutoff="$(cat "$RAW/$prefix-admit-$task-cutoff")"
     while :; do
       attempt=$(( attempt + 1 ))
-      receipt="$RAW/stage2-admit-$task-attempt-$attempt.json"
-      if ! request_id="$("$PY" -I "$REPORT_PY" stage2-admission-request \
-          --response "$receipt" 2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
-      if [ -n "$request_id" ]; then
-        retained="$RAW/stage2-admit-$task-retained-$attempt.json"
-      fi
-      while [ -n "$request_id" ]; do
+      receipt="$RAW/$prefix-admit-$task-attempt-$attempt.json"
+      if ! request_id="$("$PY" -I "$REPORT_PY" stage2-admission-request --response "$receipt" 2>> "$RAW/$prefix-setup-errors.txt")"; then return 1; fi
+      if [ -n "$request_id" ]; then retained="$RAW/$prefix-admit-$task-retained-$attempt.json"; fi
+      while [ -n "$request_id" ] && { [ "$cutoff" = 0 ] || [ "$(epoch_now)" -lt "$cutoff" ]; }; do
         sleep 0.5
-        if ! stage2_operator_request_status "$request_id" \
-            > "$retained" 2>> "$RAW/stage2-setup-errors.txt"; then
+        if ! stage2_operator_request_status "$request_id" > "$retained" 2>> "$RAW/$prefix-setup-errors.txt"; then
           if ! stage2_owner_alive; then
-            echo "owner exited while waiting for retained admission request $request_id for $task; see $(basename "$retained")" >> "$RAW/stage2-setup-errors.txt"
+            echo "owner exited while waiting for retained admission request $request_id for $task; see $(basename "$retained")" >> "$RAW/$prefix-setup-errors.txt"
             return 1
           fi
           continue
         fi
-        if ! next_request="$("$PY" -I "$REPORT_PY" stage2-admission-request \
-            --response "$retained" --expected-request-id "$request_id" \
-            2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
+        if ! next_request="$("$PY" -I "$REPORT_PY" stage2-admission-request --response "$retained" --expected-request-id "$request_id" 2>> "$RAW/$prefix-setup-errors.txt")"; then return 1; fi
         request_id="$next_request"
-        if [ -z "$request_id" ]; then
-          receipt="$retained"
-        elif ! stage2_owner_alive; then
-          echo "owner exited while retained admission request $request_id stayed pending for $task" >> "$RAW/stage2-setup-errors.txt"
+        if [ -z "$request_id" ]; then receipt="$retained"; elif ! stage2_owner_alive; then
+          echo "owner exited while retained admission request $request_id stayed pending for $task" >> "$RAW/$prefix-setup-errors.txt"
           return 1
         fi
       done
-      cp "$receipt" "$RAW/stage2-admit-$task.json"
+      if [ -n "$request_id" ]; then
+        echo "retained admission request $request_id stayed pending for $task within the poll budget" >> "$RAW/$prefix-setup-errors.txt"
+        return 1
+      fi
+      cp "$receipt" "$RAW/$prefix-admit-$task.json"
       if "$PY" -I "$REPORT_PY" stage2-admission-held --response "$receipt"; then
-        if ! stage2_wait_admission_boundary "$task"; then
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: held admission boundary did not close"
+        if ! stage2_wait_admission_boundary "$prefix" "$task" "$cutoff"; then
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "$prefix-admit-$task" --value "failed: held admission boundary did not close"
           return 1
         fi
-        stage2_submit_admission "$host" "$task" "$ref" "$review_ref" "$(( attempt + 1 ))" || return $?
+        if [ "$cutoff" != 0 ] && [ "$(epoch_now)" -ge "$cutoff" ]; then
+          echo "owner admission boundary closed too late to retry $task within the poll budget" >> "$RAW/$prefix-setup-errors.txt"
+          return 1
+        fi
+        stage2_submit_admission "$prefix" "$host" "$task" "$ref" "$review_ref" "$(( attempt + 1 ))" || return $?
         continue
       fi
-      if ! "$PY" -I "$REPORT_PY" stage2-admission-check --response "$receipt" \
-          --task-ref "$ref" >> "$RAW/stage2-setup-errors.txt" 2>&1; then
-        "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: owner did not admit the exact activated revision"
+      if ! "$PY" -I "$REPORT_PY" stage2-admission-check --response "$receipt" --task-ref "$ref" >> "$RAW/$prefix-setup-errors.txt" 2>&1; then
+        "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "$prefix-admit-$task" --value "failed: owner did not admit the exact activated revision"
         return 1
       fi
       break
     done
-    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value ran
+    "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "$prefix-admit-$task" --value ran
   done
   return 0
 }
@@ -771,14 +914,14 @@ run_stage() {  # STAGE
   set +m
 
   WIPE="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage "$stage" --key wipe)"
-  if [ "$stage" = 2 ]; then
+  if [ "$stage" = 2 ] || [ "$stage" = 3 ]; then
     t="$(date +%s)"; make_canon; phase canary-setup "" "$t"
   fi
   restart_staging "$stage"
   STAGING_SHA="$(sed -n 's/.*"sha": "\([0-9a-f]*\)".*/\1/p' "$STAGE_ROOT/run/staging.json" 2>/dev/null | head -n 1 || true)"
   CANON_MAIN_SHA="$(git -C "$OTTO_REPO" rev-parse --short -q --verify 'canon/main^{commit}' || echo none)"
 
-  if [ "$stage" != 2 ]; then
+  if [ "$stage" != 2 ] && [ "$stage" != 3 ]; then
     t="$(date +%s)"; make_canon; phase canary-setup "" "$t"
   fi
 
@@ -847,6 +990,19 @@ run_stage() {  # STAGE
       owner-driven-canary)
         if [ -n "$FAKE" ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "fake-harness-only"
+          if [ "$stage" = 3 ]; then
+            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-worker-mode --value fake
+            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: fake worker cannot satisfy real-worker stage 3"
+          fi
+        elif [ "$stage" = 3 ]; then
+          if [ "$RESTART_RC" -ne 0 ]; then
+            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: staging did not start (rc $RESTART_RC)"
+          elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
+            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
+          elif stage3_run_owner; then :
+          else
+            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key stage3-owner-route --value "failed: stage 3 owner route did not complete"
+          fi
         else
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key owner-driven-canary --value "owner-project-activation-and-dispatch-not-wired"
         fi ;;
@@ -864,7 +1020,7 @@ run_stage() {  # STAGE
     # Two workers held on the first task's lab for the whole run: two units against a limit of one.
     HOLD_POOL="$(hold_worker "$LABS/$first" "$first") $(hold_worker "$LABS/$first" "$first")"
   fi
-  if [ "$stage" != 2 ] && { [ "$stage" != 4 ] || [ -n "$FAKE" ]; }; then
+  if [ "$stage" != 2 ] && [ "$stage" != 3 ] && { [ "$stage" != 4 ] || [ -n "$FAKE" ]; }; then
     for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage "$stage"); do
       run_task "$task" "$([ "$task" = "$first" ] && echo yes || echo no)" "$([ "$task" = "$last" ] && echo yes || echo no)"
     done
@@ -882,6 +1038,13 @@ run_stage() {  # STAGE
     cp "$STAGE_ROOT/home/shared-host/capacity-process-groups.json" "$RAW/recorded-process-groups.json"
   else
     printf '{}\n' > "$RAW/recorded-process-groups.json"
+  fi
+
+  if [ "$stage" = 3 ]; then
+    if [ -z "${STAGE3_HOST:-}" ]; then
+      STAGE3_HOST="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 3 --key host | tr -d '\"')"
+    fi
+    stage3_capture_owner_evidence || true
   fi
 
   t="$(date +%s)"
@@ -909,6 +1072,11 @@ run_stage() {  # STAGE
       --store "$STAGE_ROOT/store/staging.store" --authority "$AUTHORITY" \
       --out "$RAW/stage2-store-events.json" || true
   fi
+  if [ "$stage" = 3 ]; then
+    "$PY" -I "$HERE/perch_stage2_evidence.py" --src "$STAGE_ROOT/tree/src" \
+      --store "$STAGE_ROOT/store/staging.store" --authority "$AUTHORITY" \
+      --out "$RAW/stage3-store-events.json" || true
+  fi
 
   # The line's git history: report.sh's own landed and spend sections, read-only. OPS_DIR is an empty
   # folder, so nothing of the operator's ops is read.
@@ -930,9 +1098,16 @@ run_stage() {  # STAGE
   "$PY" -I "$REPORT_PY" at-rest --stage-root "$STAGE_ROOT" --out "$RAW/at-rest.json"
   INIT_ARGS=()
   [ -z "$FAKE" ] || INIT_ARGS+=(--fake)
-  "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} \
-    --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
-    --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
+  if [ "$stage" = 3 ]; then
+    "$PY" -I "$STAGE3_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage 3 \
+      ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} --faults "$FAULTS" --staging-restart "$RESTART_RC" \
+      --staging-sha "${STAGING_SHA:-none}" --canon-main-sha "$CANON_MAIN_SHA" \
+      --started-at "$STARTED" --stage-root "$STAGE_ROOT"
+  else
+    "$PY" -I "$REPORT_PY" init --raw "$RAW" --project "$CANARY/project.json" --stage "$stage" ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} \
+      --faults "$FAULTS" --staging-restart "$RESTART_RC" --staging-sha "${STAGING_SHA:-none}" \
+      --canon-main-sha "$CANON_MAIN_SHA" --started-at "$STARTED" --stage-root "$STAGE_ROOT"
+  fi
   if [ "$stage" = 2 ]; then
     "$PY" -I "$REPORT_PY" stage2-observations --raw "$RAW"
   fi
@@ -944,8 +1119,13 @@ run_stage() {  # STAGE
     fi
   done
   STAGE_RC=0
-  "$PY" -I "$REPORT_PY" check --raw "$RAW" || STAGE_RC=$?
-  "$PY" -I "$REPORT_PY" render --raw "$RAW" --out "$run/report.md"
+  if [ "$stage" = 3 ]; then
+    "$PY" -I "$STAGE3_PY" check --raw "$RAW" --project "$CANARY/project.json" || STAGE_RC=$?
+    "$PY" -I "$STAGE3_PY" render --raw "$RAW" --out "$run/report.md"
+  else
+    "$PY" -I "$REPORT_PY" check --raw "$RAW" || STAGE_RC=$?
+    "$PY" -I "$REPORT_PY" render --raw "$RAW" --out "$run/report.md"
+  fi
   echo "perch: stage $stage report at $run/report.md"
 }
 
@@ -969,7 +1149,7 @@ else
 fi
 # Stage 1 is owner-lane save/read only and has no worker tasks; it runs without --fake.
 for s in $STAGES; do
-  [ -n "$FAKE" ] || [ "$s" = 0 ] || [ "$s" = 1 ] || [ "$s" = 2 ] || die "stage $s needs a real worker, which is not built yet"
+  [ -n "$FAKE" ] || [ "$s" = 0 ] || [ "$s" = 1 ] || [ "$s" = 2 ] || [ "$s" = 3 ] || die "stage $s needs a real worker, which is not built yet"
 done
 RC=0
 for s in $STAGES; do

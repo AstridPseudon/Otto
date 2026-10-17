@@ -24,6 +24,7 @@ from pathlib import Path
 import stat
 import sys
 import time
+import uuid
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import unquote
 
@@ -303,6 +304,31 @@ class OwnerFleetRegistry:
         self._due_bindings: dict[tuple[str, str], tuple[int, str]] = {}
         self._active_due: dict[str, str] = {}
         self._lock = threading.RLock()
+        self._evidence_lock = threading.RLock()
+        self.evidence_path = self.home / "evidence" / "owner-fleet-evidence.jsonl"
+        self._evidence_sequence = 0
+        self._lab_creations: dict[tuple[str, str], str] = {}
+        self._lab_bindings: dict[str, tuple[str, int, str]] = {}
+        if self.evidence_path.exists():
+            for line in self.evidence_path.read_text(encoding="utf-8").splitlines():
+                row = json.loads(line)
+                self._evidence_sequence += 1
+                if row.get("schema") == "otto.owner-lab-creation.v1":
+                    task_ref, creation_id = row.get("task_ref"), row.get("creation_record_id")
+                    if isinstance(task_ref, Mapping) and isinstance(creation_id, str):
+                        key = (str(task_ref.get("authority")), str(task_ref.get("id")))
+                        self._lab_creations[key] = creation_id
+                elif row.get("schema") == "otto.owner-lab-assignment.v1":
+                    task_ref, assignment_ref = row.get("task_ref"), row.get("assignment_ref")
+                    schedule_id, creation_id = row.get("schedule_id"), row.get("creation_record_id")
+                    generation = row.get("generation")
+                    if (isinstance(assignment_ref, Mapping) and isinstance(schedule_id, str)
+                            and isinstance(creation_id, str) and type(generation) is int):
+                        binding = (str(assignment_ref.get("id")), generation, creation_id)
+                        prior = self._lab_bindings.get(schedule_id)
+                        if prior is not None and prior != binding:
+                            raise RuntimeError("owner evidence contains an ambiguous Due-to-lab binding")
+                        self._lab_bindings[schedule_id] = binding
         self._start_facade()
         self.startup_landed_sweep: Optional[list] = None
 
@@ -453,7 +479,7 @@ class OwnerFleetRegistry:
                                      lambda: self.owner_executor, self.settle_assignment,
                                      self.retain_landing_refusal),
                                                  tuple(spec.operation for spec in tools)),
-                                 self.tokens, FeedbackLedger())
+                                 self.tokens, FeedbackLedger(), audit=self._record_facade_call)
         self.facade_server = FacadeServer(self.facade, str(self.facade_socket))
         self.facade_server.start()
 
@@ -492,6 +518,104 @@ class OwnerFleetRegistry:
 
     def bind_runner(self, runner: Any) -> None:
         self.runner = runner
+
+    def _append_evidence(self, record: Mapping[str, Any]) -> None:
+        """Append one owner-custodied evidence row and force it to stable storage."""
+        from . import lanes
+        lanes.private_dir(self.evidence_path.parent)
+        with self._evidence_lock:
+            row = {**dict(record), "sequence": self._evidence_sequence + 1}
+            raw = (json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+            fd = os.open(self.evidence_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                view = memoryview(raw)
+                while view:
+                    written = os.write(fd, view)
+                    view = view[written:]
+                os.fsync(fd)
+                self._evidence_sequence += 1
+            finally:
+                os.close(fd)
+
+    @staticmethod
+    def _apparent_lab_bytes(path: Path) -> int:
+        """Sum st_size for regular files below a lab, including its .git directory."""
+        total = 0
+        for root, dirs, files in os.walk(path, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
+            for name in files:
+                item = Path(root) / name
+                try:
+                    info = item.lstat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+        return total
+
+    def _record_facade_call(self, call: Mapping[str, Any]) -> None:
+        assignment_id = call.get("assignment_id")
+        if not isinstance(assignment_id, str) or not assignment_id:
+            raise PermissionError("authenticated facade call has no assignment identity")
+        # The assignment's retained task ref is the admission pin used by the worker.
+        # A successful done may advance the current task before this callback runs.
+        record = self.records.get(assignment_id)
+        if record is None:
+            raise PermissionError("facade audit assignment is not retained by the owner")
+        task_id = self._task_id(record.task)
+        ref = getattr(record.task, "ref", None)
+        if ref is None:
+            raise PermissionError("facade audit assignment has no exact task reference")
+        from herzchen.contracts import ResourceRef
+        current = self.owner.graph.current(ResourceRef(ref.authority, "work.task", task_id))
+        if (current.ref.authority, current.ref.kind, current.ref.id) != (ref.authority, ref.kind, ref.id):
+            raise PermissionError("facade audit current task identity differs from its dispatch pin")
+        project_ref = getattr(record.task, "payload", {}).get("project_ref")
+        if not isinstance(project_ref, Mapping):
+            project_ref = current.payload.get("project_ref")
+        assignment = self.owner.assignments.get(ResourceRef(ref.authority, "wrk.assignment", assignment_id))
+        if (not isinstance(project_ref, Mapping) or assignment.ref.id != assignment_id
+                or (assignment.scope.authority, assignment.scope.kind, assignment.scope.id) !=
+                   (ref.authority, ref.kind, ref.id)):
+            raise PermissionError("facade audit assignment is stale or lacks its admitted project")
+        context = {"assignment_ref": assignment.ref.to_dict(), "task_ref": ref.to_dict(),
+                   "project_ref": dict(project_ref)}
+        self._append_evidence({
+            "schema": "otto.owner-facade-call.v1",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "assignment_ref": context["assignment_ref"], "task_ref": context["task_ref"],
+            "project_ref": context["project_ref"], "tool": call["tool"], "kind": call["kind"],
+            "operation": call["operation"], "result": call["result"],
+        })
+
+    def _bind_lab_evidence(self, context: Mapping[str, Any], due: Any) -> None:
+        task_ref, project_ref = context["task_ref"], context["project_ref"]
+        assignment_ref = context["assignment_ref"]
+        key = (str(task_ref["authority"]), str(task_ref["id"]))
+        assignment_id = assignment_ref.get("id")
+        if not isinstance(assignment_id, str) or not assignment_id:
+            raise PermissionError("worker Due has no exact assignment reference")
+        schedule_id = due.get("schedule_id") if isinstance(due, Mapping) else None
+        generation = due.get("generation") if isinstance(due, Mapping) else None
+        if not isinstance(schedule_id, str) or not schedule_id or type(generation) is not int or generation < 1:
+            raise PermissionError("worker Due has no exact schedule or generation identity")
+        with self._evidence_lock:
+            prior = self._lab_bindings.get(schedule_id)
+            if prior is not None:
+                if prior[:2] == (assignment_id, generation):
+                    return
+                raise PermissionError("worker Due is already bound to another lab creation")
+            creation_id = self._lab_creations.get(key)
+            if not isinstance(creation_id, str):
+                raise PermissionError("worker lab has no retained creation evidence")
+            binding = (assignment_id, generation, creation_id)
+            row = {"schema": "otto.owner-lab-assignment.v1",
+                   "recorded_at": datetime.now(timezone.utc).isoformat(),
+                   "project_ref": project_ref, "task_ref": task_ref, "assignment_ref": assignment_ref,
+                   "schedule_id": schedule_id, "generation": generation,
+                   "creation_record_id": creation_id}
+            self._append_evidence(row)
+            self._lab_bindings[schedule_id] = binding
 
     @staticmethod
     def _task_id(task: Any) -> str:
@@ -637,8 +761,26 @@ class OwnerFleetRegistry:
             assert_line_checkout_clean(repo, "refs/heads/" + branch)
             fleet, landing = self._pair(pair_key, repo, branch)
             lab_name = task.id
-            lab = (fleet.get(lab_name) if lab_name in fleet.names()
-                   else fleet.create(lab_name, base="refs/heads/" + branch))
+            if lab_name in fleet.names():
+                lab = fleet.get(lab_name)
+            else:
+                started_at = datetime.now(timezone.utc).isoformat()
+                started_clock = time.perf_counter()
+                lab = fleet.create(lab_name, base="refs/heads/" + branch)
+                elapsed = time.perf_counter() - started_clock
+                ended_at = datetime.now(timezone.utc).isoformat()
+                creation_record_id = "lab-create:" + uuid.uuid4().hex
+                self._append_evidence({
+                    "schema": "otto.owner-lab-creation.v1",
+                    "recorded_at": ended_at,
+                    "creation_record_id": creation_record_id,
+                    "project_ref": current_project.ref.to_dict(), "task_ref": current.ref.to_dict(),
+                    "assignment_ref": None, "started_at": started_at, "ended_at": ended_at,
+                    "elapsed_seconds": elapsed, "path": str(lab.path),
+                    "apparent_bytes": self._apparent_lab_bytes(lab.path),
+                    "size_rule": "sum st_size of regular files recursively, including .git; symlinks excluded",
+                })
+                self._lab_creations[(current.ref.authority, current.ref.id)] = creation_record_id
         return {"task_id": task.id, "admitted_revision": admitted, "repo_name": repo_name,
                 "repo_path": str(repo), "branch": branch, "line_ref": "refs/heads/" + branch,
                 "lab_name": lab_name, "lab": lab, "workspace": str(lab.path),
@@ -651,7 +793,9 @@ class OwnerFleetRegistry:
         assignment_id = assignment.get("id") if isinstance(assignment, Mapping) else getattr(assignment, "id", None)
         if not isinstance(assignment_id, str) or not assignment_id:
             raise PermissionError("worker Due has no assignment identity")
-        return self.assignment_context(assignment_id, token=grant.token)
+        context = self.assignment_context(assignment_id, token=grant.token)
+        self._bind_lab_evidence(context, due)
+        return context
 
     def _pair(self, key: tuple[str, str], repo: Path, branch: str) -> tuple[Any, Any]:
         pair = self._pairs.get(key)
@@ -665,9 +809,12 @@ class OwnerFleetRegistry:
         if factory is None:
             from .fleet_landing import make_landing_service
             factory = make_landing_service
-        landing = factory(fleet=fleet, result_store=self.result_store, runner=self.runner,
-                          repo_name=key[0], repo_path=repo, branch=branch, owner=self.owner,
-                          views_provider=self.views_provider, assignment_lookup=self.assignment_lookup)
+        arguments = dict(fleet=fleet, result_store=self.result_store, runner=self.runner,
+                         repo_name=key[0], repo_path=repo, branch=branch, owner=self.owner,
+                         views_provider=self.views_provider, assignment_lookup=self.assignment_lookup)
+        if self.landing_factory is None:
+            arguments["evidence_audit"] = self._append_evidence
+        landing = factory(**arguments)
         pair = (fleet, landing)
         self._pairs[key] = pair
         return pair

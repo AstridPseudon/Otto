@@ -78,6 +78,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                          runner: Any, views_provider: Callable[[], Mapping[str, Any]],
                          assignment_lookup: Callable[..., Mapping[str, Any]] | None = None,
                          task_lookup: Callable[[str], Mapping[str, Any]] | None = None,
+                         evidence_audit: Callable[[Mapping[str, Any]], None] | None = None,
                          timeout: float = 3600) -> LandingService:
     """Build a repo/branch landing service from owner-issued dependencies.
 
@@ -296,6 +297,22 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                 candidate = candidate_record.ref
             except Exception as exc:
                 raise LandingError("owner could not record the verified lab commit as its candidate: " + str(exc)) from exc
+
+            if evidence_audit is not None:
+                evidence_audit({
+                    "schema": "otto.owner-landing-evidence.v1",
+                    "project_ref": project_ref.to_dict(), "task_ref": task_ref.to_dict(),
+                    "assignment_ref": assignment_ref.to_dict(),
+                    "candidate_ref": candidate.to_dict(), "lab_commit": commit,
+                    "runner_run_id": run_id, "runner_binding": sealed["binding"],
+                    "evidence_ref": evidence_ref.to_dict(),
+                    "evidence": {"representation": resolved["representation"],
+                                 "availability": resolved["availability"],
+                                 "verification": resolved["verification"],
+                                 "actual_digest": resolved["actual_digest"],
+                                 "manifest": {"byte_digest": resolved["manifest"]["byte_digest"],
+                                              "byte_length": resolved["manifest"]["byte_length"]}},
+                })
 
             execution_key = "fleet:" + candidate_key
             expected = {"expected_task_ref": task_ref.to_dict(),

@@ -309,6 +309,66 @@ def test_owner_registry_prepares_lab_on_clean_configured_line(monkeypatch, tmp_p
     assert second["fleet"] is first["fleet"]
 
 
+def test_owner_evidence_measures_created_lab_binds_due_and_audits_facade_order(monkeypatch, tmp_path):
+    from herzchen.fleet.tools.facade import ToolFacade
+    from herzchen.fleet.tools.rules import CHECK, DONE, FeedbackLedger, TASK, ToolSpec
+
+    registry, task, record, token, _repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"})
+    context = registry.assignment_context(record.assignment, token=token)
+    due = {"schedule_id": "due-worker-1", "generation": 1}
+    registry._bind_lab_evidence(context, due)
+    retry_context = {**context, "assignment_ref": {**context["assignment_ref"],
+                                                   "id": "assignment-worker-retry"}}
+    registry._bind_lab_evidence(retry_context, {"schedule_id": "due-worker-2", "generation": 1})
+    creation_key = (task.ref.authority, task.ref.id)
+    registry._lab_creations[creation_key] = "lab-create:later-attempt"
+    registry._bind_lab_evidence(context, due)  # A repeat of the old Due keeps its original lineage.
+
+    class Owner:
+        def call(self, operation, assignment, _args, *, feedback):
+            assert assignment == record.assignment
+            assert feedback is (operation == "worker-check")
+            if operation == "worker-done":
+                record.state = "settled"
+                advanced = SimpleNamespace(ref=ResourceRef("fixture", "work.task", task.ref.id, "task-completed-r2"),
+                                           payload=task.payload)
+                registry.owner.graph.current = lambda _ref: advanced
+            return {"operation": operation, "ok": True}
+
+    tools = (ToolSpec("task", TASK, "worker-task"),
+             ToolSpec("check", CHECK, "worker-check"),
+             ToolSpec("done", DONE, "worker-done"))
+    ledger = FeedbackLedger()
+    facade = ToolFacade(tools, {"worker": ("task", "check", "done")}, Owner(),
+                        registry.dispatcher.tokens, ledger, audit=registry._record_facade_call)
+    assert facade.call(token, "task")["ok"] is True
+    assert facade.call(token, "check")["feedback"] is True
+    assert facade.call(token, "done")["submitted"] is True
+
+    rows = [json.loads(line) for line in registry.evidence_path.read_text().splitlines()]
+    creation = [row for row in rows if row["schema"] == "otto.owner-lab-creation.v1"]
+    binding = [row for row in rows if row["schema"] == "otto.owner-lab-assignment.v1"]
+    calls = [row for row in rows if row["schema"] == "otto.owner-facade-call.v1"]
+    assert len(creation) == 1 and len(binding) == 2
+    assert creation[0]["project_ref"] == context["project_ref"]
+    assert creation[0]["task_ref"] == task.ref.to_dict()
+    assert creation[0]["started_at"] <= creation[0]["ended_at"]
+    assert creation[0]["elapsed_seconds"] >= 0
+    assert creation[0]["path"] == context["workspace"]
+    assert creation[0]["apparent_bytes"] > 0
+    assert ".git" in creation[0]["size_rule"]
+    assert binding[0]["assignment_ref"] == context["assignment_ref"]
+    assert binding[0]["schedule_id"] == due["schedule_id"]
+    assert binding[1]["assignment_ref"] == retry_context["assignment_ref"]
+    assert binding[1]["creation_record_id"] == binding[0]["creation_record_id"] == creation[0]["creation_record_id"]
+    assert [row["kind"] for row in calls] == [TASK, CHECK, DONE]
+    assert calls[2]["task_ref"] == calls[0]["task_ref"] == calls[1]["task_ref"] == task.ref.to_dict()
+    assert [row["sequence"] for row in calls] == sorted(row["sequence"] for row in calls)
+    assert all(row["assignment_ref"] == context["assignment_ref"] for row in calls)
+    assert len(ledger.entries(record.assignment)) == 1
+
+
 def test_owner_registry_allows_project_revision_advance_only_while_task_is_still_linked(monkeypatch, tmp_path):
     registry, task, record, _token, _repository = _fleet_registry_fixture(
         monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"},
@@ -1019,7 +1079,8 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
 
 
 def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commit=False,
-                                          evidence_resolver=True, corrupt_evidence=False):
+                                          evidence_resolver=True, corrupt_evidence=False,
+                                          evidence_audit=None):
     """Build one real owner and drive its landing adapter through done."""
     import hashlib
     import json
@@ -1140,7 +1201,7 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
             repo_name="repo", repo_path=line, branch="main", owner=f.owner,
             runner=Runner(), views_provider=lambda: {},
             assignment_lookup=lambda assignment_id: binding if assignment_id == worker.ref.id else {},
-            task_lookup=task_lookup)
+            task_lookup=task_lookup, evidence_audit=evidence_audit)
         try:
             result = service.done("one", task_id, assignment_id=worker.ref.id)
         except Exception:
@@ -1154,6 +1215,42 @@ def _run_real_landing_with_runner_evidence(tmp_path, *, exit_code=0, wrong_commi
         if fixture is not None:
             fixture.doCleanups()
         raise
+
+
+@pytest.mark.parametrize("options, expected_rows", [
+    ({}, 1),
+    ({"exit_code": 1}, 0),
+    ({"wrong_commit": True}, 0),
+    ({"corrupt_evidence": True}, 0),
+], ids=["verified-managed-receipt", "failed-check", "mismatched-commit", "doctored-full-evidence"])
+def test_landing_evidence_audit_requires_successful_full_verified_receipt(tmp_path, options, expected_rows):
+    from herzchen.fleet.landing import LandingError
+
+    rows = []
+    if expected_rows:
+        result, result_store, handler, f, _base, fixture = _run_real_landing_with_runner_evidence(
+            tmp_path, evidence_audit=rows.append, **options)
+        try:
+            assert result["ok"] and result["landed"]
+            row, = rows
+            assert row["schema"] == "otto.owner-landing-evidence.v1"
+            assert row["runner_run_id"] == result["runner_run_id"]
+            assert row["runner_binding"] == result_store.get(result["runner_run_id"])["binding"]
+            assert row["evidence"]["representation"] == "managed"
+            assert row["evidence"]["availability"] == "verified"
+            assert row["evidence"]["verification"] == "full-verified"
+            resolved = handler.resolve(ResourceRef.from_dict(row["evidence_ref"]),
+                actor=f.binding.authenticated_actor("manager"), verify_full=True)
+            assert row["evidence"]["actual_digest"] == resolved["actual_digest"]
+            assert row["evidence"]["manifest"]["byte_digest"] == resolved["manifest"]["byte_digest"]
+            assert row["evidence"]["manifest"]["byte_length"] == resolved["manifest"]["byte_length"]
+            assert row["candidate_ref"]
+        finally:
+            fixture.doCleanups()
+    else:
+        with pytest.raises(LandingError):
+            _run_real_landing_with_runner_evidence(tmp_path, evidence_audit=rows.append, **options)
+        assert rows == []
 
 
 def test_done_freezes_exact_sealed_check_evidence_and_accepts_through_owner_adapter(tmp_path):
