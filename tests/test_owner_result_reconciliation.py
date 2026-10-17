@@ -4,12 +4,13 @@ from pathlib import Path
 import tempfile
 import hashlib
 import json
+import shlex
 
 from herzchen.contracts import AuthenticatedActor
 from herzchen.kernel import Store
 from herzchen.kernel.operations import OperationState, UnknownOutcomeError
 from otto.agents.effect_ledger import NativeEffectLedger
-from otto.agents.gateway import Responsibility
+from otto.agents.gateway import InMemoryAttemptCapture, OttoGateway, Responsibility
 
 from otto.agents.owner_runtime import CanonicalRoleRuntime, OwnerAuthorizedRoleCapture, OwnerRoleRuntimeError
 
@@ -76,6 +77,109 @@ class FixtureCapture(OwnerAuthorizedRoleCapture):
 
 
 class OwnerResultReconciliationTests(unittest.TestCase):
+    def test_owner_attempt_unknown_and_replay_paths_read_back_exact_native_effect(self):
+        from herzchen.contracts import ResourceRef
+
+        logical_key = "turn-'$HOME'"
+        effect_ref = ResourceRef("owner", "effect", NativeEffectLedger.key(logical_key))
+        responsibility = Responsibility(
+            owner="owner-principal", logical_agent_id="worker-1", operation="invoke",
+            packet_digest="a" * 64, logical_request_key=logical_key,
+            project_ref={"authority": "owner", "kind": "wrk.project", "id": "p-1"},
+            task_ref={"authority": "owner", "kind": "wrk.task", "id": "t-1"},
+            assignment_ref=ASSIGNMENT, generation=1,
+        )
+
+        class HeldLedger:
+            def __init__(self):
+                self.keys = []
+
+            def get(self, key):
+                self.keys.append(key)
+                return SimpleNamespace(effect_ref=effect_ref)
+
+        class Adapter:
+            def invoke(self, _request):
+                raise AssertionError("reconciliation paths must not reach the adapter")
+
+        ledger = HeldLedger()
+        gateway = OttoGateway(Adapter(), effect_ledger=ledger, require_owner_binding=True)
+        fingerprint = gateway._fingerprint(responsibility, {})
+
+        class Capture:
+            def __init__(self, prior=None, claim=None):
+                self.prior, self.claim_result = prior, claim
+
+            def read(self, _key):
+                return self.prior
+
+            def read_assignment(self, *_args):
+                return None
+
+            def claim(self, *_args):
+                return self.claim_result
+
+        scenarios = (
+            ("unknown prior", Capture(prior={"request_fingerprint": fingerprint,
+                "outcome": "unknown", "delivery_state": "unknown"}), "error"),
+            ("prior replay", Capture(prior={"request_fingerprint": fingerprint,
+                "outcome": "succeeded", "delivery_state": "done"}), "replayed"),
+            ("claim replay", Capture(claim={"outcome": "replayed", "attempt": {"outcome": "succeeded"}}), "replayed"),
+        )
+        for label, capture, outcome in scenarios:
+            with self.subTest(path=label):
+                gateway.attempt_capture = capture
+                response = gateway.operation(responsibility, {})
+                self.assertEqual(ledger.keys[-1], logical_key)
+                if outcome == "error":
+                    self.assertEqual(response["error"]["code"], "unknown_attempt_requires_reconciliation")
+                else:
+                    self.assertEqual(response["outcome"], outcome)
+                self.assertEqual(response["effect_ref"], effect_ref.to_dict())
+                argv = shlex.split(response["next_action"])
+                self.assertEqual(argv[:4], ["otto", "effects", "read", "--effect-ref"])
+                self.assertEqual(json.loads(argv[4]), effect_ref.to_dict())
+
+    def test_held_native_turn_exposes_exact_effect_and_shell_safe_read_command(self):
+        from herzchen.contracts import ResourceRef
+
+        logical_key = "turn-'$HOME'"
+        effect_ref = ResourceRef("owner", "effect", NativeEffectLedger.key(logical_key))
+
+        class HeldLedger:
+            def __init__(self):
+                self.keys = []
+
+            def begin(self, *_args):
+                raise UnknownOutcomeError("native effect already started")
+
+            def get(self, key):
+                self.keys.append(key)
+                return SimpleNamespace(effect_ref=effect_ref)
+
+        class Adapter:
+            def invoke(self, _request):
+                raise AssertionError("held effects must not reach the adapter")
+
+        responsibility = Responsibility(
+            owner="owner-principal", logical_agent_id="worker-1", operation="invoke",
+            packet_digest="a" * 64, logical_request_key=logical_key,
+            project_ref={"authority": "owner", "kind": "wrk.project", "id": "p-1"},
+            task_ref={"authority": "owner", "kind": "wrk.task", "id": "t-1"},
+            assignment_ref=ASSIGNMENT, generation=1,
+        )
+        ledger = HeldLedger()
+        response = OttoGateway(Adapter(), attempt_capture=InMemoryAttemptCapture(),
+            effect_ledger=ledger, require_owner_binding=True).operation(responsibility, {})
+
+        self.assertEqual(ledger.keys, [logical_key])
+        self.assertEqual(response["error"]["effect_ref"], effect_ref.to_dict())
+        command = response["error"]["next_action"]
+        argv = shlex.split(command)
+        self.assertEqual(argv[:3], ["otto", "effects", "read"])
+        self.assertEqual(argv[3], "--effect-ref")
+        self.assertEqual(json.loads(argv[4]), effect_ref.to_dict())
+
     def test_fresh_manager_replay_finishes_held_effect_after_capture_crash(self):
         source = {"logical_request_key": "turn-1", "operation": "invoke", "outcome": "unknown",
                   "assignment_ref": ASSIGNMENT, "generation": 1}
