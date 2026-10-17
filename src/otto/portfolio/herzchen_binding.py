@@ -83,12 +83,14 @@ class ProjectReadGrant:
 class _ScopedProjectReader:
     """Expose granted projects and their owner-backed tasks to finite readers."""
 
-    __slots__ = ("__reader", "__grant", "authority")
+    __slots__ = ("__reader", "__grant", "__task_revision_reader", "authority")
 
-    def __init__(self, reader: Any, grant: Optional[ProjectReadGrant], authority: str) -> None:
+    def __init__(self, reader: Any, grant: Optional[ProjectReadGrant], authority: str,
+                 task_revision_reader: Any = None) -> None:
         self.__reader = reader
         self.__grant = grant
         self.authority = authority
+        self.__task_revision_reader = task_revision_reader
 
     def get_record(self, ref: Any) -> Any:
         if self.__grant is None:
@@ -125,6 +127,24 @@ class _ScopedProjectReader:
             except (TypeError, ValueError, KeyError):
                 return None
         return identity if self.__grant.allows(parent) else None
+
+    def get_revision(self, ref: Any) -> Any:
+        """Read one retained task revision only when its project is granted."""
+        if self.__grant is None or getattr(ref, "kind", None) != "work.task" or getattr(ref, "authority", None) != self.authority:
+            return None
+        read_revision = self.__task_revision_reader or getattr(self.__reader, "get_revision", None)
+        if not callable(read_revision):
+            return None
+        record = read_revision(ref)
+        parent = getattr(record, "payload", {}).get("project_ref") if record is not None else None
+        if isinstance(parent, Mapping):
+            from herzchen.contracts import ResourceRef
+
+            try:
+                parent = ResourceRef.from_dict(parent)
+            except (TypeError, ValueError, KeyError):
+                return None
+        return record if self.__grant.allows(parent) else None
 
     def list_events(self, *, stream: Optional[str] = None) -> tuple[Any, ...]:
         if self.__grant is None:
@@ -198,6 +218,7 @@ class FiniteWorkOperations:
         operator_actor: Any = None,
         project_read_grant: Optional[ProjectReadGrant] = None,
         content_command_guard: Any = None,
+        task_revision_reader: Any = None,
         direction_context_reader: Any = None,
         queue_binding: Any = None,
         on_lifecycle: Any = None,
@@ -213,7 +234,8 @@ class FiniteWorkOperations:
         ):
             raise ValueError("project read grant does not match the owner binding")
         self._owner_reader = reader
-        self.reader = _ScopedProjectReader(reader, project_read_grant, binding.authority)
+        self.reader = _ScopedProjectReader(reader, project_read_grant, binding.authority,
+                                           task_revision_reader=task_revision_reader)
         self.project_read_grant = project_read_grant
         self.binding = binding
         self.dependency_owner_actor = dependency_owner_actor

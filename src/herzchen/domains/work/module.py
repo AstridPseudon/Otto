@@ -536,7 +536,7 @@ class _WorkGraphEngine:
         if review is None or not review.revision or self.__writer.get_identity(ResourceRef(review.authority, review.kind, review.id)) is None:
             raise admission.TaskNotAdmittedError("an unreviewed revision cannot be admitted: the review must name an exact stored revision")
         stamp = admission.stamp_of(record.payload)
-        if stamp is not None and stamp["revision"] == revision and stamp["digest"] == admission.content_digest(record.payload):
+        if stamp is not None and stamp["revision"] == revision and admission.admitted_revision(record.payload) == revision:
             return {"outcome": "already-admitted", "task_ref": record.ref, "admitted_revision": revision}
         if revision == record.revision:
             reviewed = record.payload

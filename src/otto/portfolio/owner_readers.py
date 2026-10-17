@@ -93,11 +93,19 @@ def task_reader(
         # validated identity and retain project_read's trusted identity fence.
         parent_identity = {key: parent_ref[key] for key in ("authority", "kind", "id")}
         project = project_read(parent_identity)
+        from herzchen.domains.work import admission
+        try:
+            pin_content_matches = admission.task_content_matches(
+                operations.reader, _resource_ref(expected_task), record.payload,
+                current_ref=record.ref)
+        except (AttributeError, KeyError, LookupError, TypeError, ValueError):
+            pin_content_matches = False
         return {
             "ref": json_value(record.ref),
             "project_ref": project["ref"],
             "lifecycle": json_value(record.payload.get("lifecycle")),
             "payload": json_value(record.payload),
+            "task_pin_content_matches": pin_content_matches,
         }
 
     return read

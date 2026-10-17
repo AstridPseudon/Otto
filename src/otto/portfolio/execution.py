@@ -371,7 +371,13 @@ class ExecutionApplication:
             _text(value, name)
         validate_owner_timeout_seconds(timeout_seconds)
         observed = task_reader(self.portfolio.operations, project, task)(_identity(task))
-        if observed["ref"] != task or observed["project_ref"] != project:
+        observed_ref = observed.get("ref")
+        same_task_identity = isinstance(observed_ref, Mapping) and all(
+            observed_ref.get(key) == task.get(key) for key in ("authority", "kind", "id"))
+        if (not same_task_identity
+                or (observed_ref.get("revision") != task.get("revision")
+                    and observed.get("task_pin_content_matches") is not True)
+                or observed["project_ref"] != project):
             raise OccurrencePreparationError("project or task revision is stale")
         if not isinstance(instruction_contract, Mapping) or instruction_contract.get("task_ref") != task:
             raise OccurrencePreparationError("worker contract must select this exact task")

@@ -2,7 +2,7 @@
 from dataclasses import replace
 from unittest.mock import patch
 import unittest
-from herzchen.domains.work import WorkGraph
+from herzchen.domains.work import WorkGraph, admission
 from herzchen.kernel.store import Store
 from tests import test_manager_service_continuation as service
 
@@ -66,6 +66,23 @@ class ManagerMandateReconciliationTests(unittest.TestCase):
             "execution mandate lacks exact active role task/assignment/generation/dispatch scope", failed)
         self.assertIsNone((f.port.read_due(self.callback).get("host_evidence") or {}).get("gateway_attempt"))
         self.assertEqual(len(f.provider.calls), self.provider_calls)
+
+    def test_manager_task_pin_survives_admission_metadata_but_not_content_edit(self):
+        f = self.fixture
+        pinned = f.task.ref
+        graph = WorkGraph(f.store, actor=f.actor)
+        current = graph.current(pinned)
+        metadata_revision = graph.revise(current.ref,
+            metadata_namespaces={admission.NAMESPACE: {
+                "revision": current.revision,
+                "digest": admission.content_digest(current.payload),
+                "reviewed_digest": admission.reviewed_content_digest(current.payload),
+                "basis": admission.BASIS_AUTHORING,
+            }}, logical_request_key="manager-pin-admission-metadata", actor=f.actor)
+        self.assertTrue(admission.task_content_matches(f.store, pinned, metadata_revision.payload))
+        changed = graph.revise(metadata_revision.ref, title="Changed after manager pin",
+            logical_request_key="manager-pin-content-edit", actor=f.actor)
+        self.assertFalse(admission.task_content_matches(f.store, pinned, changed.payload))
 
     def test_same_callback_repair_retains_disposition_and_dispatches_once(self):
         f = self.fixture
