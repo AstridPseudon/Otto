@@ -981,9 +981,9 @@ class AssertionKindTests(unittest.TestCase):
                                 "--fault", fault], check=True)
                 got = {row["name"]: row["status"] for row in perch_report.assertions(raw)
                        if row["name"] in perch_report.STAGE2}
-                self.assertEqual(got[target], "fail", got)
-                if fault not in {"admit_order", "unadmitted", "reserve"}:
-                    self.assertEqual({name for name, status in got.items() if status == "fail"}, {target}, got)
+                expected = ({"admitted-ready-dependency-order", "unadmitted-revision-refused",
+                             "metadata-only-write-runnable"} if fault == "admit_order" else {target})
+                self.assertEqual({name for name, status in got.items() if status == "fail"}, expected, got)
 
     def test_stage_two_direct_store_events_refuse_false_order_and_missing_timeline_events(self):
         cases = (
@@ -1057,41 +1057,38 @@ class AssertionKindTests(unittest.TestCase):
         evidence = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(evidence)
         sys.path.insert(0, str(ROOT / "src"))
-        from herzchen.contracts import ResourceRef
+        from herzchen.contracts import AuthenticatedActor
+        from herzchen.domains.work import WorkGraph
+        from herzchen.domains.work.batches import ProjectBatches
         from herzchen.kernel import Store
         from otto.hostctl import owner as owner_module
 
-        task_ref = ResourceRef("owner", "work.task", "task-C", "rev-3")
-        task = SimpleNamespace(ref=task_ref, version=3,
-                               payload={"alias": "C", "instructions": "Canary dispatch C (post-admission edit)"})
-        sheet_event = SimpleNamespace(event_type="work.project-sheet.applied", stream="work:project-canary",
-            recorded_at="2026-10-17T10:00:00.200000Z",
-            subject=ResourceRef("owner", "work.project", "project-canary", "rev-5"),
-            effects={"child_refs": [task_ref], "history_summary": {"facets": [
-                {"subject": task_ref, "changed_fields": ["instructions"]}]}})
+        store_path = self.tmp / "capture.store"
+        store = Store.create(store_path, authority="owner")
+        try:
+            store.register_domain_handler(owner_module.host_domains())
+            actor = AuthenticatedActor("owner", "host", "credential")
+            graph = WorkGraph(store, actor=actor)
+            project = graph.create_project(title="Canary", logical_request_key="capture-project")
+            batches = ProjectBatches(store, actor=actor)
+            for version, instructions in enumerate(("Original", "First edit", "Canary dispatch C (post-admission edit)"), 1):
+                applied = batches.apply_project_sheet(project, {"tasks": [
+                    {"id": "C", "title": "Canary dispatch C", "instructions": instructions}]},
+                    logical_request_key="capture-sheet-" + str(version))
+                project = applied.project
+                task_ref = applied.mappings["C"]
+                self.assertEqual(task_ref.revision, "rev-" + str(version))
+        finally:
+            store.close()
 
-        class StoreStub:
-            def consumer(self):
-                return self
-
-            def read_identity_page(self, *, kind, limit):
-                return {"records": [task] if kind == "work.task" else [],
-                        "next_cursor": None, "held": False}
-
-            def get_revision(self, _ref):
-                return task
-
-            def list_events(self):
-                return [sheet_event]
-
-            def close(self):
-                pass
-
-        with mock_patch.object(Store, "open", return_value=StoreStub()), \
-                mock_patch.object(owner_module, "host_domains", return_value=()):
-            receipt = evidence.capture(ROOT / "src", "unused.store", "owner")
-        self.assertEqual(len(receipt["events"]), 1)
-        captured = receipt["events"][0]
+        receipt = evidence.capture(ROOT / "src", store_path, "owner")
+        self.assertIsNone(receipt["error"])
+        self.assertEqual(receipt["tasks"][task_ref.id], "C")
+        captured_events = [row for row in receipt["events"] if row["event_type"] == "work.project-sheet.applied"
+                           and any(ref.get("id") == task_ref.id and ref.get("revision") == "rev-3"
+                                   for ref in row["effects"]["child_refs"])]
+        self.assertEqual(len(captured_events), 1, receipt["events"])
+        captured = captured_events[0]
         self.assertEqual(captured["event_type"], "work.project-sheet.applied")
         self.assertEqual(captured["effects"]["child_refs"][0]["revision"], "rev-3")
         self.assertEqual(captured["effects"]["history_summary"]["facets"][0]["changed_fields"],
