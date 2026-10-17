@@ -456,7 +456,7 @@ def compose(*, hold_dispatch=False):
     # tree that contains canonical state, policy, and owner receipts. Preserve
     # the already-qualified writable roots for the original four views.
     adapter_roots=((str(work),str(C/"manager-ipc")) if native5_view else ((str(controller),str(C/"manager-ipc")) if controller!=C else (str(controller),)))
-    adapter=Adapter(owner=principal,source=str(run),worktree=str(work),launcher=base.LAUNCHER,requested_model=model,requested_reasoning=reasoning,trusted_thread_reader=CodexAppServerThreadReader(launcher=base.LAUNCHER,timeout_seconds=30),host_context_path=str(controller/'evidence'/(evidence_id+'-host.jsonl')),require_host_context=True,writable_roots=adapter_roots,native_process_observer=server.native_callers.observe,native_caller_socket=str(base.native_caller_socket_path()))
+    adapter=Adapter(owner=principal,source=str(run),worktree=str(work),launcher=base.LAUNCHER,requested_model=model,requested_reasoning=reasoning,trusted_thread_reader=CodexAppServerThreadReader(launcher=base.LAUNCHER,timeout_seconds=30,scope_latch_path=str(C/'manager-ipc'/'metadata-reader-scope.json')),host_context_path=str(controller/'evidence'/(evidence_id+'-host.jsonl')),require_host_context=True,writable_roots=adapter_roots,native_process_observer=server.native_callers.observe,native_caller_socket=str(base.native_caller_socket_path()))
     return owner.execution_application(due_port=port,adapter=adapter,manager_actor=manager,issue_delivery=server.help_delivery,native_bodies=server.native_bodies)
    server._execution=execution
    def handle(request,server=server,state=state,controller=controller,work=work):

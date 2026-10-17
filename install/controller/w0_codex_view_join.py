@@ -126,7 +126,7 @@ def execution_factory(owner,state,*,run,workspace,host=None,base=None,provider_f
    require(not evidence_root.resolve().is_relative_to(Path(workspace).resolve())
     and(host is None or not evidence_root.resolve().is_relative_to(host.directory.resolve())),
     'host-owned task evidence must be outside native writable roots')
-   options.update(trusted_thread_reader=CodexAppServerThreadReader(launcher=launcher,timeout_seconds=30),
+   options.update(trusted_thread_reader=CodexAppServerThreadReader(launcher=launcher,timeout_seconds=30,scope_latch_path=str(CONTROLLER/'manager-ipc'/'metadata-reader-scope.json')),
     host_context_path=str(evidence_root/(evidence_key+'-host.jsonl')))
   if host is not None:options.update(native_caller_socket=str(host.socket_path),native_process_observer=host.caller_binding_reader.observe,
    writable_roots=()) # exact adopted workspace only; socket has its separate bounded override

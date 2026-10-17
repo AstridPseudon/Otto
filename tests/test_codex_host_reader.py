@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -140,17 +141,17 @@ class CodexHostReaderTests(unittest.TestCase):
     def test_production_reader_recovers_crashed_scope_before_another_spawn(self):
         from herzchen.fleet.custody import Disposition
         self.fixture_reader()  # Qualify the fake CLI digest for the production composition.
-        context = self.root / 'owner-context.json'
-        latch = Path(str(context) + '.metadata-reader-scope.json')
+        latch = self.root / 'metadata-reader-scope.json'
 
-        def production_reader():
+        def production_reader(evidence_id):
             adapter = compose_owner_resource_herzchen_adapter(
                 owner='test-owner', source='test-source', worktree=str(self.root),
-                launcher=str(self.launcher), host_context_path=str(context),
-                trusted_sessions_root=str(self.root))
+                launcher=str(self.launcher),
+                host_context_path=str(self.root / (evidence_id + '-owner-context.json')),
+                reader_scope_latch_path=str(latch), trusted_sessions_root=str(self.root))
             return adapter.trusted_thread_reader
 
-        first = production_reader()
+        first = production_reader('startup')
         def died_after_intent(_argv, **kwargs):
             self.assertEqual(kwargs['latch_path'], str(latch))
             latch.write_text(json.dumps({'pgid': None, 'leader_birth': None,
@@ -161,7 +162,7 @@ class CodexHostReaderTests(unittest.TestCase):
                 first('issued-session')
         self.assertTrue(latch.exists())
 
-        restarted = production_reader()
+        restarted = production_reader('delivery')
         with patch.object(reader_module.Custody, 'launch') as launch, patch.object(
                 reader_module, 'resume_cleanup', return_value=Disposition('uncertain', 'identity missing')) as resume:
             with self.assertRaisesRegex(reader_module.HostThreadReadError, '^app_server_cleanup_unresolved$'):
@@ -180,6 +181,25 @@ class CodexHostReaderTests(unittest.TestCase):
                 restarted('issued-session')
             resume.assert_called_once_with(str(latch))
             launch.assert_called_once()
+
+    def test_installed_owner_factories_share_one_reader_scope_across_evidence_ids(self):
+        controller = self.root / 'controller'
+        expected = str(controller / 'manager-ipc' / 'metadata-reader-scope.json')
+        sources = ('operating_service.py', 'shared_operating_service.py', 'w0_codex_view_join.py')
+        for source in sources:
+            path = Path(__file__).resolve().parents[1] / 'install' / 'controller' / source
+            tree = ast.parse(path.read_text(), filename=str(path))
+            calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id == 'CodexAppServerThreadReader']
+            self.assertEqual(len(calls), 1, source)
+            option = next((kw.value for kw in calls[0].keywords if kw.arg == 'scope_latch_path'), None)
+            self.assertIsNotNone(option, source)
+            for evidence_id in ('startup-one', 'preflight-two', 'delivery-three'):
+                scope = eval(compile(ast.Expression(option), str(path), 'eval'),
+                             {'__builtins__': {'str': str}},
+                             {'HERE': controller, 'C': controller,
+                              'CONTROLLER': controller, 'evidence_id': evidence_id})
+                self.assertEqual(scope, expected, (source, evidence_id))
 
 
 if __name__ == "__main__":
