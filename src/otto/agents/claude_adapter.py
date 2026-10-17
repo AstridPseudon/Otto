@@ -1,7 +1,7 @@
 """Candidate Claude Code binding for the existing owner/gateway/capture seams.
 
 Roles are declared, never inferred: the default composition is the original
-worker leaf (Read/Write). A host may also declare the ``manager`` role, which
+worker leaf (Edit/Glob/Grep/Read/Write). A host may also declare the ``manager`` role, which
 admits the manager tool surface (Bash/Edit/Glob/Grep/Read/Write) under the
 same OS write fence, with child processes inheriting it. No coordinator or
 provider-native child capability is inherited by either role. The host must
@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 from typing import Any, Mapping
 
 from herzchen.fleet.hosts import McpGrant
@@ -52,7 +53,10 @@ def _artifact_path(workspace: str, path: str) -> Path:
     value = Path(text(path, 'tool file_path'))
     value = value if value.is_absolute() else root / value
     # Capture only normal, non-symlink files in the exact tool workspace.
-    relative = value.relative_to(root)
+    try:
+        relative = value.relative_to(root)
+    except ValueError as exc:
+        raise ClaudeBindingError('artifact path escapes the tool workspace') from exc
     if any(part in {'.git', '.agents', '.codex', '.aws', '.claude', '..'} for part in relative.parts):
         raise ClaudeBindingError('artifact path escapes or addresses protected state')
     cursor = root
@@ -63,48 +67,193 @@ def _artifact_path(workspace: str, path: str) -> Path:
     return value
 
 
-def capture_artifacts(native: Mapping[str, Any], workspace: str) -> list[dict[str, Any]]:
-    artifacts = []
-    seen = set()
-    for ident, tool in reversed(list(native['tools'].items())):
-        if tool['name'] != 'Write' or native['tool_results'][ident].get('is_error', False):
-            continue
-        path = _artifact_path(workspace, tool['input'].get('file_path'))
-        if str(path) in seen:
-            continue
-        seen.add(str(path))
-        if len(artifacts) >= 16:
-            raise ClaudeBindingError('delivered artifacts exceed bounded capture')
-        # The selected OS fence and leaf tool surface prevent native writers
-        # outside scope. Capture uses a no-follow descriptor and bounded bytes.
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        directory = os.open(workspace, directory_flags)
-        fd = None
-        try:
-            for part in path.relative_to(workspace).parts[:-1]:
-                child = os.open(part, directory_flags, dir_fd=directory)
-                os.close(directory)
-                directory = child
-            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-            import stat
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise ClaudeBindingError('artifact is not a regular file')
-            with os.fdopen(fd, 'rb') as stream:
-                fd = None
-                body = stream.read(MAX_ARTIFACT + 1)
-        finally:
-            if fd is not None: os.close(fd)
-            os.close(directory)
+def _git_output(workspace: str, *args: str) -> str:
+    try:
+        result = subprocess.run(['git', '-C', workspace, *args], check=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ClaudeBindingError('worker checkpoint provenance is unavailable') from exc
+    return result.stdout.strip()
+
+
+def _worker_checkpoint(workspace: str) -> tuple[str, str] | None:
+    """Return (checkpoint commit, parent) for the current land operation."""
+    inside = subprocess.run(['git', '-C', workspace, 'rev-parse', '--is-inside-work-tree'],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if inside.returncode:
+        return None
+    entries = _git_output(workspace, 'reflog', '--format=%H%x09%gs', 'HEAD').splitlines()
+    if entries and entries[0].partition('\t')[2].startswith('rebase (finish):'):
+        # The entry immediately older than rebase start is the HEAD that
+        # Landing checkpointed. ORIG_HEAD can be stale across earlier rebases.
+        start_index = next((i for i in range(len(entries))
+                            if entries[i].partition('\t')[2].startswith('rebase (start):')), None)
+        if start_index is None or start_index + 1 >= len(entries):
+            raise ClaudeBindingError('worker rebase checkpoint cannot be identified')
+        selected = entries[start_index + 1]
+        if not selected.partition('\t')[2].startswith('commit: land '):
+            raise ClaudeBindingError('worker land checkpoint reflog entry is missing')
+        commit = selected.partition('\t')[0]
+    else:
+        commit = _git_output(workspace, 'rev-parse', 'HEAD')
+        if (not entries or entries[0].partition('\t')[0] != commit or
+                not entries[0].partition('\t')[2].startswith('commit: land ')):
+            # Manager workers can publish their authorized Write output before
+            # invoking the landing flow. Accept that state only when HEAD is
+            # still exactly the checked-out remote base and there is no land
+            # or rebase evidence anywhere in this worktree's HEAD reflog.
+            has_landing_evidence = any(
+                entry.partition('\t')[2].startswith(('commit: land ', 'rebase (start):',
+                                                       'rebase (finish):'))
+                for entry in entries)
+            upstream = subprocess.run(
+                ['git', '-C', workspace, 'rev-parse', '@{u}'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            remote_heads = subprocess.run(
+                ['git', '-C', workspace, 'for-each-ref', '--format=%(objectname)',
+                 'refs/remotes/'], check=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True).stdout.splitlines()
+            current_reflog = entries[0].partition('\t')[2]
+            fresh_checkout = (current_reflog.startswith('checkout:') and
+                              any(entry.partition('\t')[2].startswith('clone:') for entry in entries))
+            at_base = upstream.stdout.strip() == commit if upstream.returncode == 0 else commit in remote_heads
+            if has_landing_evidence or not fresh_checkout or not at_base:
+                raise ClaudeBindingError('worker land checkpoint reflog entry is missing')
+            return None
+    subject = _git_output(workspace, 'show', '-s', '--format=%s', commit)
+    if not subject.startswith('land '):
+        raise ClaudeBindingError('worker land checkpoint cannot be identified')
+    parent = _git_output(workspace, 'rev-parse', commit + '^')
+    return commit, parent
+
+
+def _bounded_blob(workspace: str, spec: str) -> bytes:
+    try:
+        proc = subprocess.Popen(['git', '-C', workspace, 'cat-file', 'blob', spec],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        body = proc.stdout.read(MAX_ARTIFACT + 1)
         if len(body) > MAX_ARTIFACT:
+            proc.kill()
+            proc.communicate()
             raise ClaudeBindingError('required delivered artifact exceeds capture bound')
-        written = tool['input'].get('content')
-        if not isinstance(written, str) or body != written.encode('utf-8'):
-            raise ClaudeBindingError('artifact bytes differ from the last successful native Write input')
-        artifacts.append({'name': str(path.relative_to(workspace)), 'tool_use_id': ident,
+        _, err = proc.communicate()
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, proc.args, stderr=err)
+        return body
+    except ClaudeBindingError:
+        raise
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ClaudeBindingError('worker checkpoint does not contain the delivered artifact') from exc
+
+
+def _checkpoint_blob(workspace: str, commit: str, relative: str) -> bytes:
+    result = subprocess.run(['git', '-C', workspace, 'ls-tree', '-z', commit, '--', ':(literal)' + relative],
+                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    entry = result.stdout.rstrip(b'\0').split(b'\t')
+    fields = entry[0].split() if len(entry) == 2 else []
+    if (len(fields) != 3 or fields[0] not in {b'100644', b'100755'} or fields[1] != b'blob'
+            or entry[1] != os.fsencode(relative)):
+        raise ClaudeBindingError('worker checkpoint artifact is not a regular file')
+    return _bounded_blob(workspace, commit + ':' + relative)
+
+
+def _parent_blob(workspace: str, parent: str, relative: str) -> bytes:
+    result = subprocess.run(['git', '-C', workspace, 'ls-tree', '-z', parent, '--', ':(literal)' + relative],
+                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    entry = result.stdout.rstrip(b'\0').split(b'\t')
+    fields = entry[0].split() if len(entry) == 2 else []
+    if (len(fields) != 3 or fields[0] not in {b'100644', b'100755'} or fields[1] != b'blob'
+            or entry[1] != os.fsencode(relative)):
+        raise ClaudeBindingError('Edit artifact parent is not a regular file')
+    return _bounded_blob(workspace, parent + ':' + relative)
+
+
+def _live_artifact_exists(workspace: str, path: Path, *, read: bool = False) -> bytes | None:
+    """Retain a no-follow live path check, but never source captured bytes from it."""
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(workspace, directory_flags)
+    fd = None
+    try:
+        for part in path.relative_to(workspace).parts[:-1]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        import stat
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ClaudeBindingError('artifact is not a regular file')
+        if not read:
+            return None
+        with os.fdopen(fd, 'rb') as stream:
+            fd = None
+            body = stream.read(MAX_ARTIFACT + 1)
+            if len(body) > MAX_ARTIFACT:
+                raise ClaudeBindingError('required delivered artifact exceeds capture bound')
+            return body
+    finally:
+        if fd is not None:
+            os.close(fd)
+        os.close(directory)
+
+
+def capture_artifacts(native: Mapping[str, Any], workspace: str) -> list[dict[str, Any]]:
+    checkpoint = _worker_checkpoint(workspace)
+    states: dict[str, tuple[Path, bytes, str]] = {}
+    tools = native['tools']
+    results = native['tool_results']
+    for ident, tool in tools.items():
+        if tool['name'] not in {'Write', 'Edit'} or results[ident].get('is_error', False):
+            continue
+        inputs = tool.get('input') or {}
+        path = _artifact_path(workspace, inputs.get('file_path'))
+        relative = str(path.relative_to(workspace))
+        if relative not in states:
+            if checkpoint is None:
+                # Preserve the established non-Git owner fixture, which has no
+                # landing checkpoint and supports only direct Write capture.
+                if tool['name'] != 'Write':
+                    raise ClaudeBindingError('Edit artifact requires a worker checkpoint')
+                current = b''
+            else:
+                current = _parent_blob(workspace, checkpoint[1], relative) if tool['name'] == 'Edit' else b''
+            states[relative] = (path, current, ident)
+        _, current, _ = states[relative]
+        if tool['name'] == 'Write':
+            content = inputs.get('content')
+            if not isinstance(content, str):
+                raise ClaudeBindingError('successful Write has invalid content')
+            current = content.encode('utf-8')
+        else:
+            old, new = inputs.get('old_string'), inputs.get('new_string')
+            if not isinstance(old, str) or not old or not isinstance(new, str):
+                raise ClaudeBindingError('successful Edit has invalid replacement input')
+            old_bytes, new_bytes = old.encode('utf-8'), new.encode('utf-8')
+            replace_all = inputs.get('replace_all') is True
+            if old_bytes not in current:
+                raise ClaudeBindingError('Edit input does not apply to authorized artifact bytes')
+            if not replace_all and current.count(old_bytes) != 1:
+                raise ClaudeBindingError('Edit input is ambiguous for authorized artifact bytes')
+            current = current.replace(old_bytes, new_bytes) if replace_all else current.replace(old_bytes, new_bytes, 1)
+        if len(current) > MAX_ARTIFACT:
+            raise ClaudeBindingError('required delivered artifact exceeds capture bound')
+        states[relative] = (path, current, ident)
+
+    artifacts = []
+    if len(states) > 16:
+        raise ClaudeBindingError('delivered artifacts exceed bounded capture')
+    for relative, (path, body, ident) in states.items():
+        live_body = _live_artifact_exists(workspace, path, read=checkpoint is None)
+        if checkpoint is not None and _checkpoint_blob(workspace, checkpoint[0], relative) != body:
+            raise ClaudeBindingError('checkpoint artifact differs from successful native Write/Edit inputs')
+        elif checkpoint is None:
+            # Existing no-Git Write fixture still verifies the live tool result.
+            if live_body != body:
+                raise ClaudeBindingError('artifact bytes differ from the successful native Write input')
+        artifacts.append({'name': relative, 'tool_use_id': ident,
             'sha256': hashlib.sha256(body).hexdigest(), 'bytes': len(body),
             'content_base64': base64.b64encode(body).decode('ascii')})
     if not artifacts:
-        raise ClaudeBindingError('useful Claude leaf requires a verified delivered Write artifact')
+        raise ClaudeBindingError('useful Claude leaf requires a verified delivered Write/Edit artifact')
     return artifacts
 
 
@@ -117,7 +266,7 @@ def native_context(native: Mapping[str, Any], *, brief: Mapping[str, Any], autho
     answer = {'text': body, 'format': FINAL_FORMAT, 'phase': 'final_answer',
               'text_sha256': hashlib.sha256(body.encode()).hexdigest(), 'utf8_bytes': len(body.encode()),
               'host_record': native['refs']['final_answer']}
-    # A worker leaf must deliver a verified Write artifact. A manager's useful
+    # A worker leaf must deliver a verified Write/Edit artifact. A manager's useful
     # effects are owner records made through its commands, so none is captured.
     output = {'final_answer': answer,
               'artifacts': capture_artifacts(native, workspace) if ROLE_PROFILES[role]['artifacts_required'] else []}
@@ -166,7 +315,7 @@ class ClaudeNativeResultVerifier:
             captured_artifact_bytes(artifact)
             ref = {'result_ref': dict(result_ref), 'index': index, 'sha256': artifact['sha256']}
             captured.append({**artifact, 'ref': ref, 'availability': 'retained',
-                             'source': 'verified native Write and owner capture'})
+                             'source': 'verified native Write/Edit and owner capture'})
         return {'artifacts': captured, 'usage': copy.deepcopy(evidence.get('usage', {
             'state': 'unavailable', 'reason': 'native usage not observed'}))}
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import os
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -389,14 +390,13 @@ def test_facade_done_starts_landing(tmp_path):
 
 
 def test_landed_write_artifact_remains_available_for_native_turn_capture(tmp_path):
-    """The real Claude adapter captures Write bytes after worker-done returns."""
+    """The real Claude adapter captures worker bytes after worker-done returns."""
     from otto.agents.claude_adapter import capture_artifacts
 
     line, _base, fleet = _project(tmp_path)
     lab = fleet.labs["one"]
     artifact = lab.path / "answer.txt"
     artifact.write_text("captured owner result\n")
-    fleet.checkpoint(str(lab.path), ["one.txt", "answer.txt"], message="worker output")
     runner = _Runner()
     service, _calls = _service(fleet, runner)
 
@@ -414,6 +414,236 @@ def test_landed_write_artifact_remains_available_for_native_turn_capture(tmp_pat
     assert landed["landed"] is True
     assert captured[0]["name"] == "answer.txt"
     assert base64.b64decode(captured[0]["content_base64"]) == b"captured owner result\n"
+
+
+@pytest.mark.parametrize("calls,initial,final", [
+    ([('Edit', {'old_string': 'base\n', 'new_string': 'after'})], 'base\n', 'after'),
+    ([('Write', {'content': 'first'}), ('Edit', {'old_string': 'first', 'new_string': 'last'})],
+     'irrelevant', 'last'),
+])
+def test_capture_uses_successful_edit_sequence_from_worker_checkpoint(tmp_path, calls, initial, final):
+    from otto.agents.claude_adapter import capture_artifacts
+
+    line, _base, fleet = _project(tmp_path)
+    lab = fleet.labs['one']
+    path = lab.path / ('shared.txt' if calls[0][0] == 'Edit' else 'answer.txt')
+    path.write_text(initial)
+    tools, results = {}, {}
+    for index, (name, inputs) in enumerate(calls):
+        ident = 'call-%d' % index
+        tools[ident] = {'name': name, 'input': {'file_path': str(path), **inputs}}
+        results[ident] = {'is_error': False}
+    path.write_text(final)
+    service, _ = _service(fleet, _Runner())
+    _advance(service)
+
+    captured = capture_artifacts({'tools': tools, 'tool_results': results}, str(lab.path))
+
+    assert base64.b64decode(captured[0]['content_base64']) == final.encode()
+
+
+def test_prelanding_git_lab_allows_direct_write_live_verification(tmp_path):
+    from otto.agents.claude_adapter import ClaudeBindingError, capture_artifacts
+
+    line, base, _fleet = _project(tmp_path)
+    lab_path = tmp_path / 'prelanding-lab'
+    subprocess.run(['git', '-C', str(tmp_path), 'clone', '--no-checkout', '-q',
+                    str(line), str(lab_path)], check=True, stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE)
+    subprocess.run(['git', '-C', str(lab_path), 'checkout', '-q', '-b', 'lab/one', base],
+                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    path = lab_path / 'answer.txt'
+    path.write_text('authorized result\n')
+    native = {'tools': {'write': {'name': 'Write', 'input': {
+        'file_path': str(path), 'content': 'authorized result\n'}}},
+        'tool_results': {'write': {'is_error': False}}}
+
+    captured = capture_artifacts(native, str(lab_path))
+
+    assert captured[0]['name'] == 'answer.txt'
+    assert base64.b64decode(captured[0]['content_base64']) == b'authorized result\n'
+    native['tools']['write']['input']['content'] = 'different authorized result\n'
+    with pytest.raises(ClaudeBindingError, match='artifact bytes differ'):
+        capture_artifacts(native, str(lab_path))
+
+
+def test_capture_rejects_uncalled_checkpoint_drift_and_unsafe_paths(tmp_path):
+    from otto.agents.claude_adapter import ClaudeBindingError, capture_artifacts
+
+    line, _base, fleet = _project(tmp_path)
+    lab = fleet.labs['one']
+    path = lab.path / 'answer.txt'
+    path.write_text('uncalled change')
+    uncalled = lab.path / 'uncalled.txt'
+    uncalled.write_text('changed with no successful write')
+    fleet.checkpoint(str(lab.path), ['answer.txt', 'uncalled.txt'], message='land one')
+    with pytest.raises(ClaudeBindingError):
+        capture_artifacts({'tools': {'write': {'name': 'Write', 'input': {
+            'file_path': str(path), 'content': 'authorized'}}},
+            'tool_results': {'write': {'is_error': False}}}, str(lab.path))
+    with pytest.raises(ClaudeBindingError):
+        capture_artifacts({'tools': {'read': {'name': 'Read', 'input': {
+            'file_path': str(uncalled)}}},
+            'tool_results': {'read': {'is_error': False}}}, str(lab.path))
+    path.write_text('authorized')
+    fleet.checkpoint(str(lab.path), ['answer.txt'], message='land one')
+    assert [item['name'] for item in capture_artifacts({'tools': {'write': {
+        'name': 'Write', 'input': {'file_path': str(path), 'content': 'authorized'}}},
+        'tool_results': {'write': {'is_error': False}}}, str(lab.path))] == ['answer.txt']
+    with pytest.raises(ClaudeBindingError):
+        capture_artifacts({'tools': {'write': {'name': 'Write', 'input': {
+            'file_path': str(lab.path / '.git' / 'config'), 'content': 'authorized'}}},
+            'tool_results': {'write': {'is_error': False}}}, str(lab.path))
+    outside = tmp_path / 'outside.txt'
+    outside.write_text('authorized')
+    with pytest.raises(ClaudeBindingError):
+        capture_artifacts({'tools': {'write': {'name': 'Write', 'input': {
+            'file_path': str(outside), 'content': 'authorized'}}},
+            'tool_results': {'write': {'is_error': False}}}, str(lab.path))
+    target = lab.path / 'real.txt'
+    target.write_text('authorized')
+    link = lab.path / 'link.txt'
+    link.symlink_to(target.name)
+    with pytest.raises(ClaudeBindingError):
+        capture_artifacts({'tools': {'write': {'name': 'Write', 'input': {
+            'file_path': str(link), 'content': 'authorized'}}},
+            'tool_results': {'write': {'is_error': False}}}, str(lab.path))
+
+
+@pytest.mark.parametrize('mode', ['edit', 'write_edit', 'auto_merge_write'])
+def test_real_owner_claude_edit_capture_settles_and_removes_lab(tmp_path, mode):
+    """A real owner captures authorized tool bytes before sweeping a landed lab."""
+    from tests import test_execution_application as owner_fixture
+    from herzchen.fleet.labs import LabFleet
+    from otto.agents.claude_adapter import (ClaudeNativeResultVerifier, ClaudeWorkerAdapter, ROLE_PROFILES)
+    from otto.agents.tests.test_claude_binding import local_transport
+    from otto.portfolio.occurrence_reads import read_captured_artifact, result_view
+
+    f = owner_fixture.ExecutionApplicationTests()
+    f.setUp()
+    tmp_path_factory = tempfile.TemporaryDirectory(prefix='capture-edit-owner-')
+    state = tempfile.TemporaryDirectory(prefix='capture-edit-state-')
+    try:
+        project_root = Path(tmp_path_factory.name) / 'project'
+        project_root.mkdir()
+        line, base, _ = _project(project_root)
+
+        def checkpoint(worktree, paths, *, message):
+            subprocess.run(['git', '-C', str(worktree), 'add', '--', *paths], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(['git', '-C', str(worktree), '-c', 'user.name=LAND test',
+                            '-c', 'user.email=land@test.invalid', 'commit', '-m', message], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        fleet = LabFleet(line, project_root / 'real-labs', checkpoint=checkpoint, shared_dirs=())
+        lab = fleet.create('one', base='refs/heads/main')
+        if mode == 'auto_merge_write':
+            # Give both branches separate editable lines in the same tracked file.
+            shared = Path(line) / 'shared.txt'
+            shared.write_text('line-a\nline-b\nline-c\nline-d\nline-e\n'
+                              'line-f\nline-g\nline-h\nbase-i\nbase-j\n')
+            subprocess.run(['git', '-C', str(line), 'add', '--', 'shared.txt'], check=True)
+            subprocess.run(['git', '-C', str(line), '-c', 'user.name=LAND test',
+                            '-c', 'user.email=land@test.invalid', 'commit', '-m', 'two line base'], check=True)
+            subprocess.run(['git', '-C', str(lab.path), 'fetch', str(line), 'main'], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(['git', '-C', str(lab.path), 'reset', '--hard', 'FETCH_HEAD'], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            base = subprocess.run(['git', '-C', str(line), 'rev-parse', 'HEAD'], check=True,
+                                  stdout=subprocess.PIPE, text=True).stdout.strip()
+        workspace = str(lab.path.resolve())
+        landing, _calls = _service(fleet, _Runner(), task=_admitted_task())
+        edit_path = 'shared.txt' if mode in {'edit', 'auto_merge_write'} else 'answer.txt'
+        if mode == 'edit':
+            operations = [('Edit', {'old_string': 'base\n', 'new_string': 'edited\n'})]
+            expected = b'edited\n'
+        elif mode == 'write_edit':
+            operations = [('Write', {'content': 'first\n'}),
+                          ('Edit', {'old_string': 'first\n', 'new_string': 'final\n'})]
+            expected = b'final\n'
+        else:
+            operations = [('Write', {'content': 'worker-a\nline-b\nline-c\nline-d\nline-e\n'
+                                     'line-f\nline-g\nline-h\nbase-i\nbase-j\n'})]
+            expected = b'worker-a\nline-b\nline-c\nline-d\nline-e\nline-f\nline-g\nline-h\nbase-i\nbase-j\n'
+        # The transport emits a successful native tool stream and applies the
+        # corresponding file operations inside the worker worktree.
+        encoded_ops = repr(operations)
+        script = r'''import json,os,sys
+frame=json.loads(sys.stdin.readline());prompt=frame['message']['content'][0]['text'];session=frame.get('session_id') or 'native-session';init=prompt.startswith('Initialize this session only.');cwd=os.getcwd();tools=[] if init else ['Edit','Glob','Grep','Read','Write']
+def emit(e): print(json.dumps(e),flush=True)
+emit({'type':'system','subtype':'init','session_id':session,'cwd':cwd,'model':'gpt-test','permissionMode':'bypassPermissions','tools':tools,'mcp_servers':[],'plugins':[],'skills':[],'slash_commands':[]})
+emit({'type':'user','uuid':'input-init' if init else 'input-work','session_id':session,'message':{'role':'user','content':[{'type':'text','text':prompt}]}})
+if not init:
+ for i,(name,fields) in enumerate(OPS):
+  path=os.path.join(cwd,PATH); ident='tool-'+str(i); inp={'file_path':path,**fields}
+  emit({'type':'assistant','uuid':'assistant-'+str(i),'session_id':session,'message':{'role':'assistant','model':'gpt-test','content':[{'type':'tool_use','id':ident,'name':name,'input':inp}]}})
+  try: current=open(path).read()
+  except FileNotFoundError: current=''
+  if name=='Write': current=fields['content']
+  else:
+   old=fields['old_string']; new=fields['new_string']; current=current.replace(old,new)
+  with open(path,'w') as out: out.write(current)
+  emit({'type':'user','uuid':'result-'+str(i),'session_id':session,'message':{'role':'user','content':[{'type':'tool_result','tool_use_id':ident,'is_error':False,'content':'written'}]}})
+emit({'type':'result','subtype':'success','is_error':False,'session_id':session,'uuid':'result','result':'READY' if init else 'Delivered artifact.','usage':{'input_tokens':11,'output_tokens':4}})
+'''.replace('OPS', encoded_ops).replace('PATH', repr(edit_path))
+        transport = local_transport(workspace, str(Path(state.name).resolve()), script=script)
+        original_run = transport.run
+        landed_commits = []
+
+        def run_and_land(prompt, **options):
+            native = original_run(prompt, **options)
+            if not options.get('initializer'):
+                if mode == 'auto_merge_write':
+                    shared = Path(line) / 'shared.txt'
+                    shared.write_text('line-a\nline-b\nline-c\nline-d\nline-e\n'
+                                      'line-f\nline-g\nline-h\nbase-i\nline-j\n')
+                    subprocess.run(['git', '-C', str(line), 'add', '--', 'shared.txt'], check=True)
+                    subprocess.run(['git', '-C', str(line), '-c', 'user.name=LAND test',
+                                    '-c', 'user.email=land@test.invalid', 'commit', '-m', 'line edit'], check=True)
+                    subprocess.run(['git', '-C', str(lab.path), 'fetch', str(line), 'main'], check=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                landed_commits.append(_advance(landing)['commit'])
+            return native
+
+        transport.run = run_and_land
+        adapter = ClaudeWorkerAdapter(owner='worker', source=workspace, worktree=workspace,
+            launcher_pin=transport.pin, state_root=str(Path(state.name).resolve()),
+            requested_model='gpt-test', requested_reasoning='high', transport=transport)
+
+        def settle(**kwargs):
+            due = f.port.read_due(kwargs['schedule_id'])
+            view = result_view(due)
+            assert view['required_capture'] is True
+            assert base64.b64decode(read_captured_artifact(due,
+                artifact_ref=view['artifacts'][0]['ref'])['content_base64']) == expected
+            swept = fleet.sweep_landed('refs/heads/main', lambda _name, commit: commit in landed_commits)
+            assert any(item.name == 'one' and item.action == 'removed' for item in swept)
+            return {'cleanup_pending': False}
+
+        f.owner.landed_worker_settler = settle
+        app = f.owner.execution_application(due_port=f.port, adapter=adapter,
+            clock=lambda: owner_fixture.NOW, native_result_verifier=ClaudeNativeResultVerifier())
+        request = f.request()
+        request['instruction_contract']['authority']['effect_profile'] = 'workspace-write-worker'
+        request['instruction_contract']['authority']['permitted_effects'] = sorted(ROLE_PROFILES['worker']['effects'])
+        request['instruction_contract']['authority']['workspace_roots'] = [workspace]
+        request['instruction_contract']['read_targets'] = [workspace]
+
+        result = app.assign_and_start(**request)
+
+        assert result['outcome'] == 'succeeded', result.get('result', {}).get('error')
+        due = f.port.read_due(result['schedule_id'])
+        assert due['completion_state'] == 'succeeded'
+        assert not lab.path.exists()
+        if mode == 'auto_merge_write':
+            landed = subprocess.run(['git', '-C', str(line), 'show', landed_commits[0] + ':shared.txt'],
+                                    check=True, stdout=subprocess.PIPE).stdout
+            assert landed == b'worker-a\nline-b\nline-c\nline-d\nline-e\nline-f\nline-g\nline-h\nbase-i\nline-j\n'
+            assert landed != expected
+    finally:
+        f.doCleanups()
+        state.cleanup()
+        tmp_path_factory.cleanup()
 
 
 def test_facade_check_is_feedback_only(tmp_path):
