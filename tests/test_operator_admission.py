@@ -279,17 +279,47 @@ class OperatorAdmissionTests(HostctlFixture):
             "review_ref": self.review_ref.to_dict(), "request_key": request_key}}
         lane = owner_lane(Path(self.home))
         token = lanes.submit(lane, request)
-        # The request remains pending, with no presence prompt or audit entry,
-        # for the whole open dispatch boundary.
-        import time
-        time.sleep(0.15)
+        probe_token = lanes.submit(lane, {"command": "status"})
+        probe = lanes.wait(lane, probe_token, timeout_seconds=float("inf"))
+        self.assertEqual(probe["outcome"], "serving")
         self.assertTrue((lane / ("request-" + token + ".json")).exists())
+        self.assertFalse((lane / ("response-" + token + ".json")).exists())
         self.assertEqual(self.prover.calls, 0)
         self.assertEqual(self._audit(), [])
         host._external_waiting = 0
-        reply = lanes.wait(lane, token, timeout_seconds=10)
+        reply = lanes.wait(lane, token, timeout_seconds=float("inf"))
         self.owner_service.journeys.pop("dispatching-project")
         return reply
+
+    def test_admission_stays_queued_after_owner_poll_while_dispatching(self):
+        from otto.hostctl.service import owner_lane
+
+        host = SimpleNamespace(_external_waiting=1, begin_drain=lambda: None, close=lambda: None)
+        self.owner_service.journeys["dispatching-project"] = SimpleNamespace(
+            execution_host=host, run_id="dispatching-project", state={"manager": "test"},
+            paths={"ipc": Path(self.home) / "ipc", "socket": Path(self.home) / "socket"})
+        lane = owner_lane(Path(self.home))
+        request = {"command": "admit", "args": {
+            "task_ref": self.task_ref.to_dict(), "revision": self.task_ref.revision,
+            "review_ref": self.review_ref.to_dict(), "request_key": "polled-held-admission"}}
+        before = self.owner_service.served
+        token = lanes.submit(lane, request, token="0" * 32)
+        probe_token = lanes.submit(lane, {"command": "status"}, token="f" * 32)
+        try:
+            probe = lanes.wait(lane, probe_token, timeout_seconds=float("inf"))
+            self.assertEqual(probe["outcome"], "serving")
+            self.assertGreater(self.owner_service.served, before)
+            self.assertTrue((lane / ("request-" + token + ".json")).exists())
+            self.assertFalse((lane / ("response-" + token + ".json")).exists())
+            self.assertEqual(self.prover.calls, 0)
+            self.assertEqual(self._audit(), [])
+
+            host._external_waiting = 0
+            reply = lanes.wait(lane, token, timeout_seconds=float("inf"))
+            self.assertEqual(reply["outcome"], "admitted", reply)
+        finally:
+            host._external_waiting = 0
+            self.owner_service.journeys.pop("dispatching-project", None)
 
     def test_admission_waits_for_dispatch_then_checks_presence_and_applies_once(self):
         reply = self._submit_while_dispatching(request_key="same-held-admission")

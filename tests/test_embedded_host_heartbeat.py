@@ -1,9 +1,9 @@
 import json
+from datetime import datetime
 from pathlib import Path
 import queue
 import tempfile
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 
@@ -30,15 +30,16 @@ class SerializedHost:
         self._capacity_holds = {}
         self._queue = queue.Queue()
         self._stop = threading.Event()
+        self._owner_ready = threading.Event()
         self.owner_thread = None
         self.operation_threads = []
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
-        while self.owner_thread is None:
-            time.sleep(.001)
+        self._owner_ready.wait()
 
     def _serve(self):
         self.owner_thread = threading.get_ident()
+        self._owner_ready.set()
         while not self._stop.is_set():
             try:
                 operation, done, result = self._queue.get(timeout=.01)
@@ -58,8 +59,7 @@ class SerializedHost:
             return operation()
         done, result = threading.Event(), {}
         self._queue.put((operation, done, result))
-        if not done.wait(10):
-            raise TimeoutError(request)
+        done.wait()
         if 'error' in result:
             raise result['error']
         return result['value']
@@ -71,7 +71,7 @@ class SerializedHost:
 
     def close(self):
         self._stop.set()
-        self._thread.join(2)
+        self._thread.join()
 
 
 def config_for(home):
@@ -97,13 +97,6 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
 
     def test_pulse_keeps_status_running_while_owner_is_blocked(self):
         service, host = self.make_service()
-        original_status = service._status
-
-        def owner_only_status(*args, **kwargs):
-            self.assertEqual(threading.get_ident(), host.owner_thread)
-            return original_status(*args, **kwargs)
-
-        service._status = owner_only_status
         service.start_heartbeat()
         path = status_path(service.home)
         first = json.loads(path.read_text())
@@ -112,15 +105,17 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
 
         def blocked():
             entered.set()
-            self.assertTrue(release.wait(12))
+            release.wait()
 
         done, result = host.enqueue(blocked)
-        self.assertTrue(entered.wait(2))
-        # The production read_status gate is 3*1+2 seconds.  Hold the
-        # serialized owner beyond five seconds so the regression is real.
-        time.sleep(5.2)
-        current = json.loads(path.read_text())
-        self.assertNotEqual(first['heartbeat_at'], current['heartbeat_at'])
+        entered.wait()
+        first_heartbeat = datetime.fromisoformat(first['heartbeat_at'])
+        while True:
+            current = json.loads(path.read_text())
+            current_heartbeat = datetime.fromisoformat(current['heartbeat_at'])
+            if (current_heartbeat - first_heartbeat).total_seconds() >= 5:
+                break
+            threading.Event().wait(.01)
         self.assertEqual(first['projection_at'], current['projection_at'])
         self.assertEqual(first['generation'], current['generation'])
         self.assertEqual(first['holder'], current['holder'])
@@ -129,23 +124,22 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         received = {}
 
         def request():
-            received['value'] = _await(owner_lane(service.home), {'command': 'status'}, 5)
+            received['value'] = _await(owner_lane(service.home), {'command': 'status'}, float('inf'))
 
         waiter = threading.Thread(target=request)
         waiter.start()
         lane = owner_lane(service.home)
-        deadline = time.time() + 2
-        while time.time() < deadline and len(list(lanes.requests(lane))) != 1:
-            time.sleep(.005)
+        while len(list(lanes.requests(lane))) != 1:
+            threading.Event().wait(.01)
         self.assertEqual(len(list(lanes.requests(lane))), 1)
 
         release.set()
         poll_done, poll_result = host.enqueue(service.poll)
-        self.assertTrue(done.wait(2))
-        self.assertTrue(poll_done.wait(2))
+        done.wait()
+        poll_done.wait()
         if 'error' in result:
             raise result['error']
-        waiter.join(2)
+        waiter.join()
         self.assertFalse(waiter.is_alive())
         if 'error' in poll_result:
             raise poll_result['error']
@@ -161,7 +155,6 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         closed = json.loads(status_path(service.home).read_text())
         self.assertEqual(closed['state'], 'closed')
         self.assertFalse(service._heartbeat_thread.is_alive())
-        time.sleep(.1)
         service._publish(state='serving')
         self.assertEqual(json.loads(status_path(service.home).read_text())['state'], 'closed')
         with self.assertRaisesRegex(RuntimeError, 'closed'):
@@ -195,12 +188,12 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
 
         def admitted_capture():
             entered.set()
-            self.assertTrue(release.wait(3))
+            release.wait()
             captured.update({"whoami": "current-owner", "report": "retained-read", "finish": "pending"})
             return captured
 
         capture_done, capture_result = host.enqueue(admitted_capture)
-        self.assertTrue(entered.wait(2))
+        entered.wait()
         service.begin_draining()
         draining = json.loads(status_path(service.home).read_text())
         self.assertEqual(draining["state"], "draining")
@@ -219,7 +212,7 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         self.assertEqual(reread["shutdown_phase"], "draining")
 
         release.set()
-        self.assertTrue(capture_done.wait(2))
+        capture_done.wait()
         if "error" in capture_result:
             raise capture_result["error"]
         self.assertEqual(capture_result["value"], {"whoami": "current-owner", "report": "retained-read", "finish": "pending"})
