@@ -185,11 +185,11 @@ def completed_occurrence_task_reader(reader: Any, due: Any, assignment: Any) -> 
     if (due.role != "manager" or due.completion_state != "succeeded" or due.stop_state != "completed"
             or due.in_flight_request is not None or assignment_ref != due.assignment_ref
             or assignment.generation != due.generation or assignment.principal != due.recipient
-            or current.payload.get("lifecycle") != "completed" or completion.get("task_ref") != task.to_dict()
+            or current.payload.get("lifecycle") != "completed"
             or completion.get("assignment_ref") != assignment_ref or completion.get("generation") != due.generation
             or completion.get("manager") != due.recipient
             or receipt is None or receipt.status.value != "committed" or receipt.operation != "work.revise"
-            or receipt.target != task or receipt.result_ref != current.ref
+            or receipt.result_ref != current.ref
             or result.get("outcome") != "succeeded" or result.get("context_digest_verified") is not True
             or any(result.get(k) != v for k,v in (("assignment_ref",assignment_ref),("generation",due.generation),
                 ("task_ref",task.to_dict()),("project_ref",due.target["project_ref"])))
@@ -199,8 +199,28 @@ def completed_occurrence_task_reader(reader: Any, due: Any, assignment: Any) -> 
             or digest is None or digest != resource.get("brief_sha256") or digest != authorization.get("brief_sha256")):
         raise OwnerRoleRuntimeError("settled readiness lacks exact delivered completion predecessor")
     historical = ((brief.get("context") or {}).get("project_state") or {}).get("task") or {}
-    if historical.get("ref") != task.to_dict() or not isinstance(historical.get("payload"), Mapping):
+    if (historical.get("ref") != task.to_dict()
+            or not isinstance(historical.get("payload"), Mapping)):
         raise OwnerRoleRuntimeError("settled readiness completion input is unavailable in delivered snapshot")
+    # The committed work.revise receipt names the task revision whose content
+    # the manager actually accepted. Resolve that exact retained predecessor,
+    # then compare the delivery pin and the delivered snapshot to it. Rehashing
+    # a forged brief cannot substitute different authored instructions.
+    try:
+        predecessor_ref_value = owner_ref(completion.get("task_ref"), "completion predecessor")
+    except OwnerRoleRuntimeError as exc:
+        raise OwnerRoleRuntimeError("settled readiness completion predecessor is unavailable") from exc
+    if any(predecessor_ref_value.get(k) != task.to_dict().get(k) for k in ("authority", "kind", "id")):
+        raise OwnerRoleRuntimeError("settled readiness completion predecessor is another task")
+    predecessor = reader.get_revision(ResourceRef.from_dict(predecessor_ref_value))
+    if (predecessor is None or json_value(predecessor.ref) != predecessor_ref_value
+            or receipt.target != predecessor.ref):
+        raise OwnerRoleRuntimeError("settled readiness completion predecessor is unavailable")
+    from herzchen.domains.work.admission import task_content_matches
+    predecessor_ref = ResourceRef.from_dict(json_value(predecessor.ref))
+    if (not task_content_matches(reader, task, predecessor.payload, current_ref=predecessor_ref)
+            or not task_content_matches(reader, task, historical["payload"])):
+        raise OwnerRoleRuntimeError("settled readiness delivered task content differs from completion predecessor")
     parent = historical["payload"].get("project_ref") or {}
     if any(parent.get(k) != due.target["project_ref"].get(k) for k in ("authority","kind","id")):
         raise OwnerRoleRuntimeError("settled readiness task belongs to another project")
