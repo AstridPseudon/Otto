@@ -19,7 +19,9 @@ Reviewed the merged project diff against the goal and deletion budget. Astra fou
 
 **Needs the gate:** `src/otto/portfolio/tests/test_role_context.py` has 22 owner-backed tests that fail at Unix socket fixture setup with `PermissionError`; `src/otto/portfolio/tests/test_d05_events_candidate_proof.py` has 5 tests blocked at the same socket setup; PK3's `tests/test_hostctl_cli.py` is blocked at owner service setup by sandbox `socket.bind` `PermissionError`. Focused non-socket role-pack and PK3 checks pass.
 
-**Remaining scope:** PK5 and its cold-agent measurement remain. The profile table, duplicate Megado defaults, and static run-template bindings were removed in PK3; the approved §15 change preserves the test's intent by resolving all seven bindings from the pinned profile pack.
+**Remaining scope:** The original PK1–PK5 tasks are merged, and PK5's cold-agent readback is recorded below. The profile table, duplicate Megado defaults, and static run-template bindings were removed in PK3; the approved §15 change preserves the test's intent by resolving all seven bindings from the pinned profile pack.
+
+The final whole-project Astra review found that newly registered role configurations still omitted the role-pack pin and that six executable model-name fallbacks remained in Otto callers. PK3R is in progress to retain the exact adopted role pack and remove those fallbacks. This is a follow-up to the final review; no user data or installed runtime was changed.
 
 ## Decisions
 
