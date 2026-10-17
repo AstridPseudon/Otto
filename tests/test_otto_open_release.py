@@ -12,6 +12,7 @@ from importlib import import_module
 import io
 from io import StringIO
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -105,6 +106,48 @@ class OwnerRouteTests(HostctlFixture):
 
     def _open_args(self, project, document):
         return ["--project-ref", json.dumps(project), "--document-ref", json.dumps(document)]
+
+    def test_save_resolves_relative_file_from_the_caller_directory(self):
+        caller = Path(self.bundle).parent / "caller-a"
+        owner = Path(self.bundle).parent / "owner-b"
+        caller.mkdir()
+        owner.mkdir()
+        (caller / "project.json").write_text(json.dumps({
+            "project": {"title": "Caller A", "outcome": "Caller data"},
+            "tasks": [{"id": "caller-task", "title": "Caller task", "instructions": "Caller instructions",
+                       "acceptance": "Caller acceptance"}],
+        }), encoding="utf-8")
+        (owner / "project.json").write_text(json.dumps({
+            "project": {"title": "Owner B", "outcome": "Owner data"},
+            "tasks": [{"id": "owner-task", "title": "Owner task", "instructions": "Owner instructions",
+                       "acceptance": "Owner acceptance"}],
+        }), encoding="utf-8")
+
+        from otto.hostctl import cli as hostctl_cli
+        await_owner_lane = hostctl_cli._await
+
+        def await_from_owner_directory(*args, **kwargs):
+            caller_directory = Path.cwd()
+            os.chdir(owner)
+            try:
+                return await_owner_lane(*args, **kwargs)
+            finally:
+                os.chdir(caller_directory)
+
+        with patch.object(hostctl_cli, "_await", await_from_owner_directory):
+            original_directory = Path.cwd()
+            os.chdir(caller)
+            try:
+                # Save options before the positional filename must still be reconstructed correctly.
+                code, saved = self.otto("save", "--actor", OWNER, "--request-id", "caller-save", "project.json")
+            finally:
+                os.chdir(original_directory)
+
+        self.assertEqual(code, 0, saved)
+        self.assertEqual(saved["outcome"], "saved", saved)
+        actual_title = self._owner_for(saved["project_ref"]["id"], lambda session:
+            session.owner.graph.current(ResourceRef.from_dict(saved["project_ref"])).payload["title"])
+        self.assertEqual(actual_title, "Caller A", saved)
 
     def test_otto_show_runs_through_the_owner_lane_and_opens_no_store(self):
         project = self._project()
