@@ -321,9 +321,22 @@ class OwnerFleetRegistry:
         captured = output.get("artifacts")
         summary_result_ref = summary.get("result_ref")
         operation_result_ref = operation_result.get("result_ref")
+        codex_result = (isinstance(summary_result_ref, Mapping)
+                        and isinstance(operation_result_ref, Mapping)
+                        and operation_result_ref.get("kind") == "host.command-result"
+                        and operation_result_ref.get("revision") == summary.get("result_digest")
+                        and isinstance(output.get("commands"), list)
+                        and bool(output["commands"])
+                        and isinstance(artifacts, list) and bool(artifacts)
+                        and all(isinstance(artifact, Mapping)
+                                and artifact.get("source") == "verified native CommandExecution stdout and owner capture"
+                                and isinstance(artifact.get("ref"), Mapping)
+                                and artifact["ref"].get("result_ref") == summary_result_ref
+                                and artifact["ref"].get("sha256") == artifact.get("sha256")
+                                for artifact in artifacts))
         result_refs_match = (not isinstance(summary_result_ref, (Mapping, str))
                              or not isinstance(operation_result_ref, type(summary_result_ref))
-                             or summary_result_ref == operation_result_ref)
+                             or summary_result_ref == operation_result_ref or codex_result)
         if (due.get("role") != "worker" or attempt.get("state") != "result"
                 or result.get("outcome") != "succeeded" or not isinstance(due_task, Mapping)
                 or not isinstance(due_assignment, Mapping) or type(due_generation) is not int
@@ -333,7 +346,7 @@ class OwnerFleetRegistry:
                 or summary.get("assignment_ref") != due_assignment
                 or summary.get("generation") != due_generation
                 or not isinstance(artifacts, list) or not artifacts
-                or not isinstance(captured, list) or not captured
+                or not ((isinstance(captured, list) and captured) or codex_result)
                 or not isinstance(summary.get("verification"), Mapping)
                 or summary["verification"].get("context_digest_verified") is not True
                 or not summary_result_ref or not operation_result_ref or not result_refs_match

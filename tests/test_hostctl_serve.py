@@ -280,6 +280,176 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
             service._execution(principal="worker-a", model="m", reasoning="high",
                                evidence_id="worker-run", workspace="/project/workspace")
 
+    def test_admitted_codex_worker_composes_with_its_exact_grant_and_lab(self):
+        from herzchen.fleet.hosts.contract import McpGrant, McpServer
+        from otto.agents.herzchen_adapter import HerzchenCodexAdapter
+
+        with tempfile.TemporaryDirectory() as root:
+            lab = Path(root, "lab")
+            lab.mkdir()
+            due = {"schedule_id": "worker-run", "role": "worker", "recipient": "worker-a",
+                   "assignment_ref": {"id": "assignment-a"}, "generation": 1,
+                   "target": {"task_ref": {"id": "task-a"}}}
+            service = self._service(due, str(lab))
+            grant = McpGrant(servers=(McpServer("otto", sys.executable, tools=("task", "check", "done")),),
+                             token_env="OTTO_WORKER_TOKEN", token="assignment-a-token",
+                             token_env_prefix="OTTO_WORKER_")
+            service.worker_mcp_provider = lambda _due: grant
+            service.config = {"home": root, "hosts": {"codex": {"kind": "codex", "adapters": {
+                "codex": {"launcher": "/bin/true", "roles": ["worker", "manager"]}}}}}
+            service.session.host = service.config["hosts"]["codex"]
+            service._default_adapter_factory = True
+            service.adapter_factory = service._host_adapter
+            adapter = service._execution(principal="worker-a", model="gpt-5.6-luna",
+                                         reasoning="high", evidence_id="worker-run")
+            self.assertIsInstance(adapter, HerzchenCodexAdapter)
+            self.assertEqual(adapter.worktree, str(lab))
+            self.assertEqual(adapter.worker_mcp, grant)
+            self.assertEqual(adapter.writable_roots, ())
+            bound = adapter.bind_owner_authorization(lambda *_: {}, role="worker", profile="workspace-write")
+            binding = bound._new_host("fixture prompt", {}, model="gpt-5.6-luna", reasoning="high").port
+            self.assertIs(binding.mcp, grant)
+            self.assertEqual(binding.writable_roots, ())
+            from herzchen.fleet.hosts import TurnSpec, get_host
+            plan = get_host("codex").launch(TurnSpec(
+                executable=binding.launcher, workspace=binding.worktree, prompt="fixture prompt",
+                model=binding.model, reasoning=binding.reasoning, profile="workspace-write",
+                writable_roots=binding.writable_roots, mcp=binding.mcp))
+            self.assertEqual(plan.fence.pin["roots"], [str(lab)])
+            self.assertEqual(plan.argv[plan.argv.index("-C") + 1], str(lab))
+            self.assertEqual(plan.argv[plan.argv.index("-s") + 1], "workspace-write")
+            self.assertNotIn("--add-dir", plan.argv)
+            self.assertEqual(plan.env[grant.token_env], grant.token)
+            self.assertNotIn(grant.token, " ".join(plan.command()))
+
+    def test_codex_worker_fake_stream_calls_tools_lands_and_owner_captures_before_lab_cleanup(self):
+        import subprocess
+        from herzchen.fleet.labs import LabFleet
+        from herzchen.fleet.hosts.contract import McpGrant, McpServer
+        from herzchen.fleet.tools import AllowlistedPort, FeedbackLedger, ToolFacade, TokenBook
+        from herzchen.fleet.tools.facade import LandingOwnerPort
+        from otto.agents.claude_cli import TOOL_SPECS
+        from otto.hostctl.product_service import OwnerFleetRegistry
+        from otto.hostctl.serve import HostOwnerService
+        from test_execution_application import ExecutionApplicationTests, NOW, ProviderBinding
+        from test_landing import _Runner, _criterion, _service
+
+        fixture = ExecutionApplicationTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        root = Path(fixture.temporary.name).resolve()
+        line = root / "line"
+        line.mkdir()
+        def git(directory, *args):
+            return subprocess.run(["git", "-C", str(directory), *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git(line, "init", "-b", "main")
+        git(line, "config", "user.name", "Codex owner test")
+        git(line, "config", "user.email", "codex-owner@test.invalid")
+        (line / "README.md").write_text("base\n")
+        git(line, "add", "README.md")
+        git(line, "commit", "-m", "base")
+        base = git(line, "rev-parse", "HEAD")
+        fleet = LabFleet(line, root / "labs", checkpoint=lambda worktree, paths, *, message: (
+            git(worktree, "add", "--", *paths), git(worktree, "commit", "-m", message)))
+        lab = fleet.create(fixture.task.id, base="refs/heads/main")
+        landing, _calls = _service(fleet, _Runner())
+        prepared_request = fixture.request()
+        contract = prepared_request["instruction_contract"]
+        contract["authority"]["workspace_roots"] = [str(lab.path)]
+        prepared = fixture.app.assign_worker(**prepared_request)
+        self.assertEqual(prepared["outcome"], "committed", prepared)
+        assignment_id = prepared["assignment_ref"]["id"]
+        book = TokenBook()
+        token = book.issue(assignment_id, "worker")
+        grant = McpGrant(servers=(McpServer("otto", sys.executable, tools=("task", "check", "done")),),
+                         token_env="OTTO_WORKER_TOKEN", token=token, token_env_prefix="OTTO_WORKER_")
+
+        class TaskRead:
+            def call(self, operation, assignment, _args, *, feedback):
+                self_outer.assertEqual((operation, assignment, feedback),
+                                       ("effective-context", assignment_id, False))
+                return {"task_id": fixture.task.id}
+
+        self_outer = self
+        def assignment_context(assignment):
+            self.assertEqual(assignment, assignment_id)
+            return {"service": landing, "lab_name": fixture.task.id, "task_id": "task-1",
+                    "candidate": "candidate@1", "criterion": _criterion(),
+                    "parent_obligation": "obligation@1", "actor": "owner"}
+        owner_port = LandingOwnerPort(assignment_context, fallback=TaskRead())
+        facade = ToolFacade(TOOL_SPECS, {"worker": ("task", "check", "done")},
+                            AllowlistedPort(owner_port, tuple(spec.operation for spec in TOOL_SPECS)),
+                            book, FeedbackLedger())
+        self.assertEqual(facade.call("wrong-token", "task")["error"], "unauthorized")
+        calls = []
+
+        class FakeCodexBinding(ProviderBinding):
+            def execute(self, request):
+                if self.options.get("delivered_brief"):
+                    self_outer.assertEqual(self.options["mcp"], grant)
+                    self_outer.assertEqual(self.options["worktree"], str(lab.path))
+                    self_outer.assertEqual(self.options["writable_roots"], ())
+                    calls.append(facade.call(token, "task"))
+                    (lab.path / "answer.txt").write_text("Codex result\n")
+                    fleet.checkpoint(str(lab.path), ["answer.txt"], message="worker result")
+                    calls.append(facade.call(token, "check"))
+                    calls.append(facade.call(token, "done", {"summary": "finished"}))
+                return super().execute(request)
+
+        service = object.__new__(HostOwnerService)
+        entry = {"kind": "codex", "adapters": {"codex": {
+            "launcher": "/bin/true", "roles": ["worker", "manager"]}}}
+        service.config = {"home": str(root), "hosts": {"codex": entry}}
+        service.session = SimpleNamespace(host=entry,
+            execution_application=lambda adapter, **kwargs: fixture.owner.execution_application(
+                due_port=fixture.port, adapter=adapter, clock=lambda: NOW,
+                manager_actor=kwargs["manager_actor"]))
+        service.state = {"manager": "manager"}
+        service.due_port = fixture.port
+        service.worker_context_provider = lambda _due: {"workspace": str(lab.path)}
+        service.worker_mcp_provider = lambda due: grant if due["assignment_ref"]["id"] == assignment_id else None
+        service.worker_lab_provider = None
+        service._default_adapter_factory = True
+        service.adapter_factory = service._host_adapter
+        registry = object.__new__(OwnerFleetRegistry)
+        settle_calls = []
+        def settle(**pins):
+            due = fixture.port.read_due(pins["schedule_id"])
+            captured = registry._captured_worker_due(due, **{key: pins[key] for key in (
+                "task_ref", "assignment_ref", "generation", "published")})
+            settle_calls.append(captured)
+            if not captured:
+                return {"cleanup_pending": True}
+            results = fleet.sweep_landed("refs/heads/main", lambda name, _commit: name == fixture.task.id)
+            return {"cleanup_pending": not any(row.action == "removed" for row in results)}
+        fixture.owner.landed_worker_settler = settle
+        with self.assertRaises(PermissionError):
+            service._execution(principal="worker", model="gpt-test", reasoning="high",
+                               evidence_id=prepared["schedule_id"], workspace=str(line))
+        with patch("herzchen.adapters.CodexCliBinding",
+                   side_effect=lambda worktree, **kwargs: FakeCodexBinding(
+                       fixture.provider, {"worktree": worktree, **kwargs})):
+            app = service._execution(principal="worker", model="gpt-test", reasoning="high",
+                                     evidence_id=prepared["schedule_id"])
+            result = app.start(schedule_id=prepared["schedule_id"])
+        self.assertEqual(result["outcome"], "succeeded", result.get("error"))
+        self.assertTrue(all("tool" in call for call in calls), calls)
+        self.assertEqual([call["tool"] for call in calls], ["task", "check", "done"])
+        self.assertTrue(calls[2]["result"]["landed"])
+        self.assertEqual(settle_calls, [True], "owner cleanup requires the captured exact Codex Due")
+        self.assertNotEqual(git(line, "rev-parse", "HEAD"), base)
+        self.assertEqual((line / "answer.txt").read_text(), "Codex result\n")
+        self.assertFalse(lab.path.exists(), "captured landed worker left its assignment lab")
+        self.assertFalse((root / "answer.txt").exists(), "worker wrote outside its assignment lab")
+        from copy import deepcopy
+        due = fixture.port.read_due(prepared["schedule_id"])
+        forged = deepcopy(due)
+        forged["host_evidence"]["captured_artifacts"][0]["ref"]["sha256"] = "0" * 64
+        self.assertFalse(registry._captured_worker_due(forged,
+            task_ref=due["target"]["task_ref"], assignment_ref=due["assignment_ref"],
+            generation=due["generation"]))
+
     def test_non_manager_without_worker_due_cannot_fall_back_to_project_workspace(self):
         service = self._service({"schedule_id": "manager-run", "role": "manager"}, "/owner/labs/task-a")
         with self.assertRaises(PermissionError):
