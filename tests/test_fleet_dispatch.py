@@ -12,6 +12,10 @@ from herzchen.fleet.tools.tokens import TokenBook
 from herzchen.domains.work.admission import authoring_stamp
 from herzchen.domains.work.readiness import ready as work_ready
 from herzchen.contracts import ResourceRef
+from otto.hostctl.product_service import bind_automatic_dispatch
+from otto.portfolio.execution_host import ExecutionHost
+from otto.portfolio.owner_completion import OwnerCompletion
+from unittest.mock import patch
 
 
 def _task(task_id):
@@ -293,3 +297,219 @@ def test_concurrent_owner_selectors_launch_one_task_generation():
     assert sum(result is not None for result in results) == 1
     dispatcher.finish("raced")
     assert dispatcher.dispatch_ready([task]) is None
+
+
+def test_unknown_launch_must_be_settled_before_any_retry_attempt():
+    task = _task("uncertain-once")
+    launch_attempts = []
+
+    def launch(_task, _context):
+        launch_attempts.append("attempt")
+        raise RuntimeError("spawn outcome unknown")
+
+    dispatcher, _pool, book = _dispatcher(_ready_with({}), launch, make_spec=None)
+    with pytest.raises(DispatchError, match="spawn outcome unknown"):
+        dispatcher.dispatch(task)
+
+    assert launch_attempts == ["attempt"]
+    assert dispatcher.records["uncertain-once"].state == "unknown"
+    with pytest.raises(DispatchError, match="active dispatch"):
+        dispatcher.dispatch(task, retry=True)
+    assert launch_attempts == ["attempt"]
+
+    dispatcher.finish("uncertain-once", settled=False)
+    assert not book.live()
+
+
+def _staging_dispatch_fixture(task_specs, submit_worker, tmp_path):
+    """Small in-memory owner surface for the product automatic dispatch pump."""
+    tasks = {}
+    refs = {}
+    for alias, admitted in task_specs:
+        payload = {"kind": "task", "title": alias, "name": alias,
+            "fields": {"instructions": "Implement " + alias, "check": ["true"]},
+            "dependencies": [], "project_ref": {"authority": "fixture", "kind": "work.project", "id": "project", "revision": "project-rev"},
+            "metadata_namespaces": {"otto.plan": {"route": "normal"}}}
+        if admitted:
+            payload["metadata_namespaces"]["work.admission"] = authoring_stamp("revision-" + alias, payload, "owner")
+        ref = ResourceRef("fixture", "work.task", alias, "revision-" + alias)
+        task = SimpleNamespace(id=alias, title=alias, ref=ref, payload=payload, lifecycle="pending")
+        tasks[alias] = task
+        refs[alias] = ref
+
+    project = SimpleNamespace(ref=ResourceRef("fixture", "work.project", "project", "project-rev"),
+        payload={"lifecycle": "pending"})
+    def get_record(ref):
+        return project if ref.id == "project" else tasks.get(ref.id)
+    reader = SimpleNamespace(get_identity=lambda ref: tasks[ref.id], get_record=get_record)
+    graph = SimpleNamespace(current=lambda ref: tasks[ref.id], reader=reader)
+    owner = SimpleNamespace(graph=graph, owner_actor=object(), store=SimpleNamespace(consumer=lambda: object()))
+    state = {"project_ref": {"authority": "fixture", "kind": "work.project", "id": "project", "revision": "project-rev"},
+        "task_refs": {alias: ref.to_dict() for alias, ref in refs.items()}, "workers": {}}
+    due_rows = {}
+    view = SimpleNamespace(server=SimpleNamespace(state=state,
+        due_port=SimpleNamespace(read_due=lambda schedule: due_rows.get(schedule)), _save_state=lambda: None),
+        _submit_worker=None)
+    host = ExecutionHost(directory=tmp_path, handler=lambda _request: {}, bounded_transports=True,
+        capacity_policy=CapacityPolicy(turn_units=1, manager_reserve=0, heavy_headroom=1, worker_floor=0))
+    host.admission_calls = []
+    original_admit = host.admit_execution
+    def admit_execution(app, due, operation):
+        host.admission_calls.append(due.schedule_id)
+        return host._owned(lambda: original_admit(app, due, operation))
+    host.admit_execution = admit_execution
+    host.restore_execution = lambda _app, _due: None
+    app = SimpleNamespace(runtime=SimpleNamespace(adapter=SimpleNamespace(
+        owner_transport_only=True, worktree=str(tmp_path))),
+        portfolio=SimpleNamespace(operations=SimpleNamespace(reader=reader, _owner_reader=reader)),
+        _read=lambda schedule: due_rows[schedule]["_due"])
+    registry = SimpleNamespace(owner=owner, tokens=TokenBook())
+    registry.bind_dispatcher = lambda dispatcher: (setattr(registry, "dispatcher", dispatcher),
+                                                     setattr(registry, "tokens", dispatcher.tokens))
+    view._submit_worker = lambda request, **kwargs: submit_worker(
+        host, app, view, due_rows, request, **kwargs)
+    with patch("otto.portfolio.dependencies.PortfolioDependencies",
+               return_value=SimpleNamespace(readiness=lambda _ref, **_kw: {"ready": True})):
+        dispatcher = bind_automatic_dispatch(host, registry, {"project": view})
+    return host, view, due_rows, dispatcher
+
+
+def test_automatic_dispatch_admits_serially_skips_unadmitted_and_lands_each_generation(tmp_path):
+    launches = []
+
+    def submit(host, app, view, due_rows, request, *, automatic=False, automatic_revision=None):
+        assert automatic is True
+        alias = request["task"]
+        task = view.server.state["task_refs"][alias]
+        assignment = next(key for key, record in host.dispatcher.records.items()
+                          if record.task.ref.id == alias)
+        schedule = "worker-" + alias
+        due = SimpleNamespace(schedule_id=schedule, project_ref="project", role="worker",
+            assignment_ref={"authority": "fixture", "kind": "wrk.assignment", "id": assignment},
+            generation=1, target={"task_ref": task, "project_ref": {"authority": "fixture", "kind": "work.project", "id": "project", "revision": "project-rev"}},
+            host_evidence={}, profile="workspace-write", host_state="ready")
+        due_rows[schedule] = {"completion_state": "active", "target": due.target,
+            "assignment_ref": due.assignment_ref, "generation": due.generation,
+            "host_evidence": {}, "_due": due}
+        view.server.state["workers"][alias] = {"schedule_id": schedule, "assignment_ref": due.assignment_ref,
+            "automatic": True, "automatic_revision": automatic_revision, "generation": 1}
+        pending = OwnerCompletion()
+        host.admit_execution(app, due, lambda: (launches.append(alias), pending)[1])
+        view.server.state["workers"][alias]["completion"] = pending
+        return {"outcome": "admitted", "assignment_ref": due.assignment_ref}
+
+    host, view, due_rows, dispatcher = _staging_dispatch_fixture(
+        [("A", True), ("B", True), ("C", False)], submit, tmp_path)
+    host.dispatcher = dispatcher
+    host.dispatch_pump()
+    with patch("otto.portfolio.execution_operations.recheck_execution_admission", return_value="admitted"):
+        host._owned(host._start_ready_executions)
+    assert launches == ["A"]
+    assert host.admission_calls == ["worker-A"]
+    assert view.server.state["workers"]["A"]["automatic"] is True
+
+    host.dispatch_pump()
+    assert launches == ["A"]
+
+    due_rows["worker-A"]["completion_state"] = "succeeded"
+    view.server.state["workers"]["A"]["completion"].resolve({"outcome": "succeeded"})
+    dispatcher.finish(next(iter(dispatcher.records)))
+    host.dispatch_pump()
+    with patch("otto.portfolio.execution_operations.recheck_execution_admission", return_value="admitted"):
+        host._owned(host._start_ready_executions)
+    assert launches == ["A", "B"]
+    assert host.admission_calls == ["worker-A", "worker-B"]
+    assert "C" not in view.server.state["workers"]
+    assert len([row for row in dispatcher.records.values() if row.state == "launched"]) == 1
+
+
+def test_automatic_known_launch_failure_settles_with_reason_without_sticking_alias(tmp_path):
+    calls = []
+    launches = []
+
+    def submit(host, app, view, due_rows, request, *, automatic=False, automatic_revision=None):
+        alias = request["task"]
+        calls.append(alias)
+        if alias == "A":
+            return {"outcome": "rejected", "reason": "known pre-effect refusal",
+                "provider_called": False, "effects_started": False}
+        assignment = next(key for key, record in host.dispatcher.records.items()
+                          if record.task.ref.id == alias)
+        schedule = "worker-" + alias
+        raw_task_ref = view.server.state["task_refs"][alias]
+        project_ref = view.server.state["project_ref"]
+        due = SimpleNamespace(schedule_id=schedule, project_ref="project", role="worker",
+            assignment_ref={"authority": "fixture", "kind": "wrk.assignment", "id": assignment},
+            generation=1, target={"task_ref": raw_task_ref, "project_ref": project_ref},
+            host_evidence={}, profile="workspace-write", host_state="ready")
+        due_rows[schedule] = {"completion_state": "active", "target": due.target,
+            "assignment_ref": due.assignment_ref, "generation": due.generation,
+            "host_evidence": {}, "_due": due}
+        view.server.state["workers"][alias] = {"schedule_id": schedule,
+            "assignment_ref": due.assignment_ref, "automatic": True,
+            "automatic_revision": automatic_revision, "generation": 1}
+        host.admit_execution(app, due, lambda: launches.append(alias) or {"outcome": "landed"})
+        return {"outcome": "admitted", "assignment_ref": due.assignment_ref}
+
+    host, view, due_rows, dispatcher = _staging_dispatch_fixture(
+        [("A", True), ("B", True), ("C", False)], submit, tmp_path)
+    host.dispatcher = dispatcher
+    host.dispatch_pump()
+
+    assert calls == ["A"]
+    assert view.server.state["automatic_dispatch_failures"]["A"]["reason"] == "known pre-effect refusal"
+    assert "A" not in view.server.state["workers"]
+    assert next(iter(dispatcher.records.values())).state in {"released", "settled"}
+    host.dispatch_pump()
+    with patch("otto.portfolio.execution_operations.recheck_execution_admission", return_value="admitted"):
+        host._owned(host._start_ready_executions)
+    assert calls == ["A", "B"]
+    assert launches == ["B"]
+    assert host.admission_calls == ["worker-B"]
+    assert view.server.state["workers"]["B"]["automatic"] is True
+    assert "C" not in view.server.state["workers"]
+
+    # A remains fenced for this admitted generation while another pump runs.
+    assert due_rows["worker-B"]["completion_state"] == "active"
+    host.dispatch_pump()
+    assert calls == ["A", "B"]
+
+
+def test_retained_automatic_failure_callback_settles_only_explicit_no_effect_evidence(tmp_path):
+    def submit(host, app, view, due_rows, request, *, automatic=False, automatic_revision=None):
+        alias = request["task"]
+        assignment = next(key for key, record in host.dispatcher.records.items()
+                          if record.task.ref.id == alias)
+        schedule = "worker-" + alias
+        raw_task_ref = view.server.state["task_refs"][alias]
+        project_ref = view.server.state["project_ref"]
+        due = SimpleNamespace(schedule_id=schedule, project_ref="project", role="worker",
+            assignment_ref={"authority": "fixture", "kind": "wrk.assignment", "id": assignment},
+            generation=1, target={"task_ref": raw_task_ref, "project_ref": project_ref},
+            host_evidence={}, profile="workspace-write", host_state="ready")
+        due_rows[schedule] = {"completion_state": "active", "target": due.target,
+            "assignment_ref": due.assignment_ref, "generation": due.generation, "host_evidence": {}}
+        view.server.state["workers"][alias] = {"schedule_id": schedule,
+            "assignment_ref": due.assignment_ref, "automatic": True,
+            "automatic_revision": automatic_revision, "generation": 1}
+        host.admit_execution(app, due, lambda: {"outcome": "partial"})
+        return {"outcome": "admitted", "assignment_ref": due.assignment_ref}
+
+    host, view, due_rows, dispatcher = _staging_dispatch_fixture([("A", True)], submit, tmp_path)
+    host.dispatcher = dispatcher
+    host.dispatch_pump()
+    with patch("otto.portfolio.execution_operations.recheck_execution_admission", return_value="admitted"):
+        host._owned(host._start_ready_executions)
+    failure = {"outcome": "partial", "reason": "runtime preparation failed",
+        "provider_called": False, "effects_started": False}
+    unknown = {"outcome": "partial", "reason": "insufficient evidence"}
+    with pytest.raises(PermissionError, match="explicit pre-effect evidence"):
+        host.settle_automatic_failure("project", "A", "worker-A", unknown)
+    assert next(iter(dispatcher.records.values())).state == "launched"
+    assert dispatcher.tokens.live()
+
+    settled = host.settle_automatic_failure("project", "A", "worker-A", failure)
+    assert settled["outcome"] == "settled"
+    assert view.server.state["automatic_dispatch_failures"]["A"]["reason"] == "runtime preparation failed"
+    assert next(iter(dispatcher.records.values())).state == "settled"
+    assert not dispatcher.tokens.live()
