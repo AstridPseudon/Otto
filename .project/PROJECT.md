@@ -49,6 +49,8 @@ The focused CLI regression was added before implementation and passes: `/opt/hom
 
 2. **SL2 replacement wiring:** `OwnerManagerReplacement` and `ManagerContinuity.replace_session` have zero production callers in this clone; the live manager handoff is a read projection through `manager_journey_service.py`. Wiring a native replacement entrypoint would overlap PROGRAM's in-flight owner/manager work. SL2 closes the live queued-generation admission defect and hardens the existing replacement composition, but cannot claim a live route consolidation or delete a redundant route until the owner entrypoint lands. Which PROGRAM-owned entrypoint should call the retained replacement composition after integration?
 
+3. **SLIM deletion budget:** the current diff removes a net 913 lines from `src/otto/portfolio` against the 11,980-line target, leaving 11,067 lines. Remaining candidates in the refreshed ledger are gross footprints with overlapping callers and retained behavior, not credible net savings yet. SL6 depends on SL2's unlanded production replacement route; SL7 also depends on the unanswered Vision/Native5 decision. Should the 25% budget remain a hard requirement after those upstream blocks clear, and may SLIM touch paths still owned by PROGRAM if the measured untouched candidates cannot meet it? No candidate is deleted on assumption.
+
 ## SL2 worker evidence
 
 Changed files: `src/otto/portfolio/manager_replacement.py`, `src/otto/portfolio/execution_operations.py`, `tests/test_manager_replacement_unit.py`, `tests/test_owner_manager_replacement.py`, `tests/test_execution_operations.py`, `.project/PROJECT.md`. No production lines were deleted: the replacement composition has zero production callers, so no redundant live route could be removed safely. `manager_handoff.py` and `manager_continuity.py` were inspected and retained without edits.
@@ -58,3 +60,9 @@ Socket-free regressions failed before the changes: queued manager generation was
 ### SL2 Astra review
 
 Astra reviewed the original SL2 diff and reproduced the cross-schedule reacquisition defect. The manager sent it to the same worker, which added the schedule-independent identity and concurrent-call regression. Astra rechecked the fix and found no remaining custody defect. It noted that the socket-free concurrency fixture uses permissive `setdefault`; production's retained writer rejects a changed payload under an existing logical key, so that collision also prevents duplicate acquisition. The manager accepts the fix; live route integration remains the question above.
+
+## Remaining dependency blocks
+
+- SL6 is blocked because its declared SL2 dependency has no production replacement entrypoint until PROGRAM/orchestrator wiring is decided.
+- SL7 is blocked by SL5's unanswered keep/retire decision and SL6.
+- SL9 is blocked by the dependent rows above and the measured deletion shortfall: 913 net portfolio lines removed versus 11,980 required. The remaining ledger entries are candidate gross sizes with live callers; further removals need measured parity evidence and an agreed path past PROGRAM-owned files.
