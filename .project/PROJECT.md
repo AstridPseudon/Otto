@@ -84,7 +84,7 @@ PL5 implementation/test/guidance files merged in `05ec363`:
 
 Merged implementation deletions credited toward the agreed 99-line ambition: 44/99 (PL1: 0; PL2: 19; PL3: 0; PL4: 25; PL4-G1: 0; PL5: 0). The remaining 55 measured candidate lines are PL1's escaped-descendant ancestry and exact per-PID cleanup retained by D19. PL3's proposed helpers were retained because production callers still rely on them; PL5 shortened prose but did not retire a measured lifecycle block. This is a recorded shortfall against the §15 ambition, not a claim that 99 lines were removed. The Astrid package's approximately 4,000-line ambition does not map to this clone.
 
-Current committed branch diff from `eb9b6cd`: **31 files, +2074/-204** (`git diff --shortstat eb9b6cd...proj/proclife`). The inventory is 8 original project-package files, one PL5 gate-evidence file, and 22 implementation/test/docs files.
+Current committed branch diff from `eb9b6cd`: **31 files, +2077/-204** (`git diff --shortstat eb9b6cd...proj/proclife`). The inventory is 8 original project-package files, one PL5 gate-evidence file, and 22 implementation/test/docs files.
 
 Complete implementation, test, and user-guidance inventory (all paths changed by PL1–PL5):
 
