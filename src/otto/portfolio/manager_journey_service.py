@@ -1598,11 +1598,18 @@ class ManagerJourneyService:
             raise ValueError("read/recover/resume take only the exact schedule")
         if operation == "read":
             from .execution_operations import compact_operation_status
+            evidence = raw.get("host_evidence")
+            attempt = evidence.get("gateway_attempt") if isinstance(evidence, Mapping) else None
+            result = attempt.get("result") if isinstance(attempt, Mapping) else None
+            failed_recovery = (raw.get("role") == "worker" and raw.get("stop_state") == "active"
+                and isinstance(attempt, Mapping) and attempt.get("state") == "result"
+                and isinstance(result, Mapping)
+                and result.get("outcome") == "failed")
             return {"outcome": "read", **compact_operation_status(raw),
                     "occurrence": {key: raw.get(key) for key in ("schedule_id", "version",
                         "assignment_ref", "generation", "stop_state", "host_state",
                         "completion_state", "in_flight_request")},
-                    "recovery": app.recovery_status(schedule_id=schedule),
+                    **({"recovery": app.recovery_status(schedule_id=schedule)} if failed_recovery else {}),
                     "provider_called": False}
         if operation == "recover" and due.role == "worker":
             # One explicit manager recovery action may settle only the exact
