@@ -928,9 +928,26 @@ class ExecutionHost:
         job["scope"]["session"] = session
 
     def _start_ready_executions(self) -> None:
-        if self._dispatch_held or self._closing:
-            return
-        while not self._closing:
+        def drain_held(schedule: str) -> dict[str, Any]:
+            return {"outcome": "held", "reason": "owner host is draining",
+                "schedule_id": schedule, "provider_called": False,
+                "effects_started": False, "retry": False,
+                "next_action": "Start this same prepared occurrence explicitly after owner restart."}
+
+        while True:
+            with self._lock:
+                closing = self._closing
+                queued = []
+                if closing:
+                    queued = [self._executions.pop(schedule) for schedule, job in
+                              list(self._executions.items()) if not job["running"]]
+            if closing:
+                for job in queued:
+                    schedule = job["scope"]["schedule_id"]
+                    job["completion"].resolve(drain_held(schedule))
+                return
+            if self._dispatch_held:
+                return
             ready = [value for value in self._executions.values()
                      if not value["running"] and self._eligible(value["scope"])]
             if not ready:
@@ -952,7 +969,10 @@ class ExecutionHost:
                 self.capacity.ensure_turn(job["scope"]["schedule_id"])
             except Exception as error:
                 self._executions.pop(job["scope"]["schedule_id"])
-                job["completion"].resolve(error=error)
+                if self._closing:
+                    job["completion"].resolve(drain_held(job["scope"]["schedule_id"]))
+                else:
+                    job["completion"].resolve(error=error)
                 continue
             job["running"] = True
             job["admission_binding"] = admission_binding
@@ -994,7 +1014,10 @@ class ExecutionHost:
                     from .execution_operations import recheck_execution_admission
                     if recheck_execution_admission(job["app"], due) != job["admission_binding"]:
                         raise PermissionError("worker admission or dependency state changed before launch")
-                    job["operation_started"] = True
+                    with self._lock:
+                        if self._closing:
+                            return drain_held(schedule)
+                        job["operation_started"] = True
                     token = _ACTIVE_EXECUTION.set((self, job))
                     try:
                         return job["operation"]()
@@ -1003,7 +1026,10 @@ class ExecutionHost:
                 result = job["context"].run(admitted_operation)
                 after_owner(result, finish, lambda error, finish=finish: finish(error=error))
             except BaseException as error:
-                finish(error=error)
+                if self._closing and not job.get("operation_started"):
+                    finish(drain_held(schedule))
+                else:
+                    finish(error=error)
 
     @staticmethod
     def adapter_transport(operation: Callable[[], Any]) -> Any:
@@ -1711,6 +1737,7 @@ class ExecutionHost:
                 # Authenticated reads already admitted must still resolve.
                 while not self._owner_calls.empty():
                     self._owned(self._pump_owner_calls)
+                self._owned(self._start_ready_executions)
             # An inert owner preserves all queued business requests for a later
             # explicit operator decision; shutdown never turns into a replay.
             if not self._dispatch_held:
