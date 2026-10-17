@@ -829,6 +829,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         class ProjectOwnerService(OwnerService):
             def _run_operation(self, handler, namespace, operation):
                 order.append("original")
+                if operation == ("project", "status"):
+                    return {"outcome": "read", "project_ref": {"id": "project"}}
                 return {"outcome": "original"}
 
         project = ModuleType("otto.hostctl.project_service")
@@ -852,6 +854,68 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             self.assertEqual(admitted["bootstrap_assessment"]["task_ref"], refs["A"])
             self.assertEqual(owner._run_operation(None, SimpleNamespace(project="other"),
                                                   ("project", "activate"))["outcome"], "original")
+            owner.router = SimpleNamespace(services={"project": SimpleNamespace(server=SimpleNamespace(
+                run_id="perch-stage2", state={"project_ref": {"id": "project"},
+                                              "workers": {"A": {"automatic": True}},
+                                              "automatic_dispatch_failures": {}}))})
+            status = owner._run_operation(None, SimpleNamespace(project="perch-stage2"), ("project", "status"))
+            self.assertTrue(status["workers"]["A"]["automatic"])
+            self.assertEqual(status["automatic_dispatch_failures"], {})
+
+    def test_project_status_exposes_retained_dispatch_without_manager_identity(self):
+        import re
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        wait = re.search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(wait)
+        self.assertIn('project status --project perch-stage2', wait.group())
+        self.assertNotIn('manager --project perch-stage2 status', wait.group())
+
+        project_ref = {"authority": "owner", "kind": "work.project", "id": "project", "revision": "rev-1"}
+        worker = {"A": {"automatic": True, "automatic_revision": "rev-1",
+                        "assignment_ref": {"kind": "wrk.assignment", "id": "assignment-A"},
+                        "schedule_id": "schedule-A"}}
+        state = {"project_ref": project_ref, "workers": worker,
+                 "automatic_dispatch_failures": {}}
+        view = SimpleNamespace(server=SimpleNamespace(run_id="perch-stage2", state=state))
+        owner = SimpleNamespace(router=SimpleNamespace(services={"project": view}))
+        read = {"outcome": "read", "project_ref": project_ref}
+        observed = self.launcher._status_with_dispatch(owner, read)
+        self.assertEqual(observed["workers"], worker)
+        self.assertEqual(observed["automatic_dispatch_failures"], {})
+        worker["A"]["automatic"] = False
+        self.assertTrue(observed["workers"]["A"]["automatic"])
+        perch_report.stage2_dispatch_no_failure(observed, "A")
+        # Seed the owner's retained pre-effect refusal. The wait turns red
+        # with the actual reason instead of waiting on a protected command.
+        observed["automatic_dispatch_failures"]["A"] = {"reason": "repo unavailable"}
+        with self.assertRaisesRegex(ValueError, "repo unavailable"):
+            perch_report.stage2_dispatch_no_failure(observed, "A")
+        del observed["workers"]
+        with self.assertRaisesRegex(ValueError, "lacks the owner's retained dispatch state"):
+            perch_report.stage2_dispatch_no_failure(observed, "A")
+
+    def test_stage_two_teardown_removes_copied_operator_log_only(self):
+        import re
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        helper = re.search(r"(?ms)^stage2_cleanup_operator_log\(\) \{\n.*?^\}\n", shell)
+        self.assertIsNotNone(helper)
+        scratch = Path(tempfile.mkdtemp(prefix="perch-stage2-log-"))
+        self.addCleanup(shutil.rmtree, scratch, True)
+        root = scratch / "staging"
+        run = root / "home" / "run"
+        run.mkdir(parents=True)
+        log = run / "operator-admission.jsonl"
+        log.write_text("approved\n", encoding="utf-8")
+        retained = scratch / "raw-admission.jsonl"
+        retained.write_text(log.read_text(encoding="utf-8"), encoding="utf-8")
+        result = subprocess.run(["bash", "-c", "STAGE_ROOT=" + str(root) + "\n" + helper.group()
+                                 + "\nstage2_cleanup_operator_log\n"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(log.exists())
+        self.assertEqual(retained.read_text(encoding="utf-8"), "approved\n")
+        teardown = shell[shell.index('  bash "$STAGING" down < /dev/null'):]
+        self.assertLess(teardown.index('bash "$STAGING" down'), teardown.index('stage2_cleanup_operator_log'))
+        self.assertLess(teardown.index('stage2_cleanup_operator_log'), teardown.index('at-rest --stage-root'))
 
     def test_real_stage_two_keeps_real_prover_and_fake_uses_stub(self):
         root = Path(tempfile.mkdtemp(prefix="perch-stage2-owner-"))

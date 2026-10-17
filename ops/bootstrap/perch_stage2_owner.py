@@ -14,6 +14,8 @@ from pathlib import Path
 import sys
 import hashlib
 import json
+import copy
+from collections.abc import Mapping
 
 
 def _seed_scopes(service, task_refs):
@@ -95,6 +97,28 @@ def _seed_admitted_scope(service, task_ref):
                 "criterion_ref": criterion.to_dict()}
 
 
+def _status_with_dispatch(service, result):
+    """Expose the composed canary's retained worker records on its host read.
+
+    The normal manager status command requires a native manager caller. The
+    canary harness reads project status as its admitted host; this staging-only
+    projection copies the same owner state that automatic dispatch persists.
+    """
+    project = result.get("project_ref") if isinstance(result, Mapping) else None
+    if not isinstance(result, Mapping) or result.get("outcome") != "read" or not isinstance(project, Mapping):
+        return result
+    views = getattr(getattr(service, "router", None), "services", {})
+    view = views.get(project.get("id")) if isinstance(views, Mapping) else None
+    server = getattr(view, "server", None)
+    if (server is None or getattr(server, "run_id", None) != "perch-stage2"
+            or server.state.get("project_ref", {}).get("id") != project.get("id")):
+        return result
+    return {**result,
+            "workers": copy.deepcopy(server.state.get("workers") or {}),
+            "automatic_dispatch_failures": copy.deepcopy(
+                server.state.get("automatic_dispatch_failures") or {})}
+
+
 def install_scope_setup():
     from otto.hostctl.project_service import ProjectOwnerService
     from otto.hostctl.service import OwnerService
@@ -103,6 +127,8 @@ def install_scope_setup():
     original_admit = ProjectOwnerService._admit_revision
 
     def activation_with_scopes(self, handler, namespace, operation):
+        if operation == ("project", "status") and getattr(namespace, "project", None) == "perch-stage2":
+            return _status_with_dispatch(self, original(self, handler, namespace, operation))
         if operation != ("project", "activate") or getattr(namespace, "project", None) != "perch-stage2":
             return original(self, handler, namespace, operation)
         result = OwnerService._run_operation(self, handler, namespace, operation)

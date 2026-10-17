@@ -250,6 +250,19 @@ def cmd_stage2_dispatch_check(args):
                           read_json(args.admission, {}) or {}, args.task)
 
 
+def stage2_dispatch_no_failure(status, alias):
+    if (status.get("outcome") != "read" or not isinstance(status.get("workers"), dict)
+            or not isinstance(status.get("automatic_dispatch_failures"), dict)):
+        raise ValueError("staging project status lacks the owner's retained dispatch state")
+    failure = status["automatic_dispatch_failures"].get(alias)
+    if failure is not None:
+        raise ValueError("owner automatic dispatch failed for %s: %s" % (alias, failure))
+
+
+def cmd_stage2_dispatch_no_failure(args):
+    stage2_dispatch_no_failure(read_json(args.status, {}) or {}, args.task)
+
+
 def stage2_task_complete(project_status, owner_status, alias):
     tasks = {row.get("id"): row for row in project_status.get("tasks") or []}
     held = (owner_status.get("native_capacity") or {}).get("active_or_uncertain")
@@ -1597,6 +1610,9 @@ def build_parser():
     p.add_argument("--status", required=True); p.add_argument("--activation", required=True)
     p.add_argument("--admission", required=True); p.add_argument("--task", required=True)
     p.set_defaults(fn=cmd_stage2_dispatch_check)
+    p = sub.add_parser("stage2-dispatch-no-failure")
+    p.add_argument("--status", required=True); p.add_argument("--task", required=True)
+    p.set_defaults(fn=cmd_stage2_dispatch_no_failure)
     p = sub.add_parser("stage2-task-complete")
     p.add_argument("--project-status", required=True); p.add_argument("--owner-status", required=True)
     p.add_argument("--task", required=True); p.set_defaults(fn=cmd_stage2_task_complete)

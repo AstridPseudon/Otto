@@ -237,25 +237,26 @@ stage2_admit_tasks() {
   return 0
 }
 
-# Owner automatic dispatch is the scenario's dispatch path. Its retained
-# worker record is a product read, so this bounded foreground check can give
-# a concrete failure instead of claiming that a successful manager start
-# proved a worker was dispatched.
+# Owner automatic dispatch is the scenario's dispatch path. The admitted host
+# reads project status; the staging owner includes a copy of its retained
+# worker record in that read. Manager status requires a native manager caller.
 stage2_wait_worker() {  # HOST TASK
   local host="$1" task="$2" saw_dispatch="" deadline=$(( $(date +%s) + 180 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if ! stage2_host_client --host "$host" manager --project perch-stage2 status \
+    if ! stage2_host_client --host "$host" project status --project perch-stage2 \
         > "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then
-      echo "owner manager status failed while waiting for $task; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
+      echo "owner project status failed while waiting for $task; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
       return 1
     fi
+    if ! "$PY" -I "$REPORT_PY" stage2-dispatch-no-failure \
+          --status "$RAW/stage2-dispatch-$task.json" --task "$task" \
+          >> "$RAW/stage2-setup-errors.txt" 2>&1; then return 1; fi
     if "$PY" -I "$REPORT_PY" stage2-dispatch-check \
           --status "$RAW/stage2-dispatch-$task.json" --activation "$RAW/stage2-activation.json" \
           --admission "$RAW/stage2-admit-$task.json" --task "$task" \
           > /dev/null 2>&1; then
       saw_dispatch=1
-      stage2_host_client --host "$host" project status --project perch-stage2 \
-        > "$RAW/stage2-dispatch-$task-project.json" 2>> "$RAW/stage2-setup-errors.txt" || return $?
+      cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-dispatch-$task-project.json"
       cold_client service status > "$RAW/stage2-owner-$task.json" 2>> "$RAW/stage2-setup-errors.txt" || return $?
       if [ "$task" = C ] || "$PY" -I "$REPORT_PY" stage2-task-complete \
           --project-status "$RAW/stage2-dispatch-$task-project.json" \
@@ -339,6 +340,13 @@ stage2_cleanup_owner_labs() {
     "$STAGE_ROOT"/perch-canary/*/canon.otto-labs)
       rm -rf "$CANARY_DIR/canon.otto-labs" ;;
   esac
+}
+
+stage2_cleanup_operator_log() {
+  # The three positive operator lines have been copied to raw evidence. The
+  # owner's staging-only log is removed after down, before at-rest inspection.
+  [ -n "$STAGE_ROOT" ] || return 1
+  rm -f "$STAGE_ROOT/home/run/operator-admission.jsonl"
 }
 
 # One save of the stage's document NAME through the owner socket, from REF_FROM's project ref when it is an edit or a
@@ -559,7 +567,12 @@ run_stage() {  # STAGE
   t="$(date +%s)"
   bash "$STAGING" down < /dev/null > "$RAW/staging-down.log" 2>&1 || true
   phase staging-down "" "$t"
-  if [ "$stage" = 2 ] && [ -d "$CANON/.git" ]; then stage2_cleanup_owner_labs; fi
+  if [ "$stage" = 2 ]; then
+    if ! stage2_cleanup_operator_log; then
+      echo "could not remove the staging operator-admission log after down" >> "$RAW/stage2-setup-errors.txt"
+    fi
+    if [ -d "$CANON/.git" ]; then stage2_cleanup_owner_labs; fi
+  fi
   kill -- "-$SAMPLER" 2>/dev/null || true; wait "$SAMPLER" 2>/dev/null || true
   # Its group, a status call it may still be running included, must be gone before the census reads the root.
   for i in $(seq 1 50); do kill -0 -- "-$SAMPLER" 2>/dev/null || break; sleep 0.2; done
