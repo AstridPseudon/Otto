@@ -381,6 +381,50 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
     project_ref = project_record.ref.to_dict()
     task_refs = _task_refs(session, project_record)
     receipt["steps"]["tasks"]["task_refs"] = task_refs
+    # The task list is the registered source of acceptance criteria. Persist
+    # those criteria as required assessment scopes on the exact owner tasks;
+    # stable scope ids and logical request keys make activation replay safe.
+    from herzchen.domains.assessment import AssessmentModule
+    assessment = AssessmentModule(session.store, actor=session.owner.owner_actor)
+    configured = ((registration.get("custom") or {}).get("otto_host_registration") or {}).get("assessment_scope") or {}
+    aliases_by_task: dict[str, list[str]] = {}
+    for pair in configured.get("task_criterion_pairs", ()) if isinstance(configured, Mapping) else ():
+        if isinstance(pair, str) and pair.count("/") == 1:
+            task_alias, criterion_alias = pair.split("/")
+        elif isinstance(pair, Mapping) and set(pair) == {"task", "criterion"}:
+            task_alias, criterion_alias = pair["task"], pair["criterion"]
+        else:
+            raise ValueError("assessment_accounting contains an invalid task/criterion pair")
+        if not all(isinstance(value, str) and value.strip() for value in (task_alias, criterion_alias)):
+            raise ValueError("assessment_accounting contains an empty task/criterion alias")
+        aliases_by_task.setdefault(task_alias, []).append(criterion_alias)
+    required_scopes = []
+    for alias, raw_task_ref in task_refs.items():
+        task_ref = ResourceRef.from_dict(raw_task_ref)
+        task = session.owner.graph.current(task_ref)
+        criterion_text = task.payload.get("acceptance")
+        if not isinstance(criterion_text, str) or not criterion_text.strip():
+            raise ValueError("registered task " + alias + " has no explicit proof criterion")
+        criterion_aliases = aliases_by_task.get(alias) or [alias + "-criterion"]
+        scope_id = "host-activation-" + hashlib.sha256((project.id + ":" + alias).encode()).hexdigest()[:24]
+        criterion_specs = [{
+            # Criterion aliases are policy labels and may already identify a
+            # criterion declared by another owner path. Keep the product
+            # identity unique to this activation scope and resolve policy via
+            # source_alias instead of claiming the alias as a global id.
+            "id": "host-criterion-" + hashlib.sha256(
+                (scope_id + ":" + str(index) + ":" + criterion_alias).encode()).hexdigest()[:24],
+            "source_alias": criterion_alias, "definition": criterion_text.strip()}
+            for index, criterion_alias in enumerate(criterion_aliases)]
+        scope = assessment.declare_scope(
+            ResourceRef(project.authority, "assessment.scope", scope_id),
+            parent_obligation=task.ref, protocol="otto-registered-run", criteria=criterion_specs,
+            review_required=True, designated_approver=registration["manager"]["principal"],
+            authority=project.authority, policy={"required_for_completion": True},
+            logical_request_key=key + ":assessment-scope:" + alias, actor=session.owner.owner_actor)
+        required_scopes.append({"task_ref": task.ref.to_dict(), "scope_ref": scope.ref.to_dict(),
+                                "criterion_refs": [ref.to_dict() for ref in scope.criterion_refs]})
+    receipt["steps"]["assessment_scopes"] = required_scopes
     # 3. Role configuration (the canonical slot -> adapter/model/effort record).
     configuration_ref = _document(session, project_ref, key + ":role-configuration", "role-configuration-" + project.id,
                                   registration["configuration"], "configuration")

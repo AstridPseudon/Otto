@@ -289,6 +289,7 @@ class HostOwnerService:
         parents.extend(ResourceRef.from_dict(self.state["task_refs"][alias])
                        for alias in sorted(requested_tasks))
         aliases: dict[str, dict[str, Any]] = {}
+        registered_aliases: set[str] = set()
         scoped_criteria: dict[tuple[str, str, str], ResourceRef] = {}
         for parent in parents:
             coverage = assessed.coverage(parent)
@@ -317,8 +318,24 @@ class HostOwnerService:
                     if alias is None:
                         continue
                     if alias in aliases and aliases[alias] != ref.to_dict():
-                        raise RuntimeError("assessment criterion alias is ambiguous: " + alias)
-                    aliases[alias] = ref.to_dict()
+                        # A task may already have an owner-declared criterion
+                        # using the readable run alias. Activation creates its
+                        # own uniquely identified criterion from the stored
+                        # proof and marks its alias on the criterion record;
+                        # that registered-run binding is authoritative for
+                        # this canonical run policy.
+                        registered_run_scope = getattr(scope, "protocol", None) == "otto-registered-run"
+                        if registered_run_scope:
+                            aliases[alias] = ref.to_dict()
+                            registered_aliases.add(alias)
+                        elif alias in registered_aliases:
+                            continue
+                        else:
+                            raise RuntimeError("assessment criterion alias is ambiguous: " + alias)
+                    else:
+                        aliases[alias] = ref.to_dict()
+                        if getattr(scope, "protocol", None) == "otto-registered-run":
+                            registered_aliases.add(alias)
 
         # A retained alias may come from a prior canonical hydration for an
         # older criterion whose definition lacks source_alias. Preserve it

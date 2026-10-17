@@ -291,6 +291,23 @@ class HostctlCliTest(HostctlFixture):
         setup = prepared["operating_setup"]
         self.assertEqual(setup["outcome"], "applied", setup)
         self.assertIn("manager", setup["setup"]["roles"])
+        status_code, status = self._ottoctl("project", "status", "--project", "demo-run")
+        self.assertEqual(status_code, 0, status)
+        task_rows = {row["id"]: row for row in status["tasks"]}
+        self.assertEqual({row["dispatch"]["state"] for row in task_rows.values()}, {"admitted"})
+        self.assertTrue(all(row["dispatch"]["reason"] is None for row in task_rows.values()))
+        alias_by_task_id = {ref["id"]: alias for alias, ref in steps["tasks"]["task_refs"].items()}
+        declared = {alias_by_task_id[row["task_ref"]["id"]]: row for row in steps["assessment_scopes"]}
+        self.assertEqual(set(declared), set(task_rows))
+        for task_id, task in task_rows.items():
+            scopes = task["required_assessment_scopes"]
+            self.assertEqual(len(scopes), 1, task_id)
+            self.assertEqual(scopes[0]["ref"], declared[task_id]["scope_ref"])
+            self.assertEqual(scopes[0]["criteria"], declared[task_id]["criterion_refs"])
+            self.assertEqual(scopes[0]["criterion_definitions"][0]["definition"],
+                             "tests pass" if task_id == "T1" else "review passes")
+        self.assertTrue(all(ref.get("revision") for task in task_rows.values()
+                            for scope in task["required_assessment_scopes"] for ref in scope["criteria"]))
 
     def test_register_refuses_duplicate_and_activate_replay_changes_nothing(self):
         self._ready()
@@ -304,6 +321,24 @@ class HostctlCliTest(HostctlFixture):
         self.assertEqual(again["operating_setup"]["outcome"], "replayed")
         _, after = self._ottoctl("project", "status", "--project", "demo-run")
         self.assertEqual(after, before)
+
+    def test_project_task_dispatch_projection_uses_retained_product_records(self):
+        from otto.hostctl.cli import _task_dispatch_status
+
+        observed = {
+            "assignments": [{"ref": {"id": "assignment-1"}}],
+            "dispatches": [{"payload": {"assignment": {"id": "assignment-1"},
+                                           "status": "dispatched"}}],
+            "results": [],
+            "reports": [{"payload": {"assignment": {"id": "assignment-1"},
+                                       "value": {"state": "failed", "reason": "worker launch refused"}}}],
+        }
+        self.assertEqual(_task_dispatch_status(observed),
+                         {"state": "failed", "reason": "worker launch refused"})
+        observed["reports"] = []
+        observed["results"] = [{"payload": {"assignment": {"id": "assignment-1"},
+                                              "value": {"landed": True}}}]
+        self.assertEqual(_task_dispatch_status(observed), {"state": "landed", "reason": None})
 
     # -- 5. project status --------------------------------------------------
     def test_project_status_reads_stored_documents_and_roles(self):
