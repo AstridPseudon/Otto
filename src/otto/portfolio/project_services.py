@@ -78,10 +78,12 @@ class ProjectServices:
         server, state = service.server, service.server.state
         project, assignment = _identity(state["project_ref"]), _identity(state["assignment_ref"])
         project_id = state["project_ref"]["id"]
-        # Retained execution custody fences its own project. A held worker in
-        # another project must not prevent this view from being installed.
-        active = {**self.host._capacity_holds,
-            **{schedule: value["scope"] for schedule, value in self.host._executions.items()}}
+        # Live or queued executions keep the shared activation boundary closed.
+        # Retained capacity holds are project-scoped, so an unrelated hold
+        # does not prevent this view from being installed.
+        active = self.host._capacity_holds
+        if self.host._executions:
+            raise RuntimeError("install a project view only after its execution custody clears")
         if any(scope.get("project") in (None, project_id) for scope in active.values()):
             raise RuntimeError("install a project view only after its execution custody clears")
         first = next(iter(current.values()), None)

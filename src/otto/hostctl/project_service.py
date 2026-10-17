@@ -71,8 +71,12 @@ class ProjectOwnerService(OwnerService):
         return self.shared_host._status_read({'command': 'host-client-operation'}, finite)
 
     def _project_has_custody(self, project_id: Any) -> bool:
-        active = {**self.shared_host._capacity_holds,
-            **{schedule: value['scope'] for schedule, value in self.shared_host._executions.items()}}
+        # Activations wait for every live or queued execution, as they did
+        # before capacity holds gained project-scoped custody. Holds alone
+        # are scoped so an unrelated killed worker does not block activation.
+        if self.shared_host._executions:
+            return True
+        active = self.shared_host._capacity_holds
         if project_id is None:
             return bool(active)  # Unknown target keeps the conservative shared fence.
         # The operator may name an already installed project by its run ID.
