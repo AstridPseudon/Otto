@@ -496,6 +496,7 @@ def _runtime_pack_is_fully_pinned(source_root: Path, pack_root: Path, manifest: 
 def _runtime_source_record(
     pack_id: str, pack_root: Path, manifest_digest: str,
     context: tuple[Path, Path, dict[str, Any]],
+    inventory_root: Path | None = None,
 ) -> ManagedSourceIdentity:
     controller_root, source_root, runtime_manifest = context
     revision, tree_digest, subpath = _runtime_tree(source_root, pack_root, runtime_manifest)
@@ -509,7 +510,7 @@ def _runtime_source_record(
         raise PackProvenanceError("installed authoring module differs from runtime manifest pin")
     repository = "runtime-manifest:" + str(runtime_manifest["source_commit"])
     entries: list[dict[str, str]] = []
-    for candidate in sorted(Path(__file__).resolve().parent.iterdir(), key=lambda item: item.name):
+    for candidate in sorted((inventory_root or Path(__file__).resolve().parent).iterdir(), key=lambda item: item.name):
         candidate_manifest = candidate / "pack.yaml"
         if (candidate.is_symlink() or not candidate.is_dir() or not candidate_manifest.is_file()
                 or not _runtime_pack_is_fully_pinned(source_root, candidate, runtime_manifest)):
@@ -560,12 +561,13 @@ def _runtime_source_record(
 def _native_source_record(
     pack_id: str, pack_root: Path, manifest_digest: str,
     source_state_path: str | Path | None = None,
+    inventory_root: Path | None = None,
 ) -> ManagedSourceIdentity:
     module_pack_root = Path(__file__).resolve().parent
     repo_root = module_pack_root.parents[2]
     runtime_context = _runtime_manifest_context(module_pack_root)
     if runtime_context is not None:
-        return _runtime_source_record(pack_id, pack_root, manifest_digest, runtime_context)
+        return _runtime_source_record(pack_id, pack_root, manifest_digest, runtime_context, inventory_root)
     expected_source_packs = repo_root / "src" / "herzchen" / "packs"
     if module_pack_root != expected_source_packs.resolve():
         raise PackProvenanceError("native pack loader is not running from Herzchen's source tree")
@@ -574,7 +576,7 @@ def _native_source_record(
     repository = _native_repository(repo_root)
     source_entries: list[dict[str, str]] = []
     matching_ids: set[str] = set()
-    for candidate in sorted(module_pack_root.iterdir(), key=lambda item: item.name):
+    for candidate in sorted((inventory_root or module_pack_root).iterdir(), key=lambda item: item.name):
         candidate_manifest = candidate / "pack.yaml"
         if candidate.is_symlink() or not candidate.is_dir() or not candidate_manifest.is_file():
             continue
@@ -802,6 +804,7 @@ def _read_native_managed_pack(
     pack_id: str,
     project_root: str | Path,
     *,
+    native_pack_root: str | Path | None = None,
     source_state_path: str | Path | None = None,
 ) -> ManagedPack:
     module_pack_root = Path(__file__).resolve().parent
@@ -809,8 +812,19 @@ def _read_native_managed_pack(
     supplied_root = Path(project_root).expanduser().resolve()
     if supplied_root != repo_root.resolve():
         raise PackProvenanceError("native managed packs are available only from this Herzchen checkout")
+    raw_scan_root = Path(native_pack_root).expanduser() if native_pack_root is not None else module_pack_root
+    if raw_scan_root.is_symlink():
+        raise PackProvenanceError("native pack root must not be a symlink")
+    scan_root = raw_scan_root.resolve()
+    if scan_root != module_pack_root.resolve():
+        try:
+            scan_root.relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise PackProvenanceError("native pack root must be inside this checkout") from exc
+        if scan_root.is_symlink() or not scan_root.is_dir():
+            raise PackProvenanceError("native pack root must be a regular directory")
     candidates: list[Path] = []
-    for child in sorted(module_pack_root.iterdir(), key=lambda item: item.name):
+    for child in sorted(scan_root.iterdir(), key=lambda item: item.name):
         if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
             continue
         manifest_path = child / "pack.yaml"
@@ -827,7 +841,7 @@ def _read_native_managed_pack(
     pack_root = candidates[0]
     manifest, declarations = _native_manifest(pack_root, pack_id)
     manifest_digest = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
-    source = _native_source_record(pack_id, pack_root, manifest_digest, source_state_path)
+    source = _native_source_record(pack_id, pack_root, manifest_digest, source_state_path, scan_root)
     runtime_context = _runtime_manifest_context(module_pack_root)
     # Re-read admission after provenance calculation so a concurrent edit is
     # refused before any resource bytes enter the returned pack.
@@ -853,7 +867,7 @@ def _read_native_managed_pack(
         ))
     manifest_after_read = hashlib.sha256((pack_root / "pack.yaml").read_bytes()).hexdigest()
     source_after_read = _native_source_record(
-        pack_id, pack_root, manifest_after_read, source_state_path
+        pack_id, pack_root, manifest_after_read, source_state_path, scan_root
     )
     if (source_after_read.source_revision != source.source_revision
             or source_after_read.source_tree_sha256 != source.source_tree_sha256
@@ -910,6 +924,7 @@ def read_managed_pack(
     project_root: str | Path,
     discoverer: PublicPackDiscoverer | None = None,
     loader: PublicPackLoader | None = None,
+    native_pack_root: str | Path | None = None,
     source_state_path: str | Path | None = None,
 ) -> ManagedPack:
     """Read a bundled Herzchen pack, or an injected external managed source."""
@@ -921,7 +936,8 @@ def read_managed_pack(
         )
     if discoverer is None:
         return _read_native_managed_pack(
-            pack_id, project_root, source_state_path=source_state_path
+            pack_id, project_root, native_pack_root=native_pack_root,
+            source_state_path=source_state_path
         )
     discover, load = discoverer, loader
     try:

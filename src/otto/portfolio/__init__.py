@@ -23,8 +23,6 @@ from .operating_brief import (
     OperatingBrief,
     OperatingBriefAuthoringAdapter,
     OperatingBriefError,
-    ROLE_CONTEXT_GUIDANCE,
-    ROLE_OPERATING_CONTRACTS,
     prepare_canonical_operating_brief,
     render_operating_brief,
 )
@@ -110,6 +108,30 @@ from .observability_contract import (
 )
 from .observability_views import ObservabilityViewError, ObservabilityViews, VIEW_PRESETS
 from .events_candidate_proof import CandidateProofError, PROOF_SCHEMA, run_candidate_journey
+
+
+def __getattr__(name):
+    """Provide the former role-table names as views over the versioned pack."""
+    if name not in {"ROLE_OPERATING_CONTRACTS", "ROLE_CONTEXT_GUIDANCE"}:
+        raise AttributeError(name)
+    import json
+    from pathlib import Path
+    from herzchen.packs.authoring import read_managed_pack
+    from otto.hostctl.owner import _managed_source_state_path
+
+    source_root = Path(__file__).resolve().parents[2]
+    project_root = source_root.parent
+    pack = read_managed_pack("otto-roles", project_root=project_root,
+        native_pack_root=source_root / "otto" / "packs",
+        source_state_path=_managed_source_state_path())
+    resource = next(item for item in pack.resources if item.path == "roles.json")
+    content = json.loads(resource.content.decode("utf-8"))
+    if name == "ROLE_CONTEXT_GUIDANCE":
+        return {role: item["guidance"] for role, item in content["roles"].items()}
+    from .operating_brief import _host_role_guidance
+    return {role: item["responsibility"] + (_host_role_guidance(base_text=content["adapter_role_guidance"])
+            if item.get("include_adapter_guidance") else "")
+            for role, item in content["roles"].items()}
 
 __all__ = [
     "ADMISSION_CHOICES",

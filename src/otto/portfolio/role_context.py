@@ -17,11 +17,118 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
-from .operating_brief import BASE_MANAGER_BRIEF, ROLE_OPERATING_CONTRACTS
 from .owner_readers import json_value, owner_ref
+
+
+def _role_pack_locations(module_path: str | Path = __file__) -> tuple[Path, Path]:
+    source_root = Path(module_path).resolve().parents[2]
+    project_root = source_root.parent
+    return project_root, source_root / "otto" / "packs"
+
+
+def _role_pack(configuration: Mapping[str, Any] | None, role: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read the native versioned role pack and enforce an adopted exact pin."""
+    from herzchen.packs.authoring import read_managed_pack
+
+    project_root, pack_root = _role_pack_locations()
+    config_content = configuration.get("content") if isinstance(configuration, Mapping) else None
+    if configuration is not None and not isinstance(config_content, Mapping):
+        raise RoleContextError("adopted role configuration is invalid")
+    selected = config_content.get("role_pack") if isinstance(config_content, Mapping) else None
+    if selected is not None and not isinstance(selected, Mapping):
+        raise RoleContextError("selected role pack pin must be an object")
+    pack_id = selected.get("pack_id", "otto-roles") if isinstance(selected, Mapping) else "otto-roles"
+    try:
+        from otto.hostctl.owner import _managed_source_state_path
+        pack = read_managed_pack(pack_id, project_root=project_root, native_pack_root=pack_root,
+                                 source_state_path=_managed_source_state_path())
+    except Exception as exc:
+        raise RoleContextError("selected role pack is unavailable or changed") from exc
+    path = selected.get("resource_path", "roles.json") if isinstance(selected, Mapping) else "roles.json"
+    resource = next((item for item in pack.resources if item.path == path and item.kind == "role_guidance"), None)
+    if resource is None:
+        raise RoleContextError("selected role pack resource is missing")
+    actual_pin = {"pack_id": pack.pack_id, "pack_version": pack.version,
+                  "source_revision": pack.source.source_revision,
+                  "source_inventory_identity": pack.source.source_inventory_identity,
+                  "resource_path": resource.path, "resource_digest": resource.source_digest}
+    if isinstance(selected, Mapping) and dict(selected) != actual_pin:
+        raise RoleContextError("selected role pack pin is stale or inconsistent")
+    try:
+        content = json.loads(resource.content.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise RoleContextError("selected role pack resource is invalid") from exc
+    if not isinstance(content, Mapping) or content.get("schema") != "otto.role-pack.v1":
+        raise RoleContextError("selected role pack has an unsupported schema")
+    adapter_guidance = content.get("adapter_role_guidance")
+    if not isinstance(adapter_guidance, str) or not adapter_guidance.strip():
+        raise RoleContextError("selected role pack has no adapter role guidance")
+    role_value = content.get("roles", {}).get(role) if isinstance(content.get("roles"), Mapping) else None
+    guidance = role_value.get("guidance") if isinstance(role_value, Mapping) else None
+    if (not isinstance(role_value, Mapping) or not isinstance(role_value.get("responsibility"), str)
+            or not role_value["responsibility"].strip() or not isinstance(guidance, Mapping) or not guidance
+            or any(not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip()
+                   for key, value in guidance.items())
+            or not isinstance(role_value.get("tools", []), list)
+            or any(not isinstance(item, str) or not item.strip() for item in role_value.get("tools", []))):
+        raise RoleContextError("selected role pack has no valid role " + role)
+    if (not isinstance(role_value.get("tool_entrypoint"), str) or not role_value["tool_entrypoint"].strip()
+            or not isinstance(role_value.get("manager_actions", []), list)
+            or any(not isinstance(item, str) or not item.strip() for item in role_value.get("manager_actions", []))):
+        raise RoleContextError("selected role pack has invalid tools for " + role)
+    base_manager = content.get("base_manager_brief")
+    if (not isinstance(base_manager, Mapping)
+            or base_manager.get("schema") != "otto.base-manager-brief.v1"
+            or not isinstance(base_manager.get("mandate"), str) or not base_manager["mandate"].strip()
+            or not isinstance(base_manager.get("constraints"), list) or not base_manager["constraints"]
+            or any(not isinstance(item, str) or not item.strip() for item in base_manager["constraints"])):
+        raise RoleContextError("selected role pack has an invalid base manager brief")
+    return {**dict(role_value), "pin": actual_pin, "base_manager_brief": dict(base_manager),
+            "adapter_role_guidance": adapter_guidance}, {"pack": pack, "resource": resource}
+
+
+def _compose_role(role_data: Mapping[str, Any], configuration: Mapping[str, Any] | None,
+                  role: str) -> dict[str, Any]:
+    """Apply only an already adopted configuration's explicit role overrides."""
+    result = dict(role_data)
+    if configuration is None:
+        return result
+    content = configuration.get("content")
+    if not isinstance(content, Mapping):
+        raise RoleContextError("adopted role configuration is invalid")
+    policies = content.get("role_policies", {})
+    tools = content.get("tool_entrypoints", {})
+    if not isinstance(policies, Mapping) or not isinstance(tools, Mapping):
+        raise RoleContextError("adopted role overrides must be objects")
+    policy = policies.get(role)
+    tool = tools.get(role)
+    if policy is not None:
+        if not isinstance(policy, str) or not policy.strip():
+            raise RoleContextError("adopted role policy must be non-blank text")
+        result["selected_policy"] = policy
+        result["selected_policy_source"] = configuration.get("ref")
+    if tool is not None:
+        if not isinstance(tool, str) or not tool.strip():
+            raise RoleContextError("adopted role tool entrypoint must be non-blank text")
+        result["tool_entrypoint"] = tool
+        result["tool_source"] = configuration.get("ref")
+    return result
+
+
+def _effective_role_data(canonical: Mapping[str, Any],
+                         configuration: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    if configuration is None:
+        configuration = selected_configuration(canonical.get("supporting_context", []))
+    role_data, _ = _role_pack(configuration, canonical.get("role"))
+    role_data = _compose_role(role_data, configuration, canonical.get("role"))
+    if role_data.get("include_adapter_guidance"):
+        from .operating_brief import _host_role_guidance
+        role_data["responsibility"] += _host_role_guidance(base_text=role_data["adapter_role_guidance"])
+    return role_data
 
 
 class RoleContextError(ValueError):
@@ -156,7 +263,8 @@ def _project_set(project: Mapping[str, Any], project_ref: Mapping[str, Any]) -> 
 
 
 def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoint: str,
-                                 identity_commands: tuple[str, ...] = ("effective-context", "whoami")) -> dict[str, Any]:
+                                 identity_commands: tuple[str, ...] = ("effective-context", "whoami"),
+                                 role_data: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Project durable role context while retaining only canonical pins and bounded state."""
     render = canonical.get("render")
     if not isinstance(render, Mapping):
@@ -173,6 +281,8 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
     project_payload = project.get("payload") if isinstance(project.get("payload"), Mapping) else {}
     task_payload = task.get("payload") if isinstance(task, Mapping) and isinstance(task.get("payload"), Mapping) else {}
     continuation = brief.get("continuation") if isinstance(brief.get("continuation"), Mapping) else {}
+    if role_data is None:
+        role_data = _effective_role_data(canonical)
     next_actor = continuation.get("next_actor", continuation.get("actor"))
     if next_actor is None:
         next_actor = task_payload.get("next_actor", project_payload.get("next_actor"))
@@ -207,7 +317,7 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
         "directive_revisions": directive_revisions,
         "resource_revisions": resources,
         "remit": {"role": canonical.get("role"), "mandate": brief.get("mandate"),
-                  "responsibility": ROLE_OPERATING_CONTRACTS.get(canonical.get("role"))},
+                  "responsibility": role_data["responsibility"]},
         "selected_project_set": _project_set(project, project["ref"]),
         "current_outcomes": {
             "project": {"ref": project["ref"], "lifecycle": project.get("lifecycle"),
@@ -221,7 +331,7 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
         "available_commands": available_commands,
     }
     if canonical.get("role") == "manager":
-        result["manager_actions"] = ["whoami", "status", "show", "save", "answer", "route", "report"]
+        result["manager_actions"] = list(role_data["manager_actions"])
         manager_notes = {
             "priorities": brief.get("priorities", []),
             "operational_constraints": brief.get("operational_constraints", []),
@@ -234,10 +344,10 @@ def effective_context_projection(canonical: Mapping[str, Any], *, tool_entrypoin
             "assignment_ref": snapshot.get("assignment_ref"),
             "generation": snapshot.get("generation"),
             "base_manager_brief": {
-                **BASE_MANAGER_BRIEF,
-                "content_sha256": hashlib.sha256(json.dumps(BASE_MANAGER_BRIEF, sort_keys=True,
+                **role_data["base_manager_brief"],
+                "content_sha256": hashlib.sha256(json.dumps(role_data["base_manager_brief"], sort_keys=True,
                     separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
-                "source": "Otto host-neutral manager brief",
+                "source": "versioned Otto role pack",
             },
             "project_brief": {
                 "mandate": brief.get("mandate"),
@@ -285,13 +395,13 @@ def same_supervisor_authority_binding(declared: Any, current: Any) -> bool:
 
 
 def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    from .operating_brief import ROLE_CONTEXT_GUIDANCE, ROLE_OPERATING_CONTRACTS
     render = canonical["render"]
     state, snapshot = render["project_state"], render["snapshot"]
     project = state["project"]
     task = state.get("task")
     brief = render["brief"]
     configuration = selected_configuration(canonical.get("supporting_context", []))
+    selected_role = _effective_role_data(canonical, configuration)
     tools = configuration["content"].get("tool_entrypoints", {}) if configuration else {}
     if not isinstance(tools, Mapping):
         raise RoleContextError("selected configuration tool_entrypoints must be an object")
@@ -304,11 +414,14 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
     policy = policies.get(canonical["role"])
     if policy is not None and (not isinstance(policy, str) or not policy.strip()):
         raise RoleContextError("selected role policy must be non-blank text")
-    tool_entrypoint = entrypoint or "python -m otto.portfolio.cli help --format text"
-    effective_context = effective_context_projection(canonical, tool_entrypoint=tool_entrypoint)
+    tool_entrypoint = entrypoint or selected_role["tool_entrypoint"]
+    responsibility = selected_role["responsibility"]
+    effective_context = effective_context_projection(canonical, tool_entrypoint=tool_entrypoint,
+                                                     role_data=selected_role)
+    role_guidance = selected_role["guidance"]
     result = {"schema": "otto.role-introduction.v1", "role": canonical["role"],
             "principal": snapshot["principal"], "assignment_ref": snapshot["assignment_ref"],
-            "generation": snapshot["generation"], "responsibility": ROLE_OPERATING_CONTRACTS[canonical["role"]],
+            "generation": snapshot["generation"], "responsibility": responsibility,
             "responsibility_ref": snapshot.get("responsibility_ref"),
             "launch_context": {"informational": True, "credential": False,
                 "principal": snapshot["principal"], "role": canonical["role"],
@@ -318,8 +431,10 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
                 "direction_refs": [item["effective_ref"] for item in canonical.get("direction_context", [])],
                 "identity_read": "effective-context (requires a trusted per-request host binding)"},
             "selected_policy": policy,
-            "selected_policy_source": configuration["ref"] if policy else None,
-            "operating_guidance": dict(ROLE_CONTEXT_GUIDANCE[canonical["role"]]),
+            "selected_policy_source": selected_role.get("selected_policy_source"),
+            "operating_guidance": dict(role_guidance),
+            "role_pack": selected_role["pin"],
+            "available_tools": list(selected_role.get("tools", [])),
             "goal": {"ref": project["ref"], "title": project["payload"].get("title"),
                      "outcome": project["payload"].get("outcome")},
             "current_task": None if task is None else {"ref": task["ref"],
@@ -338,7 +453,7 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             "links": brief["links"], "base_resource": canonical["base_resource"]["ref"],
             "supporting_refs": [item["ref"] for item in canonical.get("supporting_context", [])],
             "tool_entrypoint": tool_entrypoint,
-            "tool_entrypoint_source": configuration["ref"] if entrypoint else "installed Otto portfolio help",
+            "tool_entrypoint_source": (configuration["ref"] if entrypoint else selected_role["pin"]),
             "effective_context": effective_context,
             "source": "canonical owner records and adopted role resources", "dispatch": False,
             "dispatch_scope": "This informational context projection dispatches nothing; command authority is checked separately."}
@@ -349,7 +464,7 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
         standard_guide = config.get("standard_manager_guide")
         enrolled = isinstance(project.get("payload", {}).get("metadata", {}).get("otto_orchestrator"), Mapping)
         if standard_guide is None and enrolled:
-            standard_guide = {"ref": canonical["base_resource"]["ref"], "content_sha256": canonical["base_resource"]["content_sha256"], "standard_contract_sha256": hashlib.sha256(json.dumps({"responsibility": ROLE_OPERATING_CONTRACTS["manager"], "guidance": ROLE_CONTEXT_GUIDANCE["manager"]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "source": "current adopted BASE and installed canonical manager contract"}
+            standard_guide = {"ref": canonical["base_resource"]["ref"], "content_sha256": canonical["base_resource"]["content_sha256"], "standard_contract_sha256": hashlib.sha256(json.dumps({"responsibility": responsibility, "guidance": role_guidance}, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "source": "current adopted BASE and installed canonical manager contract"}
         if config.get("standard_manager_guide") is not None and (not isinstance(standard_guide, Mapping) or not any(
                 item.get("ref") == standard_guide.get("ref")
                 and item.get("content_sha256") == standard_guide.get("content_sha256")
@@ -380,7 +495,7 @@ def role_introduction(canonical: Mapping[str, Any], *, operational_supervisor: M
             "base_resource": canonical["base_resource"]["ref"],
             "project_and_custom_context_refs": result["supporting_refs"],
             "mandate_ref": snapshot["mandate_ref"], "tool_entrypoint": tool_entrypoint,
-            "instructions": ROLE_CONTEXT_GUIDANCE["manager"]["help"],
+            "instructions": role_guidance["help"],
             "effective_manager_brief": effective_context.get("effective_manager_brief"),
             "precedence": "Current authenticated authority and adopted directions govern; standard manager duties and selected pack policy accompany the custom mandate. Information pins grant no new authority.",
         }

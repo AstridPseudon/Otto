@@ -5,9 +5,14 @@ owner database or installed service is changed by this suite.
 """
 from dataclasses import replace
 import hashlib
+import importlib.util
 import json
 import re
+import shutil
+import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,8 +22,189 @@ from herzchen.contracts import ResourceRef, TransactionContext, canonical_json
 from herzchen.kernel.limits import LimitService
 from otto.portfolio.operating_setup import evaluate_setup
 from tests import test_execution_application as owner_fixture
+from otto.portfolio.role_context import _compose_role, selected_configuration
 
 
+class RolePackSelectorTests(unittest.TestCase):
+    def adopted_configuration(self, content):
+        return selected_configuration([{"ref": {"authority": "local", "kind": "dat.content.document",
+            "id": "cfg", "revision": "rev-1"}, "content": content}])
+
+    def native_role_pin(self):
+        from herzchen.packs.authoring import read_managed_pack
+        from otto.hostctl.owner import _managed_source_state_path
+        root = Path(__file__).resolve().parents[4]
+        pack = read_managed_pack("otto-roles", project_root=root,
+            native_pack_root=Path(__file__).resolve().parents[2] / "packs",
+            source_state_path=_managed_source_state_path())
+        resource = next(item for item in pack.resources if item.path == "roles.json")
+        return {"pack_id": pack.pack_id, "pack_version": pack.version,
+            "source_revision": pack.source.source_revision,
+            "source_inventory_identity": pack.source.source_inventory_identity,
+            "resource_path": resource.path, "resource_digest": resource.source_digest}
+
+    def test_role_introduction_uses_adopted_override_and_pack_brief(self):
+        from otto.portfolio.role_context import effective_context_projection, role_introduction
+        config_ref = {"authority": "local", "kind": "dat.content.document", "id": "cfg", "revision": "rev-1"}
+        configuration = self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+            "role_bindings": {}, "role_pack": self.native_role_pin(),
+            "role_policies": {"manager": "Adopted project policy"},
+            "tool_entrypoints": {"manager": "adopted-project-tool"}})
+        configuration["ref"] = config_ref
+        rogue = {"ref": {"authority": "local", "kind": "dat.content.document", "id": "rogue", "revision": "rev-1"},
+            "content": {"role_policies": {"manager": "unadopted project payload policy"},
+                        "tool_entrypoints": {"manager": "unadopted-project-tool"}}}
+        project_ref = {"authority": "local", "kind": "work.project", "id": "project", "revision": "rev-1"}
+        canonical = {"role": "manager", "supporting_context": [configuration, rogue], "direction_context": [],
+            "base_resource": {"ref": {"authority": "local", "kind": "dat.content.document", "id": "base", "revision": "rev-1"},
+                              "content_sha256": "d" * 64},
+            "render": {"project_state": {"project": {"ref": project_ref,
+                "payload": {"title": "Project", "metadata": {}}}, "task": None},
+                "snapshot": {"principal": "manager", "assignment_ref": {"id": "assignment"},
+                    "generation": 1, "responsibility_ref": {"id": "responsibility"},
+                    "mandate_ref": {"id": "mandate"}, "native_session": "manager-session"},
+                "brief": {"mandate": "Deliver project", "user_constraints": [],
+                    "operational_constraints": [], "links": []}}}
+        with patch.dict("os.environ", {"OTTO_TOOL_ENTRYPOINT": "/installed/ottoctl"}):
+            introduction = role_introduction(canonical)
+            direct_context = effective_context_projection(canonical, tool_entrypoint="adopted-project-tool")
+        self.assertEqual(introduction["selected_policy"], "Adopted project policy")
+        self.assertEqual(introduction["selected_policy_source"], config_ref)
+        self.assertEqual(introduction["tool_entrypoint"], "adopted-project-tool")
+        self.assertEqual(introduction["tool_entrypoint_source"], config_ref)
+        self.assertIn("run-worker --task TASK", introduction["responsibility"])
+        self.assertIn("Installed tool entrypoint: `/installed/ottoctl`.", introduction["responsibility"])
+        self.assertEqual(introduction["effective_context"]["remit"]["responsibility"],
+                         introduction["responsibility"])
+        self.assertEqual(direct_context["remit"]["responsibility"], introduction["responsibility"])
+        self.assertEqual(introduction["role_pack"]["pack_id"], "otto-roles")
+        self.assertEqual(introduction["effective_context"]["effective_manager_brief"]["base_manager_brief"]["schema"],
+                         "otto.base-manager-brief.v1")
+
+    def test_runtime_role_pack_root_is_inside_runtime_source(self):
+        from otto.portfolio.role_context import _role_pack_locations
+        project_root, pack_root = _role_pack_locations("/controller/runtime-source/otto/portfolio/role_context.py")
+        self.assertEqual(project_root, Path("/controller"))
+        self.assertEqual(pack_root, Path("/controller/runtime-source/otto/packs"))
+
+    def test_installed_runtime_loads_role_pack_from_controller_root(self):
+        from herzchen.packs.authoring import read_managed_pack as source_loader
+        checkout = Path(__file__).resolve().parents[4]
+        source_pack = source_loader("otto-roles", project_root=checkout,
+            native_pack_root=checkout / "src" / "otto" / "packs")
+        with tempfile.TemporaryDirectory() as temporary:
+            controller = Path(temporary)
+            source_root = controller / "runtime-source"
+            authoring_path = source_root / "herzchen" / "packs" / "authoring.py"
+            role_pack_root = source_root / "otto" / "packs" / "otto-roles"
+            authoring_path.parent.mkdir(parents=True)
+            role_pack_root.mkdir(parents=True)
+            shutil.copyfile(Path(source_loader.__code__.co_filename), authoring_path)
+            for resource in source_pack.resources:
+                target = role_pack_root / resource.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(resource.content)
+            shutil.copyfile(checkout / "src" / "otto" / "packs" / "otto-roles" / "pack.yaml",
+                            role_pack_root / "pack.yaml")
+            file_pins = {}
+            for path in source_root.rglob("*"):
+                if path.is_file():
+                    relative = path.relative_to(source_root).as_posix()
+                    file_pins[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+            (controller / "runtime-manifest.json").write_text(json.dumps({
+                "source_commit": "a" * 40, "files": file_pins}, sort_keys=True), encoding="utf-8")
+            module_name = "otto_runtime_authoring_test"
+            spec = importlib.util.spec_from_file_location(module_name, authoring_path)
+            runtime_authoring = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = runtime_authoring
+            try:
+                spec.loader.exec_module(runtime_authoring)
+                loaded = runtime_authoring.read_managed_pack("otto-roles", project_root=controller,
+                    native_pack_root=source_root / "otto" / "packs")
+            finally:
+                sys.modules.pop(module_name, None)
+            self.assertEqual(loaded.pack_id, "otto-roles")
+            self.assertEqual(loaded.resources[0].source_digest, source_pack.resources[0].source_digest)
+
+    def test_adopted_override_composes_and_unadopted_override_is_ignored(self):
+        packed = {"responsibility": "pack baseline", "guidance": {"context": "pack context"},
+                  "tools": ["status"]}
+        adopted = self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+            "role_bindings": {}, "role_policies": {"manager": "project policy"},
+            "tool_entrypoints": {"manager": "project tool"}})
+        composed = _compose_role(packed, adopted, "manager")
+        self.assertEqual(composed["responsibility"], "pack baseline")
+        self.assertEqual(composed["selected_policy"], "project policy")
+        self.assertEqual(composed["tool_entrypoint"], "project tool")
+        self.assertEqual(composed["selected_policy_source"], adopted["ref"])
+        self.assertEqual(composed["tool_source"], adopted["ref"])
+        unadopted = selected_configuration([{"ref": {"id": "loose"}, "content": {
+            "role_policies": {"manager": "unadopted policy"},
+            "tool_entrypoints": {"manager": "unadopted tool"}}}])
+        self.assertIsNone(unadopted)
+        self.assertEqual(_compose_role(packed, unadopted, "manager"), packed)
+
+    def test_selected_role_pack_requires_exact_source_and_resource_pin(self):
+        from otto.portfolio.role_context import _role_pack
+        valid_content = {"schema": "otto.role-pack.v1", "adapter_role_guidance": "adapter guidance",
+            "base_manager_brief": {
+            "schema": "otto.base-manager-brief.v1", "mandate": "manager mandate", "constraints": ["bounded"]},
+            "roles": {"manager": {"responsibility": "pack", "guidance": {"help": "help"}, "tools": [],
+                                    "tool_entrypoint": "otto help", "manager_actions": []}}}
+        resource = SimpleNamespace(path="roles.json", kind="role_guidance", source_digest="a" * 64,
+                                   content=json.dumps(valid_content).encode())
+        source = SimpleNamespace(source_revision="b" * 40, source_inventory_identity="d" * 64)
+        pack = SimpleNamespace(pack_id="otto-roles", source=source, resources=(resource,))
+        pack.version = "1.0.0"
+        with patch("herzchen.packs.authoring.read_managed_pack", return_value=pack):
+            selected, _ = _role_pack(self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+                "role_bindings": {}, "role_pack": {
+                "pack_id": "otto-roles", "pack_version": "1.0.0", "source_revision": "b" * 40,
+                "source_inventory_identity": "d" * 64,
+                "resource_path": "roles.json", "resource_digest": "a" * 64}}), "manager")
+            self.assertEqual(selected["pin"]["resource_digest"], "a" * 64)
+            with self.assertRaisesRegex(ValueError, "stale or inconsistent"):
+                _role_pack(self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+                    "role_bindings": {}, "role_pack": {
+                    "pack_id": "otto-roles", "pack_version": "1.0.0", "source_revision": "old",
+                    "source_inventory_identity": "d" * 64,
+                    "resource_path": "roles.json", "resource_digest": "a" * 64}}), "manager")
+            with self.assertRaisesRegex(ValueError, "stale or inconsistent"):
+                _role_pack(self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+                    "role_bindings": {}, "role_pack": {
+                    "pack_id": "otto-roles", "pack_version": "1.0.0", "source_revision": "b" * 40,
+                    "source_inventory_identity": "d" * 64,
+                    "resource_path": "roles.json", "resource_digest": "c" * 64}}), "manager")
+            invalid_contents = []
+            malformed_guidance = json.loads(json.dumps(valid_content))
+            malformed_guidance["roles"]["manager"]["guidance"] = {"help": None}
+            invalid_contents.append(malformed_guidance)
+            malformed_brief = json.loads(json.dumps(valid_content))
+            malformed_brief["base_manager_brief"]["constraints"] = "not-a-list"
+            invalid_contents.append(malformed_brief)
+            selected_config = self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+                "role_bindings": {}, "role_pack": {"pack_id": "otto-roles", "pack_version": "1.0.0",
+                "source_revision": "b" * 40, "source_inventory_identity": "d" * 64,
+                "resource_path": "roles.json", "resource_digest": "a" * 64}})
+            for malformed in invalid_contents:
+                resource.content = json.dumps(malformed).encode()
+                with self.assertRaises(ValueError):
+                    _role_pack(selected_config, "manager")
+        with patch("herzchen.packs.authoring.read_managed_pack", side_effect=ValueError("missing")):
+            with self.assertRaisesRegex(ValueError, "unavailable or changed"):
+                _role_pack(self.adopted_configuration({"schema": "otto.role-configuration.v1", "roles": {},
+                    "role_bindings": {}, "role_pack": {"pack_id": "missing"}}), "manager")
+
+    def test_operating_brief_guidance_compatibility_reads_role_pack_and_appends_command(self):
+        from otto.portfolio import operating_brief
+        base = operating_brief._CODEX_ADAPTER_ROLE_BASE_GUIDANCE
+        self.assertEqual(operating_brief._host_role_guidance({}), base)
+        self.assertIn("`/installed/ottoctl`", operating_brief._host_role_guidance(
+            {"OTTO_TOOL_ENTRYPOINT": "/installed/ottoctl"}))
+        with patch.dict("os.environ", {"OTTO_TOOL_ENTRYPOINT": "/installed/package-ottoctl"}):
+            from otto.portfolio import ROLE_OPERATING_CONTRACTS
+            self.assertIn("Installed tool entrypoint: `/installed/package-ottoctl`.",
+                          ROLE_OPERATING_CONTRACTS["manager"])
 class RoleContextTests(unittest.TestCase):
     def setUp(self):
         self.f = owner_fixture.ExecutionApplicationTests()
@@ -176,6 +362,7 @@ class RoleContextTests(unittest.TestCase):
         prepared = f.app.prepare_operating_setup(project_ref=f.project.ref.to_dict(), setup=setup, request_key="sparse-setup")
         self.assertEqual(prepared["outcome"], "prepared", prepared)
         self.assertEqual(f.provider.calls, [])
+
         intro = prepared["readiness"]["introductions"]["manager"]
         self.assertEqual(intro["current_task"]["ref"], f.task.ref.to_dict())
         self.assertEqual(intro["goal"]["title"], "Useful project")
@@ -201,6 +388,30 @@ class RoleContextTests(unittest.TestCase):
         self.assertEqual(operating["advisor_policy"], setup["advisor_policy"])
         self.assertFalse(operating["operational_help"]["ready"])
         self.assertEqual(operating["roles"]["manager"]["conversation_id"], "manager-session")
+
+
+    def test_selected_role_pack_is_pinned_and_adopted_override_wins(self):
+        """The canonical configuration adopts both pack bytes and project override."""
+        selected = RolePackSelectorTests().native_role_pin()
+        configuration = dict(self.configuration(), role_pack=selected,
+                              role_policies={"manager": "Adopted project override wins."},
+                              tool_entrypoints={"manager": "project-manager-tool"})
+        source = self.document("run_configuration", configuration)
+        _manager, schedule, _request = self.role(sources=[source])
+        self.f.app.start(schedule_id=schedule)
+        introduction = self.packet()["operating_core"]["introduction"]
+        self.assertEqual(introduction["selected_policy"], "Adopted project override wins.")
+        self.assertEqual(introduction["tool_entrypoint"], "project-manager-tool")
+        self.assertEqual(introduction["role_pack"]["source_revision"], selected["source_revision"])
+
+    def test_unadopted_role_pack_or_project_override_is_refused(self):
+        selected = RolePackSelectorTests().native_role_pin()
+        configuration = dict(self.configuration(), role_pack={**selected, "source_revision": "stale-source"})
+        source = self.document("run_configuration", configuration)
+        _manager, schedule, _request = self.role(sources=[source])
+        result = self.f.app.start(schedule_id=schedule)
+        self.assertNotEqual(result["outcome"], "succeeded")
+        self.assertEqual(self.f.provider.calls, [])
 
     def test_explicit_overrides_retain_configuration_and_provenance(self):
         config = self.configuration()

@@ -22,130 +22,45 @@ SNAPSHOT_SCHEMA_REVISION = "otto.operating-snapshot.v1"
 _ROLES = frozenset({"orchestrator", "manager", "worker", "project_advisor"})
 _USER_FIELDS = ("mandate", "user_constraints")
 _AGENT_FIELDS = ("priorities", "operational_constraints", "continuation", "links")
-BASE_MANAGER_BRIEF = {
-    "schema": "otto.base-manager-brief.v1",
-    "mandate": (
-        "Own delivery of this project against its adopted brief. Refresh canonical identity and project state "
-        "before acting, delegate bounded work through the authenticated manager route, and judge returned evidence. "
-        "Save concise progress and next steps. Escalate consequential decisions the current mandate cannot settle."
-    ),
-    "constraints": [
-        "Stay within this project's assignment, adopted resources, and allowance.",
-        "Reconcile an exact retained effect before retrying an unknown outcome.",
-        "Wake for judgment events; do not poll for routine progress.",
-    ],
-}
-
-_CODEX_ADAPTER_ROLE_BASE_GUIDANCE = (
-    " Use the exact tool_entrypoint emitted by the current role introduction and the authenticated owner route "
-    "for project actions. Delegate with `run-worker --task TASK` through that route. Retain the request, start, and occurrence handles; reconcile exact retained effects "
-    "after a lost reply before retrying. Stay within the current project, assignment, adopted resources, and "
-    "allowance. Return or yield when the current turn must settle before a continuation."
-)
 
 
-def _host_role_guidance(environ: Optional[Mapping[str, str]] = None) -> str:
-    """Return concise shared guidance with an optional installed entrypoint."""
+def _role_pack_content() -> Mapping[str, Any]:
+    """Read role guidance bytes through the canonical managed-pack loader."""
+    from pathlib import Path
+    from herzchen.packs.authoring import read_managed_pack
+    from otto.hostctl.owner import _managed_source_state_path
+
+    source_root = Path(__file__).resolve().parents[2]
+    project_root = source_root.parent
+    pack = read_managed_pack("otto-roles", project_root=project_root,
+        native_pack_root=source_root / "otto" / "packs",
+        source_state_path=_managed_source_state_path())
+    resource = next((item for item in pack.resources if item.path == "roles.json"), None)
+    if resource is None:
+        raise OperatingBriefError("Otto role pack has no roles.json resource")
+    value = json.loads(resource.content.decode("utf-8"))
+    if not isinstance(value, Mapping) or value.get("schema") != "otto.role-pack.v1":
+        raise OperatingBriefError("Otto role pack has an unsupported role schema")
+    return value
+
+
+def _host_role_guidance(environ: Optional[Mapping[str, str]] = None, *, base_text: str | None = None) -> str:
+    """Return the pack-backed adapter guidance and optional installed command."""
     import os
     env = os.environ if environ is None else environ
+    text = base_text if base_text is not None else _role_pack_content().get("adapter_role_guidance")
+    if not isinstance(text, str) or not text.strip():
+        raise OperatingBriefError("Otto role pack has no adapter role guidance")
     entrypoint = env.get("OTTO_TOOL_ENTRYPOINT")
-    text = _CODEX_ADAPTER_ROLE_BASE_GUIDANCE
     if entrypoint and entrypoint.strip():
         text += " Installed tool entrypoint: `" + entrypoint.strip() + "`."
     return text
 
 
-_ADAPTER_ROLE_BASE_GUIDANCE = _host_role_guidance()
-
-ROLE_OPERATING_CONTRACTS = {
-    "orchestrator": (
-        "Own human-facing portfolio coordination: delegate concrete projects to their assigned managers, "
-        "resolve cross-project dependencies and decisions that need the user, and verify accepted outcomes "
-        "from canonical owner records. Managers own execution; the host owns installation, transport and "
-        "any host-only action. Refresh state before planning, keep user mandate and constraints intact, "
-        "and route mandate changes through the owner. Operational help is for a blocked route; advice is "
-        "for project judgment and never becomes an owner prohibition. Inspect the exact current destination "
-        "and retained receipt before continuing, replacing a role or reconciling an unknown effect."
-        + _ADAPTER_ROLE_BASE_GUIDANCE
-    ),
-    "manager": (
-        "Coordinate and independently advance assigned ready tasks through the supported worker operations, "
-        "result review, acceptance evidence, and owner closeout under the adopted project policy. Follow its "
-        "delegation and implementation responsibilities. When a supported route is blocked, request "
-        "operational help and continue independent work. Ask for "
-        "advice only for project judgment when the adopted advisor policy enables it. Refresh the canonical "
-        "project, task, assignment and adopted resource context before acting; a continuation or replacement "
-        "uses the current bindings. Delivery and resolution are separate, and an unknown outcome is never safe "
-        "to retry without reconciling the exact retained effect. For criteria that explicitly require installed "
-        "behavior, verify the current adopted source/runtime and preflight evidence before review or finish. "
-        "If only host adoption, measurement, or setup is missing, request operational help with the evidence "
-        "and return condition; an actual candidate defect remains an ordinary REWORK finding. "
-        "Reconcile reviewer correction proposals against current evidence: accept, merge, defer with a revisit "
-        "condition, or reject with a reason. Use task-list-author for pending canonical tasks and alias readback, "
-        "then existing normal/XHARD run-worker for a dependency-ready task. Pending, unassigned, not-evaluated, "
-        "empty blocker defaults, and metadata-only dispatch:false are not admission decisions or a separate "
-        "preassignment requirement. Call run-worker once with the original stable key and existing budget; the "
-        "canonical owner operation performs assignment and admission checks. Preserve the exact returned hold "
-        "if a real dependency, scope, custody, configuration or allowance guard fails; do not widen authority. "
-        "Task authoring grants no acceptance, execution or additional allowance; retain completed findings and prior debits."
-        + _ADAPTER_ROLE_BASE_GUIDANCE
-    ),
-    "worker": (
-        "Execute only the prescribed task within its current project, assignment, generation, resources, and "
-        "acceptance scope. Refresh owner state before acting; return result, verification, changed artifacts, "
-        "native identity, and unresolved responsibility through the manager's canonical result path. Do not "
-        "accept your own work, expand scope or budget, create unassigned work, or message the orchestrator "
-        "routinely. Propose necessary changes to the manager and wait when no authorized task action remains."
-        + _ADAPTER_ROLE_BASE_GUIDANCE
-    ),
-    "project_advisor": (
-        "Advise one assigned manager on that manager's project using current goals, acceptance criteria, "
-        "messages, files, and prior conversation. Resume the same conversation, inspect actual evidence, "
-        "and stay quiet when progress is healthy or unchanged. Advice is a bounded suggestion to the manager, "
-        "not operational help, dispatch authority, or an owner prohibition. Choose one evidence-backed, "
-        "shortest in-mandate direction; name requirement provenance and expected proof, and revise earlier "
-        "advice when evidence requires it. Escalate only owner-only, cross-project, authority-gap, or uncertain "
-        "effects, and reject stale pairing state before replying."
-    ),
-}
-
-
-# Point-of-use guidance is delivered with every role introduction.  These are
-# interaction rules, not a second authority or routing list; current
-# assignments, conversations, schedules and run bindings remain canonical.
-ROLE_CONTEXT_GUIDANCE = {
-    "orchestrator": {
-        "help": "Receive operational-help requests for blocked work; host transport and installation remain host-only actions. Own the concrete installation or live-evidence handoff, return an authenticated response through the existing issue route, and verify application by the same manager. Preserve the original candidate, judgments and budgets; source tests alone do not prove installation or live behavior.",
-        "context": "Use the current project, assignment, generation, conversation and retained delivery receipt.",
-        "continuation": "Continue only after the exact response is delivered and the current owner state is refreshed.",
-        "recovery": "Missing destination, role replacement or unknown send requires owner-side reconciliation before retry.",
-        "recovery_workflow": "Consult src/otto/portfolio/skills/recovery/SKILL.md for bounded find, inspect, resume, authorized reassignment and reminder continuity.",
-    },
-    "manager": {
-        "help": "Advance ready work. Route operational blockers through request-help when discovered; retain the issue and delivery receipt. A final text or local file is not submission. On tool failure preserve its exact handle and use the supported recovery path; never claim delivery without confirmation. Apply an authenticated reply, then continue the same manager. Use request-advice for project judgment.",
-        "escalation": "Use the Megado oracle request format: name the decision; explain why the current brief or ruling cannot settle it; link the new evidence and prior ruling; give a recommendation and main alternative with tradeoff; name dependent work waiting and how many times this decision has returned.",
-        "context": "Refresh the current project, task, assignment, generation, mandate, adopted resources and conversation before acting.",
-        "delegation": "run-worker prepares a child; its focus is 1..4000 characters. For long exact file boundaries, retain an owned scope manifest and pin its exact path and SHA in the concise focus. A typed input rejection with effects_started=false permits a corrected distinct intent; an UNKNOWN transport result still requires exact reconciliation, never blind replay.",
-        "planning": "Reviewer reports propose correction tasks with independent normal/XHARD rationale. The manager records accept/merge/defer/reject and uses task-list-author with the pinned report/result, current project revision, typed pending tasks and exact request key. Reuse the key/input after partial progress. Pending/unassigned/not-evaluated task defaults, empty blocker lists, and metadata-only dispatch:false do not themselves hold admission or require preassignment. Call run-worker once for an existing dependency-ready task; its canonical owner checks decide. Preserve any exact returned dependency/scope/adoption/custody/configuration/allowance hold, and never widen allowance or reopen completed work merely to file advice.",
-        "installed_evidence": "For criteria that explicitly require installed behavior, verify the current adopted source/runtime and preflight evidence before review or finish. If only host adoption, measurement, or setup is missing, request operational help with the evidence and return condition; an actual candidate defect remains an ordinary REWORK finding. Separate defects the worker can fix within its source scope from owner-only installation or live-evidence blockers. For the latter, retain the exact task, candidate/source pins, observed installation state, needed owner action and resume condition in canonical request-help; keep the unmet criterion and original judgments/debits. Apply the authenticated reply in the same manager and verify the required behavior before acceptance. Authorized source implementation can proceed without waiting for installation when its actual task dependencies permit. If no independent ready work remains after the supported bounded follow of original retained handles, record the exact blocker/dependency, responsible owner and resume condition, then return this turn so native capacity can settle; do not park a sleeping native process or poll indefinitely. When the condition is met, resume the same assignment/task through its maintained route and inspect the original handles; do not replay work or invent lifecycle statuses.",
-        "continuation": "Resolve an applied response with resolve-help; the retained same-manager continuation is the next action.",
-        "recovery": "Read the exact delivery before retrying; unknown sends, missing destinations and replaced roles remain held until reconciled.",
-        "recovery_workflow": "Consult src/otto/portfolio/skills/recovery/SKILL.md when a project, worker, session, command response or reminder is interrupted; use the maintained commands and retain the current assignment/generation.",
-    },
-    "worker": {
-        "help": "Return implementation evidence through the assigned manager; do not create a new recipient or operational route. Report an owner-only installation or live-evidence blocker with exact source/result pins, observed state and the needed action. Continue independently authorized source work; the manager routes operational help and preserves original judgments and budgets.",
-        "context": "Use only the delivered task, assignment, generation, workspace, resources and acceptance scope.",
-        "continuation": "Return changed paths, verification and unresolved responsibility through the retained result path.",
-        "recovery": "Do not replay an unknown effect or adopt a replacement role without a new owner-issued assignment.",
-        "recovery_workflow": "Use the recovery skill through the assigned manager for diagnosis or resume; do not create a private recovery script or replacement state.",
-    },
-    "project_advisor": {
-        "help": "Answer advice requests for project judgment; operational blockage belongs to the manager's help route.",
-        "context": "Inspect the current goal, criteria, mandate, files, messages, open decisions and paired conversations.",
-        "continuation": "Resume the pinned advisor conversation and revise earlier advice when new evidence changes the direction.",
-        "recovery": "Reject stale pairing, missing context or unknown delivery; preserve the allowance and reconcile before resend.",
-    },
-}
+def __getattr__(name: str) -> Any:
+    if name == "_CODEX_ADAPTER_ROLE_BASE_GUIDANCE":
+        return _host_role_guidance({})
+    raise AttributeError(name)
 
 
 class OperatingBriefError(ValueError):
@@ -891,8 +806,6 @@ __all__ = [
     "OperatingBrief",
     "OperatingBriefAuthoringAdapter",
     "OperatingBriefError",
-    "ROLE_CONTEXT_GUIDANCE",
-    "ROLE_OPERATING_CONTRACTS",
     "brief_diff",
     "compose_owner_snapshot",
     "json_envelope",
