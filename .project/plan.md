@@ -1,12 +1,7 @@
-# Plan: PROCLIFE: process lifecycle made structurally true
+# Plan: PROCLIFE — Otto process scopes
 
-The tasks are in tasklist.md. Run them by `portfolio/RUNBOOK.md`; the rules are in `portfolio/PLAN.md` §15.
+Use `.project/tasklist.md` as the executable plan for this clone. It was refreshed against `canon/main` `eb9b6cd` because the packaged plan named Astrid-only files, gates, and branch work.
 
-Order:
-1. PL0 first: get the threat model and API agreed with Codex.
-2. Then PL1 and PL5 in parallel.
-3. Then PL2.
-4. Then PL3 and PL4.
-5. Then PL6 and PL7.
+Run PL1–PL4 in dependency order, at most two workers at a time, each in its own task worktree. Review every merge and run each focused test file in a separate pytest process. PL5 measures the agent-UX pass; PL6 records integration evidence and hands off gate-dependent checks. Never start an Otto owner or staging run in this sandbox; record those checks as `needs the gate`.
 
-Each step lands only when the film journey passes under normal load. The film-test stack is `~/Developer/astrid-video/astrid-local/main-20261015` (`source env.sh`), with the live film adopted from a backup. Never touch the live realm or production/.
+Preserve the landed CUSTODY, KILLFENCE, ORPHANWORKER, and FAILCLOSED invariants. Recheck canon before source edits. The project package's PL0 agreement step is superseded by the user's direction to execute this manager run; log any decision beyond the current compatibility contract for the orchestrator and continue independent tasks.
