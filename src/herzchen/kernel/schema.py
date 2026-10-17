@@ -182,6 +182,9 @@ SUPPORTED_SCHEMAS = {
 IDENTITY_LOOKUP_INDEXES = {
     "identities_due_native_lookup": "CREATE INDEX identities_due_native_lookup ON identities (authority, kind, json_extract(payload_json, '$.target.native_adapter'), json_extract(payload_json, '$.host_evidence.gateway_attempt.delivery_authorization.physical_session_id')) WHERE kind = 'otto.due-record'",
     "identities_due_project_lookup": "CREATE INDEX identities_due_project_lookup ON identities (authority, kind, json_extract(payload_json, '$.project_ref')) WHERE kind = 'otto.due-record'",
+    "identities_status_task_project_lookup": "CREATE INDEX identities_status_task_project_lookup ON identities (authority, kind, json_extract(payload_json, '$.project_ref.id')) WHERE kind = 'work.task'",
+    "identities_status_assignment_project_lookup": "CREATE INDEX identities_status_assignment_project_lookup ON identities (authority, kind, json_extract(payload_json, '$.scope.id')) WHERE kind = 'wrk.assignment'",
+    "identities_status_report_project_lookup": "CREATE INDEX identities_status_report_project_lookup ON identities (authority, kind, json_extract(payload_json, '$.value.project_ref.id')) WHERE kind = 'wrk.report'",
     "identities_work_assignment_lookup": "CREATE INDEX identities_work_assignment_lookup ON identities (authority, kind, CASE WHEN json_type(payload_json, '$.assignment') = 'object' THEN json_extract(json_extract(payload_json, '$.assignment'), '$.authority') END, CASE WHEN json_type(payload_json, '$.assignment') = 'object' THEN json_extract(json_extract(payload_json, '$.assignment'), '$.kind') END, CASE WHEN json_type(payload_json, '$.assignment') = 'object' THEN json_extract(json_extract(payload_json, '$.assignment'), '$.id') END, id, current_revision) WHERE kind IN ('wrk.dispatch', 'wrk.result', 'wrk.report')",
 }
 

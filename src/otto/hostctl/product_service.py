@@ -1210,6 +1210,11 @@ def compose(config: Mapping[str, Any], *, hold_dispatch: bool = False, project: 
         raise PermissionError('Store custody or identity changed since it was attached')
     store = Store.open(path, authority=target['authority'], expected_domains=host_domains(),
                        expected_domain_digest=target['domain_descriptor_digest'], admission='clean-close')
+    try:
+        store.prepare_identity_lookup_indexes()
+    except BaseException:
+        store.close()
+        raise
     trace['store'] = {'phase': 'admission-complete', 'admission_report': dict(store.admission_report),
                       'store_closed': False}
 
