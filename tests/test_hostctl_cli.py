@@ -24,6 +24,84 @@ import unittest
 
 from otto.hostctl import cli
 from otto.hostctl import config as host_config
+from otto.portfolio import cli as portfolio_cli
+from herzchen.contracts import AuthenticatedActor, ResourceRef
+from herzchen.kernel import OperationRecord, OperationRequest, OperationState
+
+
+class TestEffectCommand(unittest.TestCase):
+    """Cold-agent interface tests; no owner process or private ledger access."""
+
+    def setUp(self):
+        self.actor = AuthenticatedActor("owner", "resolver", "credential")
+        self.runner_ref = ResourceRef("owner", "effect", "herzchen-runner-effect:job-17")
+        self.turn_ref = ResourceRef("owner", "effect", "gateway-turn-22")
+        self.records = {
+            self.runner_ref.id: self._record(self.runner_ref, "herzchen.runner-process", {
+                "request_id": "job-17", "argv": ["pytest", "tests/test_x.py"], "binding": "bind-17",
+            }),
+            self.turn_ref.id: self._record(self.turn_ref, "otto.native-turn", {
+                "turn_id": "turn-22", "session_id": "session-4", "command_effects": ["apply-9"],
+            }),
+        }
+        self.manager = _EffectManager(self.records)
+
+    @staticmethod
+    def _record(ref, operation, payload):
+        request = OperationRequest(operation, "v1", ResourceRef("owner", "adapter", "fixture"),
+                                   AuthenticatedActor("owner", "requester", "credential"),
+                                   ref.id, "a" * 64, payload)
+        operation_ref = ResourceRef("owner", "operation", ref.id, "rev-2")
+        return OperationRecord(operation_ref, request, OperationState.UNKNOWN,
+                               {"outcome": "lost_reply"}, None, 2)
+
+    def _call(self, args, output_format="json"):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = portfolio_cli.main(args + ["--format", output_format], effect_manager=self.manager,
+                                      effect_resolver=self.actor)
+        return code, out.getvalue()
+
+    def test_cold_agent_reads_exact_turn_and_runner_effect_in_json_and_text(self):
+        for ref, operation, identity in ((self.turn_ref, "otto.native-turn", "turn-22"),
+                                         (self.runner_ref, "herzchen.runner-process", "job-17")):
+            code, output = self._call(["effects", "read", "--effect-ref", json.dumps(ref.to_dict())])
+            self.assertEqual(code, 0)
+            result = json.loads(output)
+            self.assertEqual(result["effect_ref"], ref.to_dict())
+            self.assertEqual(result["operation"], operation)
+            self.assertEqual(result["state"], "unknown")
+            self.assertEqual(result["evidence_status"], "required")
+            self.assertIn(identity, json.dumps(result["request_payload"]))
+            self.assertIn("otto effects resolve", result["next_action"])
+            self.assertIn(ref.id, result["next_action"])
+            code, text_output = self._call(["effects", "read", "--effect-ref", json.dumps(ref.to_dict())], "text")
+            self.assertEqual(code, 0)
+            self.assertIn(ref.id, text_output)
+            self.assertIn("next_action", text_output)
+
+    def test_resolution_refusal_names_effect_and_action_and_tool_mints_request_key(self):
+        code, output = self._call(["effects", "resolve", "--effect-ref", json.dumps(self.turn_ref.to_dict()),
+                                   "--state", "committed", "--evidence-key", "missing-proof"])
+        self.assertEqual(code, 4)
+        result = json.loads(output)
+        self.assertEqual(result["effect_ref"], self.turn_ref.to_dict())
+        self.assertIn("next_action", result)
+        self.assertIn(self.turn_ref.id, result["next_action"])
+        self.assertTrue(self.manager.last_transition_key.startswith("otto-effects-resolve:"))
+
+
+class _EffectManager:
+    def __init__(self, records):
+        self.records = records
+        self.last_transition_key = None
+
+    def get(self, key):
+        return self.records.get(key)
+
+    def resolve_unknown(self, record, state, result, **kwargs):
+        self.last_transition_key = kwargs["transition_key"]
+        raise ValueError("no exact local terminal proof")
 
 FAKE_VERSION = "2.1.293 (Claude Code)"
 DRIFTED_VERSION = "2.1.296 (Claude Code)"
