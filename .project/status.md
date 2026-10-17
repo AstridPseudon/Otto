@@ -1,3 +1,3 @@
 # Status: PROCLIFE — Otto process scopes
 
-Run authorized by the user on 17 Oct 2026. The plan and tasklist are refreshed for this Otto clone. PL1 is blocked before merge pending the D19 Opus decision on its existing setsid escapee test; PL2–PL6 are blocked behind PL1. The PL1 candidate remains on `task/PL1` at `b70c817` in `.worktrees/PL1`. No implementation task is merged. See `.project/PROJECT.md` for review evidence and gate checks.
+Run authorized by the user on 17 Oct 2026. The plan and tasklist are refreshed for this Otto clone. D19 is resolved: PL1 must preserve the unchanged setsid escapee test and birth-fenced ancestry cleanup. The worker is reworking PL1 on `task/PL1`; PL2–PL6 wait for its merge. No implementation task is merged yet. See `.project/PROJECT.md` for review evidence and gate checks.
