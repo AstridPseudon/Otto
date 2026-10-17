@@ -17,6 +17,13 @@ from herzchen.fleet.hosts import REGISTRY, ModelBinding, ModelPlan, UnknownHostK
 SLOTS = ("coordinator", "worker_normal", "worker_xhard", "reviewer_normal", "reviewer_xhard", "oracle", "final_reviewer")
 
 
+class ProfileSelectionError(ValueError):
+    """A user-selected profile cannot serve this host, with a recovery step."""
+
+    next_action = ("Choose a model profile qualified for this host (or remove the explicit profile override), "
+                   "then retry the command.")
+
+
 def load_profile_pack() -> dict[str, Any]:
     """Read exact managed profile and host resources, retaining their source pin."""
     from herzchen.packs.authoring import read_managed_pack
@@ -86,17 +93,17 @@ def host_entry(kind: str, *, model_profile: Optional[str] = None) -> dict[str, A
     chosen = model_profile or host["model_profile"]
     selected = pack["profiles"].get(chosen)
     if selected is None:
-        raise ValueError("unknown model profile %r" % (chosen,))
+        raise ProfileSelectionError("unknown model profile %r" % (chosen,))
     if kind not in selected["host_kinds"] or selected["adapter"] != host["adapter"]:
-        raise ValueError("model profile %r is not qualified by host %r" % (chosen, kind))
+        raise ProfileSelectionError("model profile %r is not qualified by host %r" % (chosen, kind))
     allowed = host["adapter_settings"].get("models")
     if allowed is not None and any(role["model"] not in allowed for role in selected["roles"].values()):
-        raise ValueError("model profile %r names a model unsupported by host %r" % (chosen, kind))
+        raise ProfileSelectionError("model profile %r names a model unsupported by host %r" % (chosen, kind))
     if kind == "claude-code":
         from otto.agents.claude_cli import PARSER_SCHEMA, VERSION
         qualification = host["launcher_qualification"]
         if qualification.get("version") != VERSION or qualification.get("parser_schema") != PARSER_SCHEMA:
-            raise ValueError("qualified Claude launcher data differs from the installed parser")
+            raise ProfileSelectionError("qualified Claude launcher data differs from the installed parser")
     return copy.deepcopy(dict(host))
 
 
@@ -119,7 +126,7 @@ def resolve_profile_name(explicit: Optional[str] = None, *, host_kind: Optional[
     for candidate in (explicit, env.get("OTTO_MODEL_PROFILE")):
         if candidate:
             if candidate not in names:
-                raise ValueError("unknown model profile %r; known: %s" % (candidate, ", ".join(sorted(names))))
+                raise ProfileSelectionError("unknown model profile %r; known: %s" % (candidate, ", ".join(sorted(names))))
             if host_kind is not None:
                 host_entry(host_kind, model_profile=candidate)
             return candidate
@@ -130,7 +137,7 @@ def resolve_profile_name(explicit: Optional[str] = None, *, host_kind: Optional[
 def profile(name: str, *, host_kind: Optional[str] = None) -> dict[str, Any]:
     pack = load_profile_pack()
     if name not in pack["profiles"]:
-        raise ValueError("unknown model profile %r" % (name,))
+        raise ProfileSelectionError("unknown model profile %r" % (name,))
     if host_kind is not None:
         host_entry(host_kind, model_profile=name)
     value = copy.deepcopy(pack["profiles"][name])

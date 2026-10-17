@@ -285,6 +285,19 @@ class ParseTasklistTests(unittest.TestCase):
 
 
 class RegistrationProfileRetentionTests(unittest.TestCase):
+    def test_profile_selection_refusal_is_serialized_by_cli_and_owner_service(self):
+        from otto.agents.host_profiles import ProfileSelectionError
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.service import _owner_exception_result
+
+        error = ProfileSelectionError("model profile 'claude' is not qualified by host 'codex'")
+        for serialize in (_cli_exception_result, _owner_exception_result):
+            result = serialize(error)
+            self.assertEqual(result["outcome"], "error")
+            self.assertEqual(result["error"]["code"], "ValueError")
+            self.assertEqual(result["error"]["message"], str(error))
+            self.assertIn("qualified for this host", result["next_action"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

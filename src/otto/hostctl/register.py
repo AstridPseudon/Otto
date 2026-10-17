@@ -46,6 +46,10 @@ def refusal_result(exc: Exception) -> dict[str, Any]:
               "provider_called": False}
     if isinstance(exc, RegistrationPinError):
         result["next_action"] = exc.next_action
+    else:
+        from otto.agents.host_profiles import ProfileSelectionError
+        if isinstance(exc, ProfileSelectionError):
+            result["next_action"] = exc.next_action
     return result
 
 
