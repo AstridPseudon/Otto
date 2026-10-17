@@ -160,6 +160,50 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
         self.assertEqual(self.app.start(schedule_id=prepared['schedule_id'])['outcome'], 'replayed')
         self.assertEqual(len(self.manager_t.calls), 2)
 
+    def test_child_exiting_before_stdin_keeps_unknown_with_exit_and_stderr(self):
+        def exited_child(command, **kwargs):
+            process = subprocess.Popen([sys.executable, '-c',
+                "import sys; sys.stderr.write('early child failure\\n'); sys.exit(37)"], **kwargs)
+            process.wait(timeout=5)
+            return process
+
+        self.worker_t.process_factory = exited_child
+        with self.assertRaisesRegex(ClaudeBindingError,
+                r'child exited before stdin was accepted \(exit status 37\); stderr tail: early child failure'):
+            self.worker_t.run('x' * 50_000)
+
+    def test_owner_launch_retains_early_child_exit_as_unknown_reason(self):
+        def exited_child(command, **kwargs):
+            process = subprocess.Popen([sys.executable, '-c',
+                "import sys; sys.stderr.write('early child failure\\n'); sys.exit(37)"], **kwargs)
+            process.wait(timeout=5)
+            return process
+
+        self.manager_t.process_factory = exited_child
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        result = self.app.start(schedule_id=prepared['schedule_id'])
+        reason = 'child exited before stdin was accepted (exit status 37); stderr tail: early child failure'
+        self.assertEqual(result['outcome'], 'unknown', result)
+        self.assertEqual(result['result']['error']['message'], reason + '\n')
+        due = self.f.port.read_due(prepared['schedule_id'])
+        attempt = due['host_evidence']['gateway_attempt']
+        self.assertIn(reason, str(attempt))
+
+    def test_project_dispatch_projection_preserves_unknown_and_launched(self):
+        from otto.hostctl.cli import _task_dispatch_status
+
+        observed = {
+            'assignments': [{'ref': {'id': 'assignment-1'}}],
+            'dispatches': [{'payload': {'assignment': {'id': 'assignment-1'}, 'status': 'dispatched'}}],
+            'results': [],
+            'reports': [{'payload': {'assignment': {'id': 'assignment-1'}, 'value': {
+                'state': 'unknown', 'reason': 'child exit status 37; stderr tail: early child failure'}}}],
+        }
+        self.assertEqual(_task_dispatch_status(observed), {
+            'state': 'unknown', 'reason': 'child exit status 37; stderr tail: early child failure'})
+        observed['reports'] = []
+        self.assertEqual(_task_dispatch_status(observed), {'state': 'launched', 'reason': None})
+
     def test_leaf_composition_refuses_the_manager_occurrence_before_any_process(self):
         leaf = ClaudeWorkerAdapter(owner='manager', source=self.root, worktree=self.root,
             launcher_pin=self.worker_t.pin, state_root=self.state, requested_model='claude-haiku-5-5',

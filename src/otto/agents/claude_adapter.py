@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 from herzchen.fleet.hosts import McpGrant
 from herzchen.fleet.tools.pins import exec_allow_for, require_sole_server
-from .claude_cli import (ClaudeBindingError, ClaudeCliTransport, LauncherPin, MANAGER_TOOLS,
+from .claude_cli import (ClaudeBindingError, ClaudeChildExitError, ClaudeCliTransport, LauncherPin, MANAGER_TOOLS,
                          MacWriteScope, MAX_ARTIFACT, PARSER_SCHEMA, TOOL_SERVER, WORKER_TOOLS, digest,
                          file_digest, text)
 from .herzchen_adapter import HerzchenCodexAdapter, _context_digest
@@ -486,7 +486,13 @@ class ClaudeWorkerAdapter:
                     'native_pins': native_pins},
                 'native_pins': native_pins, 'capabilities': self.capabilities()}
         except Exception as exc:
-            return {'outcome': 'unknown', 'delivery_state': 'unknown', 'physical_session_id': session,
+            error = {'code': ('claude_child_exited_before_input' if isinstance(exc, ClaudeChildExitError)
+                              else 'claude_qualification_or_capture_held'), 'message': str(exc)}
+            result = {'outcome': 'unknown', 'delivery_state': 'unknown', 'physical_session_id': session,
                 'useful_input_observed': admitted, 'retry_allowed': False,
-                'error': {'code': 'claude_qualification_or_capture_held', 'message': str(exc)},
+                'error': error, 'reason': str(exc),
                 'next_actor': 'host through assigned manager; reconcile exact attempt, scope and retained stream'}
+            if isinstance(exc, ClaudeChildExitError):
+                result['child_exit_status'] = exc.exit_status
+                result['stderr_tail'] = exc.stderr_tail
+            return result
