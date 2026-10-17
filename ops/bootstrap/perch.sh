@@ -329,6 +329,12 @@ stage2_admit_tasks() {
     done
     "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value ran
   done
+  return 0
+}
+
+stage2_dispatch_tasks() {
+  local host task
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
   for task in $("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2); do
     stage2_wait_worker "$host" "$task" || return $?
   done
@@ -634,16 +640,23 @@ run_stage() {  # STAGE
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
         elif stage2_setup; then
           if stage2_admit_tasks; then
-            if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
-              cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
+            if stage2_dispatch_tasks; then
+              if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
+                cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
+              fi
+              stage2_kill_worker || true
+              "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value ran
+              host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+              stage2_host_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-dispatch-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
+              cold_client service status > "$RAW/stage2-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
+              "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage2-store-after.json"
+              stage2_probe_unadmitted || true
+            else
+              if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
+                cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
+              fi
+              "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: admitted tasks did not dispatch and settle"
             fi
-            stage2_kill_worker || true
-            "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value ran
-            host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
-            stage2_host_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-dispatch-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
-            cold_client service status > "$RAW/stage2-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
-            "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage2-store-after.json"
-            stage2_probe_unadmitted || true
           else
             if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
               cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"

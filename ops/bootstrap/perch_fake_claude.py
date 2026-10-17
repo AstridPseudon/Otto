@@ -38,6 +38,25 @@ def done_tool(args):
     return reply
 
 
+def canary_alias(prompt):
+    """Select the assigned task from the owner-bound resource brief."""
+    opening = '<otto-resource-brief sha256="'
+    if prompt.count(opening) != 1:
+        raise ValueError("fake worker needs one owner resource brief")
+    body = prompt.split(opening, 1)[1].split('>\n', 1)[1].split('\n</otto-resource-brief>', 1)[0]
+    brief = json.loads(body)
+    contract = brief.get("instruction_contract") or {}
+    core = brief.get("operating_core") or {}
+    priorities = core.get("priorities") or []
+    for alias in ("A", "B", "C"):
+        if (core.get("role") == "worker"
+                and contract.get("objective") == "Implement the delegated " + alias + " outcome"
+                and (contract.get("task_ref") or {}).get("kind") == "work.task"
+                and len(priorities) == 1 and priorities[0].get("id") == alias.lower()):
+            return alias
+    raise ValueError("fake worker brief has no exact stage-2 task identity")
+
+
 def main():
     if "--version" in sys.argv:
         print("2.1.293 (Claude Code)")
@@ -68,7 +87,7 @@ def main():
               "result": "READY", "usage": {"input_tokens": 1, "output_tokens": 1}})
         return 0
     if tools and "Bash" not in tools:
-        if "Canary dispatch C" in prompt:
+        if canary_alias(prompt) == "C":
             # Stage 2 kills this exact owner-launched worker to verify that
             # only its slot is released. The PID marker is inside its lab.
             with open(".perch-worker-C.pid", "w", encoding="utf-8") as marker:

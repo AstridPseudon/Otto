@@ -26,6 +26,19 @@ BOOTSTRAP = ROOT / "ops" / "bootstrap"
 PERCH = BOOTSTRAP / "perch.sh"
 PY = "/opt/homebrew/bin/python3.11"
 
+
+def stage2_worker_prompt(alias, *, linked_task=""):
+    brief = {"operating_core": {"role": "worker",
+                                "priorities": [{"id": alias.lower(), "text": "Canary dispatch " + alias}]},
+             "instruction_contract": {
+        "objective": "Implement the delegated " + alias + " outcome",
+        "task_ref": {"authority": "owner", "kind": "work.task", "id": "task-" + alias,
+                     "revision": "rev-1"}},
+             "context": {"project_state": {"tasklist": linked_task}}}
+    return ('Verified owner context.\n<otto-resource-brief sha256="' + "0" * 64 + '">\n'
+            + json.dumps(brief, sort_keys=True, separators=(",", ":"))
+            + '\n</otto-resource-brief>\n')
+
 spec = importlib.util.spec_from_file_location("perch_report", BOOTSTRAP / "perch_report.py")
 perch_report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(perch_report)
@@ -453,7 +466,7 @@ class AssertionKindTests(unittest.TestCase):
                          "2.1.293 (Claude Code)")
         lab = self.tmp / "worker-lab"
         lab.mkdir()
-        frame = {"message": {"content": [{"text": "Canary dispatch A"}]}}
+        frame = {"message": {"content": [{"text": stage2_worker_prompt("A")}]}}
         result = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", "Read,Write"],
                                 input=json.dumps(frame) + "\n", cwd=lab, capture_output=True,
                                 text=True, check=True)
@@ -475,7 +488,7 @@ class AssertionKindTests(unittest.TestCase):
         def stop_at_pause():
             raise RuntimeError("held for owner worker kill")
 
-        frame = {"message": {"content": [{"text": "Canary dispatch C"}]}}
+        frame = {"message": {"content": [{"text": stage2_worker_prompt("C")}]}}
         original_cwd = os.getcwd()
         try:
             os.chdir(lab)
@@ -510,7 +523,9 @@ class AssertionKindTests(unittest.TestCase):
                 frame = {"message": {"content": [{"text": prompt}]}}
                 output = io.StringIO()
                 with mock_patch.object(sys, "argv", args), mock_patch.object(sys, "stdin", io.StringIO(json.dumps(frame) + "\n")), \
-                        mock_patch.object(launcher, "done_tool", done), contextlib.redirect_stdout(output):
+                        mock_patch.object(launcher, "done_tool", done), \
+                        mock_patch.object(launcher.signal, "pause", lambda: self.fail("A/B entered C's kill hold")), \
+                        contextlib.redirect_stdout(output):
                     rc = launcher.main()
                 return rc, [json.loads(line) for line in output.getvalue().splitlines()]
 
@@ -519,18 +534,33 @@ class AssertionKindTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(events[-1]["result"], "READY")
             self.assertEqual([event["type"] for event in events], ["system", "user", "result"])
-            rc, events = turn("Canary dispatch A", lambda _: {"ok": True, "result": {"landed": True}})
+            prompt_a = stage2_worker_prompt("A", linked_task="Canary dispatch C")
+            with mock_patch.object(launcher, "canary_alias",
+                                   lambda prompt: "C" if "Canary dispatch C" in prompt else "A"):
+                with self.assertRaisesRegex(AssertionError, "A/B entered C's kill hold"):
+                    turn(prompt_a, lambda _: {"ok": True, "result": {"landed": True}})
+            rc, events = turn(prompt_a, lambda _: {"ok": True, "result": {"landed": True}})
             self.assertEqual(rc, 0)
             self.assertEqual(events[0]["permissionMode"], "dontAsk")
             self.assertEqual(events[0]["mcp_servers"], ["otto"])
             self.assertIn("mcp__otto__done", events[0]["tools"])
             self.assertEqual([block["name"] for event in events if event["type"] == "assistant"
                               for block in event["message"]["content"]], ["Write", "mcp__otto__done"])
+            with mock_patch.object(sys, "path", [str(ROOT / "src"), *sys.path]):
+                from herzchen.fleet.hosts.claude import ClaudeStream
+            parser = ClaudeStream(prompt=prompt_a, cwd=str(lab.resolve()),
+                                  model="claude-haiku-5-5", tools=("Read", "Write"),
+                                  mcp_servers=("otto",),
+                                  mcp_tools=("mcp__otto__task", "mcp__otto__check", "mcp__otto__done"),
+                                  permission_mode="dontAsk")
+            for event in events:
+                parser.feed(json.dumps(event).encode("utf-8"))
+            self.assertEqual(parser.finish(rc)["outcome"], "succeeded")
             self.assertTrue(any(lab.glob("perch-worker-*.txt")))
             def red(_):
                 raise RuntimeError("seeded done refusal")
             with contextlib.redirect_stderr(io.StringIO()):
-                rc, events = turn("Canary dispatch B", red)
+                rc, events = turn(stage2_worker_prompt("B"), red)
             self.assertEqual(rc, 1)
             self.assertEqual(events[-1]["subtype"], "error_during_execution")
         finally:
@@ -790,7 +820,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         for line in initializer.stdout.splitlines():
             parser.feed(line.encode("utf-8"))
         self.assertEqual(parser.finish(initializer.returncode)["result"]["result"], "READY")
-        frame = {"message": {"content": [{"text": "Canary dispatch A"}]}}
+        frame = {"message": {"content": [{"text": stage2_worker_prompt("A")}]}}
         turn = subprocess.run([str(launcher), "--model", "claude-haiku-5-5", "--tools", "Read,Write"],
                               input=json.dumps(frame) + "\n", capture_output=True, text=True,
                               cwd=root, timeout=10)
@@ -841,9 +871,11 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                         "revision": "rev-" + alias} for alias in ("A", "B", "C")}
         shell = PERCH.read_text(encoding="utf-8")
         admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        dispatch = re.search(r"(?ms)^stage2_dispatch_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
         submit = re.search(r"(?ms)^stage2_submit_admission\(\) \{[^\n]*\n.*?^\}\n", shell)
         boundary = re.search(r"(?ms)^stage2_wait_admission_boundary\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(admit)
+        self.assertIsNotNone(dispatch)
         self.assertIsNotNone(submit)
         self.assertIsNotNone(boundary)
 
@@ -898,7 +930,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 boundary.group(),
                 submit.group(),
                 admit.group(),
-                "stage2_admit_tasks",
+                dispatch.group(),
+                "stage2_admit_tasks && stage2_dispatch_tasks",
             ))
             result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                     env={**os.environ, "SEED_BOUNDARY_STUCK": "1" if seed_stuck else "0"},
@@ -954,8 +987,10 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         request_id = "a0ebbb3fece74d328ad1d290385a13ae"
         shell = PERCH.read_text(encoding="utf-8")
         admit = re.search(r"(?ms)^stage2_admit_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        dispatch = re.search(r"(?ms)^stage2_dispatch_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
         submit = re.search(r"(?ms)^stage2_submit_admission\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(admit)
+        self.assertIsNotNone(dispatch)
         self.assertIsNotNone(submit)
 
         def run(seed_bad_id=False, seed_stuck=False):
@@ -1019,7 +1054,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 "}",
                 submit.group(),
                 admit.group(),
-                "stage2_admit_tasks",
+                dispatch.group(),
+                "stage2_admit_tasks && stage2_dispatch_tasks",
             ))
             result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                     env={**os.environ, "SEED_BAD_REQUEST_ID": "1" if seed_bad_id else "0",
