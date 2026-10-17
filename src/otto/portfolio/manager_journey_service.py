@@ -405,10 +405,12 @@ class ManagerJourneyService:
         """Select current owner-issued preparation without discarding effects."""
         state = self.server.state
         historical = (state.get("manager_continuation") or {}).get("schedule_id")
-        # Prefer the current head after a same-generation adoption. The
-        # continuation locator remains a fallback for older state snapshots,
-        # but must not outrank a newer owner-verified manager schedule.
-        for schedule in dict.fromkeys(filter(None, (state.get("schedule_id"), historical))):
+        current_schedule = state.get("schedule_id")
+        # A retained continuation may be the live same-session head even when
+        # another prepared occurrence is also named by state. Qualify it first;
+        # a stale but settled predecessor yields to a newer schedule already
+        # pinned to the current adopted assignment.
+        for schedule in dict.fromkeys(filter(None, (historical, current_schedule))):
             due = self.server.due_port.read_due(schedule)
             if not isinstance(due, Mapping):
                 raise PermissionError("retained manager occurrence is missing")
@@ -429,6 +431,18 @@ class ManagerJourneyService:
                     or evidence.get("schema") != "otto.role-result.v1"
                     or not evidence.get("result_digest")):
                 raise PermissionError("stale manager effects require exact reconciliation")
+            if schedule == historical and current_schedule and current_schedule != historical:
+                current = self.server.due_port.read_due(current_schedule)
+                if isinstance(current, Mapping):
+                    if (current.get("role") != "manager" or current.get("recipient") != state["manager"]
+                            or tuple(current["target"]["project_ref"][k] for k in ("authority", "kind", "id"))
+                            != tuple(state["project_ref"][k] for k in ("authority", "kind", "id"))
+                            or tuple(current["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                            != tuple(state["assignment_ref"][k] for k in ("authority", "kind", "id"))
+                            or current.get("generation") != state["manager_generation"]):
+                        raise PermissionError("retained manager occurrence is foreign")
+                    if current.get("assignment_ref") == state["assignment_ref"]:
+                        return current_schedule
             from otto.attention import DueRecord
             app = self._execution(principal=state['manager'], model=state.get('requested_model', due.get('requested_model')),
                 reasoning=state.get('requested_reasoning', due.get('requested_reasoning')),
