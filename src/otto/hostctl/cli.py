@@ -517,7 +517,6 @@ def cmd_release_checkout(args: argparse.Namespace) -> Any:
 
 def cmd_project_status(args: argparse.Namespace) -> Any:
     from herzchen.contracts import ResourceRef
-    from herzchen.kernel import LimitService
     config = host_config.load(_home(args))
     with HostSession(config, host=_host_opt(args, config)) as session:
         record = _resolve_project(session, args.project)
@@ -529,10 +528,7 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
         tasks = []
         view = session.owner.sheet.export(record.ref)
         task_views = {item["ref"].id: item for item in view.tasks}
-        from herzchen.domains.assessment import AssessmentModule
-        from otto.portfolio.assessment import OttoAssessment
-        assessed = OttoAssessment(AssessmentModule(session.store, actor=session.owner.owner_actor),
-                                  session.owner.owner_actor)
+        assessed = session.owner.assessment()
         for raw in record.payload.get("tasks") or ():
             ref = ResourceRef.from_dict(raw) if isinstance(raw, Mapping) else raw
             task = session.owner.graph.current(ResourceRef(ref.authority, ref.kind, ref.id))
@@ -568,11 +564,9 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                                 "status": getattr(current.status, "value", current.status),
                                 "generation": current.generation, "session": current.session,
                                 "ref": current.ref.to_dict()})
-        from herzchen.content.packets import ContextPacketService
-        from herzchen.content import domain_contribution as content_contribution
         from otto.portfolio.documents import ProjectDocumentReader
         reader = ProjectDocumentReader(sheet_reader=session.owner.sheet, content_reader=session.owner.content,
-            visibility_reader=ContextPacketService(session.store.domain_handler((content_contribution(),))))
+            visibility_reader=session.owner.packet_service())
         custom = (record.payload.get("custom") or {}).get("otto_host_registration") or {}
         documents = []
         for row in reader.list_documents(record.ref.to_dict(), actor=_reader_actor(session))["documents"]:
@@ -581,7 +575,7 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
             digest = hashlib.sha256(stored.encode()).hexdigest() if isinstance(stored, str) else None
             documents.append({"path": path, "role": row["document"].get("role"),
                               "revision_ref": row["current_revision_ref"], "stored_text_sha256": digest})
-        limits = LimitService(session.store)
+        limits = session.owner._limit_service
         pools = []
         for pool_id in _pool_ids(session, record):
             pool = limits.get_pool(ResourceRef(record.ref.authority, "limit", pool_id))

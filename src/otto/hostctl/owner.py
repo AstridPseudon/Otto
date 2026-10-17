@@ -176,14 +176,19 @@ class HostSession:
         self.config, self.host = config, host
         self.project_ids = tuple(project_ids)
         self.store = None
-        self._owns_store = False
         self.owner = None
+        self.due_port = None
+        self._owns_store = False
 
-    def _close_owner_transports(self) -> None:
-        owner = self.owner
-        close = getattr(owner, "close_consumer_operations", None)
-        if callable(close):
-            close()
+    def _close_ports(self) -> None:
+        try:
+            if self.due_port is not None:
+                from herzchen.command_ports import close_consumer_facade
+                due_port, self.due_port = self.due_port, None
+                close_consumer_facade(due_port.transport)
+        finally:
+            if self.owner is not None:
+                self.owner.close()
 
     def __enter__(self) -> "HostSession":
         from herzchen.kernel.store import Store
@@ -243,15 +248,21 @@ class HostSession:
             self.portfolio = OttoPortfolio(self.owner.consumer_operations())
             return self
         except BaseException:
-            self._close_owner_transports()
-            if self._owns_store:
-                self.store.close()
+            try:
+                self._close_ports()
+            except BaseException:
+                pass
+            finally:
+                if self._owns_store:
+                    self.store.close()
             raise
 
     def __exit__(self, *_: Any) -> None:
-        self._close_owner_transports()
-        if self.store is not None and self._owns_store:
-            self.store.close()
+        try:
+            self._close_ports()
+        finally:
+            if self.store is not None and self._owns_store:
+                self.store.close()
 
     # -- composed services --------------------------------------------------
     def root_assignment(self) -> Any:

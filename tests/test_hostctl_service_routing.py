@@ -6,6 +6,7 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from otto.hostctl.service import OwnerService, with_lane_advice
 from otto.portfolio.execution_host import ExecutionHost
@@ -19,6 +20,46 @@ def config(home, limit=3):
 
 
 class OwnerServiceRoutingTests(unittest.TestCase):
+    def test_attach_failure_closes_unretained_host_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(directory)
+            cfg["hosts"] = {"claude-code": {"root_assignment_ref": {"id": "supervisor"}}}
+            service = OwnerService(cfg)
+            record = SimpleNamespace(
+                payload={"metadata": {"otto_orchestrator": {"assignment_ref": {"id": "supervisor"}}}},
+                ref=SimpleNamespace(id="project-1"),
+            )
+            # Use a real context manager for the short-lived project lookup.
+            class LookupSession:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *_args):
+                    return False
+
+            class RetainedSession:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    return retained_exit(*args)
+
+            retained_exit = Mock(return_value=False)
+            retained_session = RetainedSession()
+
+            def make_session(*_args, **kwargs):
+                return LookupSession() if "host" not in kwargs else retained_session
+
+            failure = RuntimeError("attach failed")
+            with patch("otto.hostctl.service.HostSession", side_effect=make_session), \
+                 patch("otto.hostctl.cli._resolve_project", return_value=record), \
+                 patch("otto.hostctl.serve.attach", side_effect=failure):
+                with self.assertRaisesRegex(RuntimeError, "attach failed"):
+                    service._attach("project-1", host_kind=None)
+
+            retained_exit.assert_called_once()
+            self.assertEqual(type(failure), retained_exit.call_args.args[0])
+            self.assertEqual({}, service._project_sessions)
+            self.assertEqual({}, service.journeys)
+
     def test_nonrunning_status_explains_closure_and_owner_restart_command(self):
         status = with_lane_advice({
             "outcome": "closed", "state": "closed", "service_home": "/srv/otto",

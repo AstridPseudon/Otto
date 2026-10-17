@@ -1,9 +1,11 @@
 """Focused lifecycle checks for owner command transports."""
 import os
+import io
 import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +20,36 @@ class _Facade:
 
 
 class CommandPortsLifecycleTests(unittest.TestCase):
+    def test_request_handler_closes_its_stream(self):
+        class TrackedStream(io.BytesIO):
+            was_closed = False
+
+            def close(self):
+                self.was_closed = True
+                super().close()
+
+        class Channel:
+            def __init__(self):
+                self.stream = TrackedStream(cp._frame({}))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def makefile(self, _mode):
+                return self.stream
+
+        with tempfile.TemporaryDirectory() as root:
+            transport = cp._start_service(_Facade(), "test.domain", "test.Facade", ("status",), None, root)
+            try:
+                channel = Channel()
+                cp._OWNER_SERVICES[transport.session_id]._handle(channel)
+                self.assertTrue(channel.stream.was_closed)
+            finally:
+                cp.close_consumer_facade(transport)
+
     def test_socket_is_bound_only_when_transport_is_activated_and_close_releases_it(self):
         with tempfile.TemporaryDirectory() as root:
             transport = cp._start_service(_Facade(), "test.domain", "test.Facade", ("status",), None, root)
@@ -62,6 +94,18 @@ class CommandPortsLifecycleTests(unittest.TestCase):
                 transport.facade, transport.endpoints, transport.schema_revision, os.getpid() + 1, transport.session_id)
             client = cp.connect_consumer_facade(remote)
             try:
+                fd_dir = next((path for path in ("/dev/fd", "/proc/self/fd") if os.path.isdir(path)), None)
+                if fd_dir is None:
+                    self.skipTest("no process descriptor census is available")
+                before = (len(os.listdir(fd_dir)), len(threading.enumerate()),
+                          len(os.listdir(root)))
+                for marker in range(200):
+                    self.assertEqual(client.status(marker), {"ok": True, "marker": marker})
+                after = (len(os.listdir(fd_dir)), len(threading.enumerate()),
+                         len(os.listdir(root)))
+                for resource, start, end in zip(("descriptors", "threads", "command dirs"), before, after):
+                    self.assertLessEqual(end, start + 3,
+                        f"{resource} grew from {start} to {end} after 200 socket calls")
                 for marker in range(cp._AUDIT_LIMIT + 9):
                     self.assertEqual(client.status(marker), {"ok": True, "marker": marker})
                 audit = cp.consumer_facade_audit(transport)

@@ -603,6 +603,12 @@ class PortfolioOwnerBootstrap:
         "_limit_service",
         "_assessment_operations",
         "_consumer_transport",
+        "_owned_facades",
+        "_facade_lock",
+        "_closed",
+        "_assessment_cache",
+        "_packet_service",
+        "_orchestration_facade",
         "binding",
         "owner_actor",
         "operator_actor",
@@ -651,114 +657,189 @@ class PortfolioOwnerBootstrap:
         reviewed_policy: Mapping[str, Any] | None = None,
         evidence_payload_resolver: Any = None,
     ) -> None:
-        from herzchen.authoring import AuthoringSessionService
-        from herzchen.content import ContentCommandHandler
-        from herzchen.domains.work import WorkGraph, register_orchestration
-        from herzchen.domains.work.assignments import ResponsibilityAssignments
-        from herzchen.domains.work.lifecycle import ProjectLifecycle
-        from herzchen.domains.work.sheet import ProjectSheet
-        from herzchen.kernel.store import Store
-
-        if not isinstance(store, Store):
-            raise TypeError("store must be the trusted Herzchen Store owner")
-        if not isinstance(binding, HerzchenBindingConfig):
-            raise TypeError("binding must be HerzchenBindingConfig")
-        if operator_actor is not None and (not isinstance(operator_actor, str) or not operator_actor.strip()):
-            raise ValueError("operator identity must be exact nonblank text when supplied")
-        authenticated = binding.authenticated_actor(owner_actor)
-        operator = binding.authenticated_actor(operator_actor) if operator_actor is not None else None
-        if authenticated.authority != store.authority:
-            raise ValueError("binding authority does not belong to the supplied store")
-        if project_read_grant is not None and (
-            not isinstance(project_read_grant, ProjectReadGrant)
-            or project_read_grant.principal != authenticated
-        ):
-            raise ValueError("project read grant must bind the authenticated owner principal")
-
-        self.store = store
-        # Keep this store-bound command facade for the lifetime of the owner.
-        # Constructing LimitService binds a local listener, so creating one in
-        # role calls would retain a pair of descriptors for every invocation.
-        from herzchen.kernel import LimitService
-        self._limit_service = LimitService(store)
-        from herzchen.kernel import OperationManager
-        self._assessment_operations = OperationManager(store)
-        self._consumer_transport = None
-        # These owner capabilities own command transports.  Keep one for the
-        # lifetime of this bootstrap instead of binding a fresh listening
-        # socket each time a manager asks for its direction surface.
         import threading
-        self._direction_bindings_lock = threading.RLock()
-        self._direction_bindings_instance = None
-        # Native body providers can carry authority.  This owner session is
-        # bound to one provider, retained alongside its assignment port.
-        self._late_usage_lock = threading.RLock()
-        self._late_usage_cache = None
-        self.landed_worker_settler = None
-        # Called after a project's lifecycle becomes completed or withdrawn (see project_finished).
-        self.on_project_finished = None
-        self.reviewed_policy = reviewed_policy
-        # The owner's evidence handler: verifies managed DAT payloads before accept or completion.
-        self.evidence_payload_resolver = evidence_payload_resolver
-        self.binding = binding
-        self.owner_actor = authenticated
-        self.operator_actor = operator
-        self.project_read_grant = project_read_grant
-        self.graph = WorkGraph(store, actor=authenticated)
-        # Assignment instruction adoption is an optional late-registered
-        # port.  Opening WorkGraph first preserves compatibility with owner
-        # databases persisted under the old assignment descriptor digest.
-        from herzchen.domains import work as work_domain
-        register_resources = getattr(work_domain, "register_assignment_resources", None)
-        if register_resources is not None:
-            register_resources(store)
-        self.assignments = ResponsibilityAssignments(store, actor=authenticated,
-            evidence_payload_resolver=evidence_payload_resolver)
-        # Sheet-governed manager completion must use the same configured
-        # assignment guard as direct owner completion and assessment reads.
-        self.sheet = ProjectSheet(store, actor=authenticated, assignments=self.assignments)
-        self.content = ContentCommandHandler(store)
-        self.lifecycle = ProjectLifecycle(store, actor=authenticated, delegation_issuer=authenticated)
-        self.authoring = AuthoringSessionService(store)
-        orchestration_port = None
-        if portfolio_ref is not None or main_assignment_ref is not None:
-            if portfolio_ref is None or main_assignment_ref is None:
-                raise ValueError("portfolio_ref and main_assignment_ref must be supplied together")
-            from herzchen.domains.work.orchestration import Orchestration
+        self._owned_facades = []
+        self._facade_lock = threading.RLock()
+        self._closed = False
+        self._assessment_cache = {}
+        self._packet_service = None
+        self._orchestration_facade = None
+        try:
+            from herzchen.authoring import AuthoringSessionService
+            from herzchen.content import ContentCommandHandler
+            from herzchen.domains.work import WorkGraph, register_orchestration
+            from herzchen.domains.work.assignments import ResponsibilityAssignments
+            from herzchen.domains.work.lifecycle import ProjectLifecycle
+            from herzchen.domains.work.sheet import ProjectSheet
+            from herzchen.kernel.store import Store
 
-            register_orchestration(store)
-            orchestration = Orchestration(
+            if not isinstance(store, Store):
+                raise TypeError("store must be the trusted Herzchen Store owner")
+            if not isinstance(binding, HerzchenBindingConfig):
+                raise TypeError("binding must be HerzchenBindingConfig")
+            if operator_actor is not None and (not isinstance(operator_actor, str) or not operator_actor.strip()):
+                raise ValueError("operator identity must be exact nonblank text when supplied")
+            authenticated = binding.authenticated_actor(owner_actor)
+            operator = binding.authenticated_actor(operator_actor) if operator_actor is not None else None
+            if authenticated.authority != store.authority:
+                raise ValueError("binding authority does not belong to the supplied store")
+            if project_read_grant is not None and (
+                not isinstance(project_read_grant, ProjectReadGrant)
+                or project_read_grant.principal != authenticated
+            ):
+                raise ValueError("project read grant must bind the authenticated owner principal")
+
+            self.store = store
+            # Keep this store-bound command facade for the lifetime of the owner.
+            # Constructing LimitService binds a local listener, so creating one in
+            # role calls would retain a pair of descriptors for every invocation.
+            from herzchen.kernel import LimitService
+            self._limit_service = self._own(LimitService(store))
+            from herzchen.kernel import OperationManager
+            self._assessment_operations = self._own(OperationManager(store))
+            self._consumer_transport = None
+            # These owner capabilities own command transports.  Keep one for the
+            # lifetime of this bootstrap instead of binding a fresh listening
+            # socket each time a manager asks for its direction surface.
+            self._direction_bindings_lock = threading.RLock()
+            self._direction_bindings_instance = None
+            # Native body providers can carry authority.  This owner session is
+            # bound to one provider, retained alongside its assignment port.
+            self._late_usage_lock = threading.RLock()
+            self._late_usage_cache = None
+            self.landed_worker_settler = None
+            # Called after a project's lifecycle becomes completed or withdrawn (see project_finished).
+            self.on_project_finished = None
+            self.reviewed_policy = reviewed_policy
+            # The owner's evidence handler: verifies managed DAT payloads before accept or completion.
+            self.evidence_payload_resolver = evidence_payload_resolver
+            self.binding = binding
+            self.owner_actor = authenticated
+            self.operator_actor = operator
+            self.project_read_grant = project_read_grant
+            self.graph = self._own(WorkGraph(store, actor=authenticated))
+            # Assignment instruction adoption is an optional late-registered
+            # port.  Opening WorkGraph first preserves compatibility with owner
+            # databases persisted under the old assignment descriptor digest.
+            from herzchen.domains import work as work_domain
+            register_resources = getattr(work_domain, "register_assignment_resources", None)
+            if register_resources is not None:
+                register_resources(store)
+            self.assignments = self._own(ResponsibilityAssignments(store, actor=authenticated,
+                evidence_payload_resolver=evidence_payload_resolver))
+            # Sheet-governed manager completion must use the same configured
+            # assignment guard as direct owner completion and assessment reads.
+            self.sheet = self._own(ProjectSheet(store, actor=authenticated, assignments=self.assignments))
+            self.content = self._own(ContentCommandHandler(store))
+            self.lifecycle = self._own(ProjectLifecycle(store, actor=authenticated, delegation_issuer=authenticated))
+            self.authoring = self._own(AuthoringSessionService(store))
+            orchestration_port = None
+            if portfolio_ref is not None or main_assignment_ref is not None:
+                if portfolio_ref is None or main_assignment_ref is None:
+                    raise ValueError("portfolio_ref and main_assignment_ref must be supplied together")
+                from herzchen.domains.work.orchestration import Orchestration
+
+                register_orchestration(store)
+                orchestration = self._own(Orchestration(
+                    store,
+                    actor=authenticated,
+                    operator_actor=operator,
+                    portfolio_ref=portfolio_ref,
+                    main_assignment_ref=main_assignment_ref,
+                    allowed_creator_ids=allowed_creator_ids,
+                    privileged_actor_ids=privileged_actor_ids,
+                    expected_main_principal=expected_main_principal,
+                ))
+                orchestration_port = orchestration.command_port
+                self._orchestration_facade = orchestration
+            self.orchestration_port = orchestration_port
+            self.orchestration_portfolio = portfolio_ref
+            self.queue_binding = None
+            if portfolio_ref is not None:
+                from .project_queue import queue_locator
+                from herzchen.contracts import ResourceRef
+                portfolio = ResourceRef.from_dict(_json_value(portfolio_ref))
+                root = ResourceRef.from_dict(_json_value(main_assignment_ref))
+                locator = queue_locator(portfolio) if queue_ref is None else ResourceRef.from_dict(_json_value(queue_ref))
+                if locator.authority != binding.authority or locator.kind != "dat.content.document" or locator.revision is not None:
+                    raise ValueError("queue locator must be a current owned DAT document")
+                self.queue_binding = {"owner": authenticated, "portfolio": portfolio, "root": root, "locator": locator}
+            bridge_type = _create_bridge_type()
+            self.create_and_open_bridge = self._own(bridge_type(
                 store,
-                actor=authenticated,
+                sheet=self.sheet,
+                authoring=self.authoring,
+                materializer=materializer,
                 operator_actor=operator,
-                portfolio_ref=portfolio_ref,
-                main_assignment_ref=main_assignment_ref,
-                allowed_creator_ids=allowed_creator_ids,
-                privileged_actor_ids=privileged_actor_ids,
-                expected_main_principal=expected_main_principal,
-            )
-            orchestration_port = orchestration.command_port
-        self.orchestration_port = orchestration_port
-        self.orchestration_portfolio = portfolio_ref
-        self.queue_binding = None
-        if portfolio_ref is not None:
-            from .project_queue import queue_locator
-            from herzchen.contracts import ResourceRef
-            portfolio = ResourceRef.from_dict(_json_value(portfolio_ref))
-            root = ResourceRef.from_dict(_json_value(main_assignment_ref))
-            locator = queue_locator(portfolio) if queue_ref is None else ResourceRef.from_dict(_json_value(queue_ref))
-            if locator.authority != binding.authority or locator.kind != "dat.content.document" or locator.revision is not None:
-                raise ValueError("queue locator must be a current owned DAT document")
-            self.queue_binding = {"owner": authenticated, "portfolio": portfolio, "root": root, "locator": locator}
-        bridge_type = _create_bridge_type()
-        self.create_and_open_bridge = bridge_type(
-            store,
-            sheet=self.sheet,
-            authoring=self.authoring,
-            materializer=materializer,
-            operator_actor=operator,
-            folder_transport_request_bytes=folder_transport_request_bytes,
-        )
+                folder_transport_request_bytes=folder_transport_request_bytes,
+            ))
+        except BaseException:
+            try:
+                self.close()
+            except BaseException:
+                pass  # Preserve the constructor failure after best-effort retirement.
+            raise
+
+    def _own(self, facade: Any) -> Any:
+        with self._facade_lock:
+            if self._closed:
+                facade.close()
+                raise RuntimeError("owner bootstrap is closed")
+            self._owned_facades.append(facade)
+        return facade
+
+    def close(self) -> None:
+        """Retire this bootstrap's facades in reverse construction order."""
+        with self._facade_lock:
+            if self._closed:
+                return
+            self._closed = True
+            facades, self._owned_facades[:] = tuple(reversed(self._owned_facades)), []
+            self._consumer_transport = None
+        # The bridge facade owns the consumer transport activated for Otto.
+        # Retiring the facade list below closes that exact transport as well.
+        failure = None
+        for facade in facades:
+            try:
+                facade.close()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
+
+    def _assessment_pair(self, actor: Any = None) -> tuple[Any, Any]:
+        """Return one principal-bound general assessment facade and its Otto view."""
+        from herzchen.domains.assessment import AssessmentModule
+        from .assessment import OttoAssessment
+        principal = self.owner_actor if actor is None else self.binding.authenticated_actor(
+            actor.actor if hasattr(actor, "actor") else actor)
+        with self._facade_lock:
+            if self._closed:
+                raise RuntimeError("owner bootstrap is closed")
+            if principal.actor not in self._assessment_cache:
+                module = self._own(AssessmentModule(self.store, actor=principal,
+                    payload_resolver=self.evidence_payload_resolver))
+                self._assessment_cache[principal.actor] = (module, OttoAssessment(module, principal))
+            return self._assessment_cache[principal.actor]
+
+    def assessment_module(self, actor: Any = None) -> Any:
+        return self._assessment_pair(actor)[0]
+
+    def assessment(self, actor: Any = None) -> Any:
+        return self._assessment_pair(actor)[1]
+
+    def packet_service(self) -> Any:
+        """Return the owner-scoped DAT visibility and attention facade."""
+        from herzchen.content import domain_contribution as content_contribution
+        from herzchen.content.packets import ContextPacketService
+        with self._facade_lock:
+            if self._closed:
+                raise RuntimeError("owner bootstrap is closed")
+            if self._packet_service is None:
+                self._packet_service = self._own(ContextPacketService(
+                    self.store.domain_handler((content_contribution(),))))
+            return self._packet_service
 
     def project_finished(self, project_ref: Any) -> Any:
         """Tell the installed hook (clean-close) that a project may have just finished.
@@ -852,15 +933,16 @@ class PortfolioOwnerBootstrap:
         with self._late_usage_lock:
             cached = self._late_usage_cache
             if cached is None:
-                assignments = ResponsibilityAssignments(
+                facade = self._own(ResponsibilityAssignments(
                     self.store, actor=actor, native_bodies=native_bodies,
                     evidence_payload_resolver=self.evidence_payload_resolver
-                ).command_port
-                self._late_usage_cache = (native_bodies, assignments)
+                ))
+                assignments = facade.command_port
+                self._late_usage_cache = (native_bodies, facade)
             elif cached[0] is not native_bodies:
                 raise ValueError("owner session is already bound to a different native bodies provider")
             else:
-                assignments = cached[1]
+                assignments = cached[1].command_port
         owner = self
 
         class BoundLateUsage:
@@ -897,10 +979,10 @@ class PortfolioOwnerBootstrap:
         from .direction import DirectionBindings
         with self._direction_bindings_lock:
             if self._direction_bindings_instance is None:
-                self._direction_bindings_instance = DirectionBindings(
+                self._direction_bindings_instance = self._own(DirectionBindings(
                     self.store, owner_actor=self.owner_actor,
                     assignment_port=self.assignments.command_port,
-                )
+                ))
             return self._direction_bindings_instance
 
     def direction_surface(self, *, context_reader: Any = None,
@@ -1084,13 +1166,17 @@ class PortfolioOwnerBootstrap:
             return EvidenceReadGrant(self.owner_actor, actor, project, task, evidence)
 
         authorize()
-        return ManagerAssessmentCommands(
-            assessment=OttoAssessment(AssessmentModule(self.store, actor=actor,
-                payload_resolver=self.evidence_payload_resolver,
-                evidence_read_grant_issuer=issue_evidence_read_grant,
-                _limits=self._limit_service, _operations=self._assessment_operations), actor),
-            reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
-            generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
+        module = AssessmentModule(self.store, actor=actor,
+            payload_resolver=self.evidence_payload_resolver,
+            evidence_read_grant_issuer=issue_evidence_read_grant)
+        try:
+            return ManagerAssessmentCommands(
+                assessment=OttoAssessment(module, actor), assessment_facade=module,
+                reader=self.graph.reader, actor=actor, task=task, assignment=assignment,
+                generation=manager_generation, authorize=authorize, policy=assessment_policy, pool_guard=pool_guard)
+        except BaseException:
+            module.close()
+            raise
 
     def create_manager_assessment_pool(self, *, project_ref: Mapping[str, Any],
                                        task_ref: Mapping[str, Any],
@@ -1101,9 +1187,10 @@ class PortfolioOwnerBootstrap:
         from herzchen.kernel import VersionConflictError
         if not isinstance(logical_request_key, str) or not logical_request_key.strip():
             raise ValueError("logical request key is required")
-        self.manager_assessment(project_ref=project_ref, task_ref=task_ref,
+        with self.manager_assessment(project_ref=project_ref, task_ref=task_ref,
             manager_assignment_ref=manager_assignment_ref, manager_actor=manager_actor,
-            manager_generation=manager_generation, assessment_policy=assessment_policy)
+            manager_generation=manager_generation, assessment_policy=assessment_policy):
+            pass
         actor = self.binding.authenticated_actor(manager_actor)
         limits = self._limit_service
         try:
@@ -1159,12 +1246,11 @@ class PortfolioOwnerBootstrap:
 
     def shared_attention_port(self, *, due_port: Any) -> Any:
         """Issue durable scheduled notifications through the existing DAT owner."""
-        from herzchen.content.packets import ContextPacketService
         from herzchen.contracts import ResourceRef, TransactionContext
         from otto.attention import SerializedAttentionPort
         import hashlib
         import json
-        packets = ContextPacketService(self.store).command_port
+        packets = self.packet_service().command_port
         actor, grant = self.owner_actor, self.project_read_grant
 
         def create(request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1380,12 +1466,12 @@ class PortfolioOwnerBootstrap:
                         verify_completed_history(configured_task, current)
                     continue
                 task = current.ref.to_dict()
-                commands = self.manager_assessment(project_ref=project_ref, task_ref=task,
+                with self.manager_assessment(project_ref=project_ref, task_ref=task,
                     manager_assignment_ref=manager["assignment_ref"], manager_actor=manager["principal"],
-                    manager_generation=manager["generation"], assessment_policy=assessment_policy)
-                scopes.append(commands.execute({"operation": "resolve-required-scope", "arguments": {},
-                    "expected_task_ref": task, "expected_assignment_ref": manager["assignment_ref"],
-                    "expected_generation": manager["generation"]}))
+                    manager_generation=manager["generation"], assessment_policy=assessment_policy) as commands:
+                    scopes.append(commands.execute({"operation": "resolve-required-scope", "arguments": {},
+                        "expected_task_ref": task, "expected_assignment_ref": manager["assignment_ref"],
+                        "expected_generation": manager["generation"]}))
             return {"required_scopes": scopes, "completed_task_readbacks": completed_readbacks, "allowance_created": False}
 
         limits = self._limit_service

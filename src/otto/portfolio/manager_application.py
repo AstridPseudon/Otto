@@ -16,10 +16,8 @@ from herzchen.authoring import domain_contribution as authoring_contribution
 from herzchen.content.authoring import DocumentAuthoringHandler
 from herzchen.content.model import domain_contribution as content_contribution
 from herzchen.content.packets import (
-    ContextPacketService,
     domain_contribution as packet_contribution,
 )
-from herzchen.domains.assessment import AssessmentModule
 from herzchen.domains.assessment.module import contribution as assessment_contribution
 from herzchen.domains.work import DOMAIN_ID as WORK_DOMAIN_ID
 from herzchen.domains.work.assignments import (
@@ -30,7 +28,6 @@ from herzchen.domains.work.assignments import (
 from herzchen.domains.work.lifecycle import LIFECYCLE_DOMAIN_ID
 from herzchen.domains.work.sheet import DOMAIN_ID as SHEET_DOMAIN_ID
 
-from .assessment import OttoAssessment
 from .document_navigation import ProjectDocumentOperations
 from .documents import ProjectDocumentReader
 from .intake import OttoPortfolio
@@ -288,7 +285,7 @@ class ManagerApplication:
             from .owner_issue_loop import compose_owner_issue_loop
             portfolio = OttoPortfolio(operations, issue_loop=compose_owner_issue_loop(
                 operations, due_port, delivery=issue_delivery))
-        visibility = ContextPacketService(store)
+        visibility = owner.packet_service()
         raw_document_reader = ProjectDocumentReader(
             sheet_reader=owner.sheet,
             content_reader=owner.content,
@@ -297,7 +294,8 @@ class ManagerApplication:
         document_reader = _ScopedDocumentReader(raw_document_reader, grant, binding)
         raw_document_operations = ProjectDocumentOperations(
             document_reader=document_reader,
-            authoring=document_authoring or DocumentAuthoringHandler(store),
+            authoring=(document_authoring if document_authoring is not None else
+                       owner._own(DocumentAuthoringHandler(store))),
             context_reader=_ScopedBacklinkReader(visibility, operations.reader, grant, binding),
             sheet_reader=owner.sheet,
             idle_lifecycle=idle_lifecycle,
@@ -307,8 +305,7 @@ class ManagerApplication:
         # it does not create a second document/session or Due authority.
         portfolio.document_operations = document_operations
         portfolio.due_port = due_port
-        assessment_owner = AssessmentModule(store, actor=actor, payload_resolver=owner.evidence_payload_resolver)
-        assessment = OttoAssessment(assessment_owner, actor)
+        assessment = owner.assessment(actor)
 
         def brief_readers(
             *,

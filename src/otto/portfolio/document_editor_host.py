@@ -48,9 +48,10 @@ class DocumentEditorHost:
         self.leases = FileWriterLeaseAuthority(
             self.directory / "writer-locks", authority=owner.store.authority,
             secret=secret, writer_identities=(self.writer_id,), clock=clock)
-        self.sessions = AuthoringSessionService(owner.store, materializer=self._materialize)
-        self.authoring = DocumentAuthoringHandler(owner.store, authoring=self.sessions,
-                                                 vision_validator=vision_validator)
+        self.sessions = owner._own(AuthoringSessionService(
+            owner.store, materializer=self._materialize))
+        self.authoring = owner._own(DocumentAuthoringHandler(
+            owner.store, authoring=self.sessions, vision_validator=vision_validator))
         self.lifecycle = AuthoringLifecycle(self.sessions, writer_leases=self.leases,
                                            writer_identity=self.writer_id, clock=clock)
         from .manager_application import ManagerApplication

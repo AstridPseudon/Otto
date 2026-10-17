@@ -361,7 +361,6 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
     operating setup and launched only by an explicit start-manager.
     """
     from herzchen.content.instructions import validate_instruction_content
-    from herzchen.kernel import LimitService
     from otto.attention import DueRecord, DurableAttention
     from otto.portfolio.resource_sync import normalize_instruction_contract
     run_id = registration["run_id"]
@@ -384,8 +383,7 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
     # The task list is the registered source of acceptance criteria. Persist
     # those criteria as required assessment scopes on the exact owner tasks;
     # stable scope ids and logical request keys make activation replay safe.
-    from herzchen.domains.assessment import AssessmentModule
-    assessment = AssessmentModule(session.store, actor=session.owner.owner_actor)
+    assessment = session.owner.assessment_module()
     configured = ((registration.get("custom") or {}).get("otto_host_registration") or {}).get("assessment_scope") or {}
     aliases_by_task: dict[str, list[str]] = {}
     for pair in configured.get("task_criterion_pairs", ()) if isinstance(configured, Mapping) else ():
@@ -473,7 +471,7 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
         "guide_ref": guide_ref, "mandate_ref": mandate_ref, "task_ref": first_task,
         "binding": manager["binding"], "fresh_manager": True, "due": None}
     # 5. Finite allowances (kernel limit pools; nothing reserved or spent).
-    limits = LimitService(session.store)
+    limits = session.owner._limit_service
     pools = []
     for allowance in registration["allowances"]:
         pool_ref = ResourceRef(project.authority, "limit", project.id + "-" + allowance["id"])
@@ -551,12 +549,10 @@ def _task_refs(session: Any, project_record: Any) -> dict[str, Any]:
 
 def stored_bundle(session: Any, record: Any) -> dict:
     """Otto's stored copies of the run's files, parsed as a bundle (activation input)."""
-    from herzchen.content import domain_contribution as content_contribution
-    from herzchen.content.packets import ContextPacketService
     from otto.portfolio.documents import ProjectDocumentReader
     from .bundle import parse_files
     reader = ProjectDocumentReader(sheet_reader=session.owner.sheet, content_reader=session.owner.content,
-        visibility_reader=ContextPacketService(session.store.domain_handler((content_contribution(),))))
+        visibility_reader=session.owner.packet_service())
     actor = session.binding.authenticated_actor(session.host["principal"]) if session.host else session.owner.owner_actor
     documents = reader.list_documents(record.ref.to_dict(), actor=actor)["documents"]
     files = {}

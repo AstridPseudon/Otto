@@ -13,9 +13,7 @@ import json
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
-from herzchen.domains.assessment import AssessmentModule
 from herzchen.domains.work.admission import admitted_revision
-from herzchen.kernel import LimitService
 
 
 
@@ -335,7 +333,7 @@ class ReviewedPlanActivation:
         if type(capacity) is not int or type(cumulative) is not int or not 1 <= capacity <= cumulative:
             raise ReviewedActivationError("owner policy allowance is invalid")
         ref = ResourceRef(self.owner.owner_actor.authority, "limit", pool_id)
-        limits = LimitService(self.owner.store)
+        limits = self.owner._limit_service
         existing = limits.get_pool(ref)
         if existing is None:
             return limits.create_pool(ref, capacity_units=capacity, cumulative_allowance_units=cumulative,
@@ -432,8 +430,7 @@ class ReviewedPlanActivation:
                 task = self._require_admitted(task, task_ref.revision)
                 tasks.append(task.ref.to_dict()); criteria.append(criterion_ref.to_dict())
         else:
-            assessment = AssessmentModule(self.owner.store, actor=self.owner.owner_actor,
-                payload_resolver=self.owner.evidence_payload_resolver)
+            assessment = self.owner.assessment_module()
             for index, spec in enumerate(specs):
                 title = spec.get("title", spec.get("name"))
                 if not isinstance(title, str) or not title.strip():

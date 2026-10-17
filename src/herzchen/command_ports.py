@@ -400,8 +400,9 @@ class _OwnerService:
     def _handle(self, channel: socket.socket) -> None:
         try:
             with channel:
-                stream = channel.makefile("rwb"); request = _read(stream)
-                stream.write(_frame(self._dispatch(request))); stream.flush()
+                with channel.makefile("rwb") as stream:
+                    request = _read(stream)
+                    stream.write(_frame(self._dispatch(request))); stream.flush()
         except Exception:
             return
 
@@ -529,8 +530,12 @@ def _activate_transport(transport: SerializedFacadeTransport) -> SerializedFacad
 def _reader_client(reader: Any, *, authority: Optional[str] = None) -> SerializedReaderClient:
     transport = _start_service(reader, "herzchen.kernel.reader", "herzchen.kernel.store.ConsumerStore",
                                _READER_ENDPOINTS, SERIALIZED_COMMAND_REVISION)
-    reader_authority = authority if authority is not None else reader.authority
-    return SerializedReaderClient(SerializedCommandClient(transport), reader_authority, reader.domain_descriptor_digest)
+    try:
+        reader_authority = authority if authority is not None else reader.authority
+        return SerializedReaderClient(SerializedCommandClient(transport), reader_authority, reader.domain_descriptor_digest)
+    except BaseException:
+        close_consumer_facade(transport)
+        raise
 
 
 def _schema_revision(engine_type: type[Any]) -> Optional[str]:
@@ -618,6 +623,7 @@ def command_facade(engine_type: type[Any], domain_id: str) -> type[Any]:
 
     class CommandFacade:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
+            object.__setattr__(self, "_CommandFacade__transports", [])
             from herzchen.kernel.store import ConsumerStore, DomainCommandPort, DomainHandler, DomainOwnerCapability, OperationOwnerCapability, RuntimeDomainOwner, RuntimeOperationOwner, RuntimeOperationReader, Store, StoreAdmissionError, _COMMAND_PORT_CONSTRUCTION_TOKEN
             constructor_args, constructor_kwargs = args, kwargs
             issuer = (args[0] if args else kwargs.get("store", kwargs.get("writer")))
@@ -663,32 +669,46 @@ def command_facade(engine_type: type[Any], domain_id: str) -> type[Any]:
                 object.__setattr__(self, "_CommandFacade__owner_port", port)
                 if reader is not None: object.__setattr__(self, "reader", reader)
                 return
-            transport = _start_service(port, domain_id, engine_type.__module__ + "." + public_name,
-                                       endpoints, _schema_revision(engine_type))
-            object.__setattr__(self, "_CommandFacade__client", SerializedCommandClient(transport))
-            safe: Dict[str, Any] = {}
-            for name, value in vars(engine).items():
-                if name.startswith("_") or callable(value): continue
-                if isinstance(value, ConsumerStore):
-                    safe[name] = _reader_client(value)
-                elif isinstance(value, RuntimeOperationReader):
-                    safe[name] = _reader_client(value, authority=getattr(issuer, "authority", None))
-                elif hasattr(value, "command_port"):
-                    nested_port = value.command_port
-                    nested_transport = _start_service(nested_port, nested_port.domain_id,
-                        type(value).__module__ + "." + type(value).__qualname__, nested_port.endpoints,
-                        _schema_revision(type(value)))
-                    safe[name] = SerializedCommandClient(nested_transport)
-                else:
-                    try: safe[name] = decode_wire(encode_wire(value))
-                    except CommandTransportError: continue
-            for base in engine_type.__mro__[:-1]:
-                for name, value in vars(base).items():
-                    if name.startswith("_") or name in safe or name in descriptors or callable(value): continue
-                    try: safe[name] = decode_wire(encode_wire(value))
-                    except CommandTransportError: continue
-            object.__setattr__(self, "_CommandFacade__attributes", safe)
-            if "reader" in safe: object.__setattr__(self, "reader", safe["reader"])
+            transports = object.__getattribute__(self, "_CommandFacade__transports")
+            try:
+                transport = _start_service(port, domain_id, engine_type.__module__ + "." + public_name,
+                                           endpoints, _schema_revision(engine_type))
+                transports.append(transport)
+                object.__setattr__(self, "_CommandFacade__client", SerializedCommandClient(transport))
+                safe: Dict[str, Any] = {}
+                for name, value in vars(engine).items():
+                    if name.startswith("_") or callable(value): continue
+                    if isinstance(value, ConsumerStore):
+                        client = _reader_client(value)
+                        transports.append(client.transport)
+                        safe[name] = client
+                    elif isinstance(value, RuntimeOperationReader):
+                        client = _reader_client(value, authority=getattr(issuer, "authority", None))
+                        transports.append(client.transport)
+                        safe[name] = client
+                    elif hasattr(value, "command_port"):
+                        nested_port = value.command_port
+                        nested_transport = _start_service(nested_port, nested_port.domain_id,
+                            type(value).__module__ + "." + type(value).__qualname__, nested_port.endpoints,
+                            _schema_revision(type(value)))
+                        transports.append(nested_transport)
+                        safe[name] = SerializedCommandClient(nested_transport)
+                    else:
+                        try: safe[name] = decode_wire(encode_wire(value))
+                        except CommandTransportError: continue
+                for base in engine_type.__mro__[:-1]:
+                    for name, value in vars(base).items():
+                        if name.startswith("_") or name in safe or name in descriptors or callable(value): continue
+                        try: safe[name] = decode_wire(encode_wire(value))
+                        except CommandTransportError: continue
+                object.__setattr__(self, "_CommandFacade__attributes", safe)
+                if "reader" in safe: object.__setattr__(self, "reader", safe["reader"])
+            except BaseException:
+                try:
+                    self.close()
+                except BaseException:
+                    pass  # Keep the constructor failure after retiring every handle.
+                raise
 
         @property
         def command_port(self):
@@ -698,7 +718,23 @@ def command_facade(engine_type: type[Any], domain_id: str) -> type[Any]:
         def consumer_transport(self, *, schema_revision: Optional[str] = None) -> SerializedFacadeTransport:
             port = self.command_port
             if isinstance(port, SerializedCommandClient): return _activate_transport(port.transport)
-            return serve_consumer_facade(self, schema_revision=schema_revision or _schema_revision(engine_type))
+            transport = serve_consumer_facade(self, schema_revision=schema_revision or _schema_revision(engine_type))
+            object.__getattribute__(self, "_CommandFacade__transports").append(transport)
+            return transport
+
+        def close(self) -> None:
+            """Retire only transports issued for this owner facade, children first."""
+            transports = object.__getattribute__(self, "_CommandFacade__transports")
+            owned, transports[:] = tuple(reversed(transports)), []
+            failure = None
+            for transport in owned:
+                try:
+                    close_consumer_facade(transport)
+                except BaseException as exc:
+                    if failure is None:
+                        failure = exc
+            if failure is not None:
+                raise failure
 
         def __getattr__(self, name: str) -> Any:
             from herzchen.kernel.store import DomainCommandPort, DomainHandler, DomainOwnerCapability, OperationOwnerCapability, RuntimeOperationReader, Store, Transaction

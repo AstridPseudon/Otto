@@ -674,8 +674,14 @@ class OwnerService:
             if project_id in self.journeys:
                 return self.journeys[project_id]
         session = HostSession(self.config, host=hosts[owner_kind], project_ids=(project_id,)).__enter__()
-        journey = attach(session, record, command_lock=self.lock, adapter_factory=self.adapter_factory,
-                         turn_admission=lambda: self._manager_turn(project_id))
+        try:
+            journey = attach(session, record, command_lock=self.lock, adapter_factory=self.adapter_factory,
+                             turn_admission=lambda: self._manager_turn(project_id))
+        except BaseException as exc:
+            # This session has not been published in _project_sessions yet, so
+            # service shutdown cannot find it if attach fails partway through.
+            session.__exit__(type(exc), exc, exc.__traceback__)
+            raise
         with self.lock:
             self._project_sessions[project_id] = session
             self.journeys[project_id] = journey
