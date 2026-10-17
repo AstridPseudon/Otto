@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from herzchen.contracts import ResourceRef
+from herzchen.domains.work.admission import task_content_matches
 from herzchen.domains.work.admission import TaskNotAdmittedError
 from otto.hostctl import cli as host_cli, config as host_config, lanes
 from otto.hostctl.owner import HostSession
@@ -196,6 +197,42 @@ class OperatorAdmissionTests(HostctlFixture):
         self.assertEqual((code, answer["outcome"]), (0, "admitted"), answer)
         self.assertEqual(self.prover.reasons,
                          [f"Admit Otto task {self.task_ref.id} at revision {self.task_ref.revision[:12]}"])
+
+    def test_unrelated_worker_capacity_does_not_hold_admission_or_change_its_content_pin(self):
+        """An owner can admit B while A runs; the metadata stamp preserves A's pin."""
+        worker_a = {"running": True, "schedule_id": "worker-a"}
+        host = SimpleNamespace(
+            _external_waiting=1,
+            _capacity_holds=1,
+            _executions={"worker-a": worker_a},
+            _status_read=lambda _request, operation: operation(),
+        )
+        self.owner_service.journeys["project-a"] = SimpleNamespace(
+            execution_host=host, run_id="project-a")
+        previous_project = getattr(self.owner_service._dispatch_context, "project_id", None)
+        self.owner_service._dispatch_context.project_id = "project-a"
+
+        def pin_matches(session):
+            current = session.owner.graph.current(ResourceRef(
+                self.task_ref.authority, self.task_ref.kind, self.task_ref.id))
+            return task_content_matches(session.owner.store, self.task_ref, current.payload,
+                                        current_ref=current.ref)
+
+        try:
+            self.assertTrue(self._owner(pin_matches))
+            request = {"command": "admit", "args": {
+                "task_ref": self.task_ref.to_dict(), "revision": self.task_ref.revision,
+                "review_ref": self.review_ref.to_dict(), "request_key": "admit-during-worker"}}
+            answer = self.owner_service._owner_command("owner", request, "admit-token", Path(self.home))
+            self.assertEqual(answer["outcome"], "admitted", answer)
+            self.assertEqual(host._capacity_holds, 1, "admission released the unrelated worker's capacity")
+            self.assertIs(host._executions["worker-a"], worker_a)
+            self.assertTrue(worker_a["running"], "admission interrupted the unrelated worker")
+            self.assertEqual(self.prover.calls, 1)
+            self.assertTrue(self._owner(pin_matches), "metadata-only admission invalidated the running task pin")
+        finally:
+            self.owner_service.journeys.pop("project-a", None)
+            self.owner_service._dispatch_context.project_id = previous_project
 
     def _submit_while_dispatching(self, *, request_key, status="approved"):
         """Exercise the owner lane while an attached execution host is waiting."""
