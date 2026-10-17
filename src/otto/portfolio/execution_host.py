@@ -392,6 +392,12 @@ class ExecutionHost:
                 released = True
             except (ValueError, KeyError, TypeError, OSError, PermissionError):
                 pass  # Exact source/authorization/prior-settlement mismatch holds.
+        if not released and (due.host_evidence or {}).get("gone_unknown_worker_disposition"):
+            try:
+                self._retained_gone_unknown_worker_disposition(app, due)
+                released = True
+            except (ValueError, KeyError, TypeError, OSError, PermissionError):
+                pass  # Missing or changed manager disposition keeps custody.
         if not released and due.stop_state == "stopped":
             from .worker_custody import retained_stopped_writer_conflict_release
             try:
@@ -409,6 +415,272 @@ class ExecutionHost:
             if self._capacity_holds.pop(due.schedule_id, None) is not None:
                 self.capacity.settle_turn(due.schedule_id)  # a disposition ends custody of used capacity
             self._forget_process_group(due.schedule_id)
+
+    def _retained_gone_unknown_worker_disposition(self, app: Any, due: Any) -> Mapping[str, Any]:
+        """Verify the durable manager disposition before restoring custody."""
+        from .execution import _digest
+        from .execution_operations import OccurrencePreparationError
+        from herzchen.contracts import ResourceRef
+        from dataclasses import replace
+
+        marker = (due.host_evidence or {}).get("gone_unknown_worker_disposition") or {}
+        def require(condition: bool, message: str) -> None:
+            if not condition:
+                raise OccurrencePreparationError(message)
+        require(marker.get("schema") == "otto.worker-gone-unknown-disposition.v1"
+                and due.role == "worker" and due.stop_state == "stopped"
+                and due.completion_state == "unknown" and due.in_flight_request is None,
+                "manager disposition marker or settled occurrence differs")
+        rows = app.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref), kind="report")
+        report = next((row for row in rows if row.ref.to_dict() == marker.get("disposition_ref")), None)
+        require(report is not None, "manager disposition report is missing")
+        require(isinstance(report.value, Mapping), "manager disposition report body is malformed")
+        reader = getattr(getattr(app.portfolio, "operations", None), "_owner_reader", None)
+        events = [] if reader is None else reader.list_events(subjects=(report.ref,))
+        authenticated_actor = app.binding.authenticated_actor(app.actor)
+        require(any(event.operation == "work.report.append" and event.actor == authenticated_actor
+                    for event in events), "manager disposition report is not authenticated")
+        body = report.value
+        require(body.get("schema") == marker["schema"]
+                and body.get("request_key") == marker.get("request_key")
+                and body.get("due_sha256") == marker.get("due_sha256")
+                and body.get("unknown_result_sha256") == marker.get("unknown_result_sha256")
+                and body.get("reason") == marker.get("reason")
+                and body.get("historical_unknown_preserved") is True
+                and body.get("provider_retry_allowed") is False
+                and body.get("assignment_ref") == due.assignment_ref
+                and body.get("generation") == due.generation
+                and body.get("project_ref") == (due.target or {}).get("project_ref")
+                and body.get("process_group_observation") == "gone"
+                and isinstance(body.get("process_group"), Mapping),
+                "manager disposition report differs from its marker")
+        recorded_group = self._process_groups.get(due.schedule_id)
+        if recorded_group is not None:
+            require(recorded_group == body["process_group"] and self._group_state(recorded_group) == "gone",
+                    "recorded process group is live, reused or differs from the disposition")
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        result = attempt.get("result") or {}
+        require(_digest(result) == marker["unknown_result_sha256"]
+                and result.get("outcome") == "unknown",
+                "historical UNKNOWN result changed")
+        original_host = dict(due.host_evidence or {})
+        original_host.pop("gone_unknown_worker_disposition", None)
+        original = replace(due, stop_state=body["before"]["stop_state"],
+            completion_state=body["before"]["completion_state"],
+            in_flight_request=body["before"]["in_flight_request"],
+            version=body["due_version"], host_evidence=original_host)
+        require(_digest(original.to_dict()) == marker["due_sha256"]
+                and _digest(result) == body["unknown_result_sha256"],
+                "settled occurrence or historical UNKNOWN digest differs")
+        if not (app.actor == due.lifecycle_owner == due.owner == due.manager_ref):
+            raise OccurrencePreparationError("manager disposition actor is no longer lifecycle owner")
+        if not ExecutionHost._gone_unknown_assignment_matches(app, due):
+            raise OccurrencePreparationError("manager disposition assignment or project pin changed")
+        return body
+
+    @staticmethod
+    def _gone_unknown_assignment_matches(app: Any, due: Any) -> bool:
+        from types import SimpleNamespace
+        from .execution import _identity
+        from .owner_readers import task_reader
+        try:
+            assignment = app._current(due.assignment_ref, due.generation)
+            scope = assignment.scope.to_dict() if hasattr(assignment.scope, "to_dict") else assignment.scope
+            project = (due.target or {}).get("project_ref")
+            task = (due.target or {}).get("task_ref")
+            if not all(isinstance(ref, Mapping) for ref in (scope, project, task)):
+                return False
+            if (assignment.role not in {"worker", "executor"} or assignment.principal != due.recipient
+                    or assignment.generation != due.generation
+                    or assignment.payload.get("manager") != app.manager_actor):
+                return False
+            if _identity(scope) == _identity(project):
+                return True
+            if _identity(scope) != _identity(task):
+                return False
+            operations = app.portfolio.operations
+            reader = getattr(operations, "_owner_reader", None)
+            if reader is None:
+                reader = getattr(operations, "reader", None)
+            reader_operations = operations if reader is None else SimpleNamespace(reader=reader)
+            observed = task_reader(reader_operations, project, task)(
+                {key: task[key] for key in ("authority", "kind", "id")})
+            return _identity(observed.get("project_ref")) == _identity(project)
+        except (ValueError, KeyError, TypeError, OSError, PermissionError, RuntimeError):
+            return False
+
+    def recover_gone_unknown_worker(self, app: Any, *, schedule_id: str, request_key: str,
+                                    expected_due_sha256: str,
+                                    expected_unknown_result_sha256: str,
+                                    reason: str) -> Mapping[str, Any]:
+        """Manager disposition for an UNKNOWN worker whose recorded group is gone.
+
+        The process-group observation is only the prerequisite for an explicit
+        manager settlement. It never settles the UNKNOWN automatically.
+        """
+        from .execution import _digest
+        from .execution_operations import OccurrencePreparationError
+        from dataclasses import replace
+        from herzchen.contracts import ResourceRef
+
+        due = app._read(schedule_id)
+        marker = (due.host_evidence or {}).get("gone_unknown_worker_disposition")
+        if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 240:
+            return {"outcome": "refused", "cause": "missing_or_invalid_reason", "provider_called": False}
+        if not isinstance(request_key, str) or not request_key.strip() or len(request_key) > 160:
+            return {"outcome": "refused", "cause": "missing_or_invalid_request_key", "provider_called": False}
+        if marker:
+            try:
+                body = self._retained_gone_unknown_worker_disposition(app, due)
+            except (ValueError, KeyError, TypeError, OSError, PermissionError) as exc:
+                return {"outcome": "refused", "cause": "retained_disposition_invalid", "reason": str(exc),
+                        "provider_called": False}
+            if (marker.get("request_key") != request_key
+                    or marker.get("due_sha256") != expected_due_sha256
+                    or marker.get("unknown_result_sha256") != expected_unknown_result_sha256
+                    or marker.get("reason") != reason):
+                return {"outcome": "refused", "cause": "stale_pins_or_request", "provider_called": False}
+            self.restore_execution(app, due)
+            if schedule_id in self._capacity_holds:
+                return {"outcome": "refused", "cause": "retained_disposition_not_verified",
+                        "provider_called": False}
+            return {"outcome": "replayed", "schedule_id": schedule_id,
+                    "disposition_ref": marker["disposition_ref"], "provider_called": False,
+                    "historical_unknown_preserved": True}
+
+        attempt = (due.host_evidence or {}).get("gateway_attempt") or {}
+        result = attempt.get("result") or {}
+        if (due.role != "worker" or due.stop_state != "active" or due.completion_state not in {"none", "unknown"}
+                or not due.in_flight_request or attempt.get("state") != "result"
+                or not isinstance(result, Mapping) or result.get("outcome") != "unknown"):
+            return {"outcome": "refused", "cause": "occurrence_not_unknown_worker", "provider_called": False}
+        if not (app.actor == due.lifecycle_owner == due.owner == due.manager_ref):
+            return {"outcome": "refused", "cause": "manager_is_not_lifecycle_owner", "provider_called": False}
+        project = (due.target or {}).get("project_ref")
+        if not self._gone_unknown_assignment_matches(app, due):
+            return {"outcome": "refused", "cause": "assignment_or_project_pin_stale", "provider_called": False}
+        if (_digest(due.to_dict()) != expected_due_sha256
+                or _digest(result) != expected_unknown_result_sha256):
+            return {"outcome": "refused", "cause": "stale_pins", "provider_called": False}
+        if request_key == due.in_flight_request:
+            return {"outcome": "refused", "cause": "request_key_matches_unknown_attempt", "provider_called": False}
+        schema = "otto.worker-gone-unknown-disposition.v1"
+        body = {"schema": schema, "request_key": request_key,
+                "due_sha256": expected_due_sha256,
+                "unknown_result_sha256": expected_unknown_result_sha256,
+                "reason": reason.strip(), "project_ref": project,
+                "assignment_ref": due.assignment_ref, "generation": due.generation,
+                "historical_unknown_preserved": True, "provider_retry_allowed": False,
+                "due_version": due.version,
+                "before": {"stop_state": due.stop_state,
+                           "completion_state": due.completion_state,
+                           "in_flight_request": due.in_flight_request}}
+        try:
+            rows = app.assignments.list_observations(ResourceRef.from_dict(due.assignment_ref),
+                kind="report", logical_request_keys=[request_key])
+            prior = rows[0] if rows else None
+            if prior is not None:
+                prior_body = prior.value
+                prior_reader = getattr(getattr(app.portfolio, "operations", None), "_owner_reader", None)
+                prior_events = [] if prior_reader is None else prior_reader.list_events(subjects=(prior.ref,))
+                prior_authenticated = app.binding.authenticated_actor(app.actor)
+                if (not isinstance(prior_body, Mapping)
+                        or any(prior_body.get(key) != value for key, value in body.items())
+                        or prior_body.get("process_group_observation") != "gone"
+                        or not isinstance(prior_body.get("process_group"), Mapping)
+                        or not any(event.operation == "work.report.append" and event.actor == prior_authenticated
+                                   for event in prior_events)):
+                    return {"outcome": "refused", "cause": "request_key_report_conflict", "provider_called": False}
+                recorded_group = self._process_groups.get(schedule_id)
+                if recorded_group is not None:
+                    if recorded_group != prior_body["process_group"]:
+                        return {"outcome": "refused", "cause": "recorded_process_group_changed",
+                                "provider_called": False}
+                    group_state = self._group_state(recorded_group)
+                    if group_state != "gone":
+                        return {"outcome": "refused", "cause": "process_group_" + group_state,
+                                "provider_called": False}
+                # The authenticated immutable report records that the owner had
+                # already observed the group gone; finish the interrupted Due write.
+                report = prior
+                body = prior_body
+            else:
+                group = self._process_groups.get(schedule_id)
+                if group is None:
+                    return {"outcome": "refused", "cause": "recorded_process_group_missing", "provider_called": False}
+                group_state = self._group_state(group)
+                if group_state != "gone":
+                    return {"outcome": "refused", "cause": "process_group_" + group_state, "provider_called": False}
+                body["process_group"] = dict(group)
+                body["process_group_observation"] = "gone"
+                report = app.assignments.append_report(
+                    ResourceRef.from_dict(due.assignment_ref), body,
+                    expected_generation=due.generation, logical_request_key=request_key,
+                    actor=app.binding.authenticated_actor(app.actor))
+            if _digest(app._read(schedule_id).to_dict()) != expected_due_sha256:
+                raise OccurrencePreparationError("owner occurrence changed before UNKNOWN disposition")
+            marker = {"schema": schema, "disposition_ref": report.ref.to_dict(),
+                      "request_key": request_key, "due_sha256": expected_due_sha256,
+                      "unknown_result_sha256": expected_unknown_result_sha256,
+                      "reason": reason.strip()}
+            stopped = replace(
+                due, stop_state="stopped", completion_state="unknown", in_flight_request=None,
+                host_evidence={**due.host_evidence, "gone_unknown_worker_disposition": marker})
+            saved = app.due_port.save_due(schedule_id, stopped.to_dict(),
+                request_id=request_key + ":stop", expected_version=due.version)
+        except (ValueError, KeyError, TypeError, OSError, PermissionError, OccurrencePreparationError) as exc:
+            return {"outcome": "refused", "cause": "owner_disposition_failed", "reason": str(exc),
+                    "provider_called": False}
+        settled = app._read(schedule_id)
+        # This normal reconciliation path is the sole in-memory fence release.
+        self.restore_execution(app, settled)
+        if schedule_id in self._capacity_holds:
+            return {"outcome": "refused", "cause": "retained_disposition_not_verified",
+                    "provider_called": False}
+        return {"outcome": "settled", "schedule_id": schedule_id,
+                "due_version": saved["version"], "disposition_ref": report.ref.to_dict(),
+                "provider_called": False, "historical_unknown_preserved": True,
+                "provider_retry_allowed": False}
+
+    def recover_capacity_failed_worker(self, app: Any, *, schedule_id: str) -> Mapping[str, Any] | None:
+        """Settle one manager-qualified terminal worker UNKNOWN and clear its fence.
+
+        Process death alone never qualifies. The existing exact retained native
+        disposition is required, and the normal restore path remains the sole
+        place that removes the in-memory fence.
+        """
+        from .worker_custody import (SCHEMA, inspect_capacity_failed_worker,
+            retained_capacity_release)
+
+        due = app._read(schedule_id)
+        marker = (due.host_evidence or {}).get("worker_custody_release")
+        if marker:
+            if marker.get("schema") != SCHEMA:
+                return None  # Other retained releases keep their own recovery path.
+            # Verify and recover the durable disposition idempotently after a
+            # prior manager call or owner restart.
+            body = retained_capacity_release(app, due)
+            scope = body["scope"]
+        else:
+            try:
+                qualified = inspect_capacity_failed_worker(app, schedule_id=schedule_id)
+            except (ValueError, KeyError, TypeError, OSError, PermissionError):
+                return None
+            scope = qualified
+
+        # The exact Due and UNKNOWN digest bind both retained request keys. A
+        # retry resolves through the immutable marker; it cannot mint another
+        # disposition or authorize a provider replay.
+        pin = hashlib.sha256(json.dumps([schedule_id, scope["due_sha256"],
+            scope["unknown_result_sha256"]], separators=(",", ":")).encode()).hexdigest()
+        request_key = "manager-recover-capacity:" + pin
+        fresh_request_key = "manager-recover-fresh:" + pin
+        result = app.release_capacity_failed_worker(schedule_id=schedule_id,
+            request_key=request_key, fresh_request_key=fresh_request_key,
+            expected_due_sha256=scope["due_sha256"],
+            expected_unknown_result_sha256=scope["unknown_result_sha256"])
+        self.restore_execution(app, app._read(schedule_id))
+        return result
 
     _PROCESS_GROUPS = "capacity-process-groups.json"
 
@@ -571,6 +843,16 @@ class ExecutionHost:
     def _eligible(self, scope: Mapping[str, Any]) -> bool:
         # Capacity follows processes: a hold whose group is provably gone no
         # longer counts, though it stays in the custody fence.
+        # The custody fence blocks new work in its project even after a dead
+        # process has returned its capacity units. Recovery itself is a finite
+        # manager command and does not enter this admission path.
+        if scope["role"] == "worker":
+            for key, row in self._capacity_holds.items():
+                if key == scope["schedule_id"]:
+                    continue
+                if (row.get("project") is None or scope.get("project") is None
+                        or row["project"] == scope["project"]):
+                    return False
         active_by_id = {**self.capacity_holds(),
             **{key: value["scope"] for key, value in self._executions.items() if value["running"]}}
         active = list(active_by_id.values())
@@ -578,6 +860,8 @@ class ExecutionHost:
         if not self.capacity.policy.admits_turn(scope["role"], len(active) - managers, managers):
             return False
         for row in active:
+            # Project scope applies only to the custody fence above. Physical
+            # session and writer/workspace conflicts remain shared resources.
             if (row["assignment"] == scope["assignment"]
                     or scope["session"] and row["session"] == scope["session"]):
                 return False

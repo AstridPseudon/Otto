@@ -9,8 +9,13 @@ from pathlib import Path
 import signal
 import subprocess
 import tempfile
+import threading
+import time
+from dataclasses import replace
+from types import SimpleNamespace
 import unittest
 
+from herzchen.contracts import ResourceRef
 from otto.portfolio.execution_host import ExecutionHost
 from tests import test_worker_custody
 
@@ -54,6 +59,14 @@ class CapacityHoldTests(unittest.TestCase):
     def kill_group(self, process):
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
+        # Group disappearance can trail leader reaping by a scheduler tick.
+        # Wait for it with no deadline: only a hang fails a test.
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
 
     def test_dead_pgid_frees_capacity_keeps_fence(self):
         host = self.host()
@@ -162,6 +175,195 @@ class CapacityHoldTests(unittest.TestCase):
         saved = json.loads((self.directory / "capacity-process-groups.json").read_text())
         self.assertEqual(saved[self.schedule]["pgid"], process.pid)
         self.assertEqual(saved[self.schedule]["pid"], process.pid)
+
+    def test_manager_recovery_releases_killed_unknown_worker_fence_capacity_case(self):
+        from otto.portfolio.manager_journey_service import ManagerJourneyService
+
+        f = self.fixture.f
+        host = self.host()
+        due = f.app._read(self.schedule)
+        before = f.port.read_due(self.schedule)
+        attempt_before = before["host_evidence"]["gateway_attempt"]
+        host.restore_execution(f.app, due)
+        process = self.group()
+        host.record_process_group(self.schedule, process.pid)
+        self.kill_group(process)
+        self.assertEqual(host.reconcile_dead_holds(), [self.schedule])
+        self.assertIn(self.schedule, host._capacity_holds,
+                      "a killed worker keeps its owner custody fence")
+        self.assertNotIn(self.schedule, host.capacity_holds(),
+                         "a proven-dead process returns its capacity slot")
+
+        scope = host._capacity_holds[self.schedule]
+        follow_on = {**scope, "schedule_id": "follow-on-worker",
+                     "assignment": ("execution-owner", "follow-on-assignment", 1),
+                     "session": "follow-on-session"}
+        self.assertFalse(host._eligible(follow_on),
+                         "the unresolved worker fences another execution in its own project")
+        other_project = {**follow_on, "project": "project-b",
+                         "workspace": str(self.directory / "project-b")}
+        self.assertTrue(host._eligible(other_project),
+                        "the dead worker fence does not block another project's worker")
+
+        manager_ref = {"authority": f.project.ref.authority, "kind": "wrk.assignment",
+                       "id": "manager-for-capacity-recovery"}
+        state = {"project_ref": f.project.ref.to_dict(), "manager": "manager",
+                 "assignment_ref": manager_ref, "manager_generation": 1,
+                 "schedule_id": self.schedule, "workers": {"J01": {"schedule_id": self.schedule}},
+                 "requested_model": "gpt-test", "requested_reasoning": "high"}
+        server = SimpleNamespace(owner=f.owner, portfolio=f.app.portfolio, due_port=f.port,
+                                 store=f.store, state=state, _execution=lambda **_options: f.app)
+        service = ManagerJourneyService(server=server, host=host,
+            run_path=self.directory, workspace=Path(f.temporary.name))
+        service._execution = lambda **_options: f.app
+        service.commands._authorize = lambda: f.actor
+
+        recovered = service._execution_control({"command": "execution-control",
+            "operation": "recover", "schedule_id": self.schedule})
+
+        self.assertIn(recovered.get("outcome"), {"released", "replayed"}, recovered)
+        after = f.port.read_due(self.schedule)
+        self.assertEqual(after["stop_state"], "stopped")
+        self.assertEqual(after["completion_state"], "unknown")
+        self.assertEqual(after["host_evidence"]["gateway_attempt"], attempt_before)
+        self.assertIn("worker_custody_release", after["host_evidence"])
+        self.assertNotIn(self.schedule, host._capacity_holds)
+        self.assertTrue(host._eligible(follow_on),
+                        "manager disposition clears the same-project fence for follow-on work")
+        self.assertEqual(f.provider.calls, [])
+        replay = service._execution_control({"command": "execution-control",
+            "operation": "recover", "schedule_id": self.schedule})
+        self.assertEqual(replay["outcome"], "replayed")
+        self.assertEqual(f.port.read_due(self.schedule), after)
+        reports = f.app.assignments.list_observations(
+            ResourceRef.from_dict(after["assignment_ref"]), kind="report")
+        self.assertEqual(len(reports), 1, "recovery replay must not write another disposition")
+
+        project_b = {"authority": "execution-owner", "kind": "work.project", "id": "project-b"}
+        assignment_b = {"authority": "execution-owner", "kind": "wrk.assignment", "id": "manager-b"}
+        state_b = {"project_ref": project_b, "manager": "manager-b",
+                   "assignment_ref": assignment_b, "manager_generation": 1}
+        second_server = SimpleNamespace(owner=f.owner, due_port=f.port, store=f.store, state=state_b)
+        second_service = SimpleNamespace(host=host, server=second_server,
+            workspace=self.directory / "project-b", run_path=self.directory / "project-b")
+        from otto.portfolio.project_services import ProjectServices
+        projects = ProjectServices({"project-a": service})
+        projects.add_view("project-b", second_service)
+        self.assertIn("project-b", projects.services)
+
+    def test_manager_recovery_settles_general_gone_unknown_worker(self):
+        from otto.portfolio.manager_journey_service import ManagerJourneyService
+        from otto.portfolio.execution import _digest
+
+        f = self.fixture.f
+        host = self.host()
+        due = f.app._read(self.schedule)
+        # Keep the canonical outcome UNKNOWN, but make this a general unknown
+        # attempt rather than the narrowly qualified capacity failure.
+        evidence = dict(due.host_evidence)
+        attempt = dict(evidence["gateway_attempt"])
+        result = dict(attempt["result"])
+        result["error"] = {"code": "unclassified_unknown"}
+        attempt["result"] = result
+        evidence["gateway_attempt"] = attempt
+        f.port.save_due(self.schedule, replace(due, host_evidence=evidence).to_dict(),
+                        request_id="general-unknown-fixture", expected_version=due.version)
+        due = f.app._read(self.schedule)
+        before = f.port.read_due(self.schedule)
+        attempt_before = before["host_evidence"]["gateway_attempt"]
+        with self.assertRaises((ValueError, PermissionError)):
+            f.app.inspect_capacity_failed_worker(schedule_id=self.schedule)
+        host.restore_execution(f.app, due)
+        process = self.group()
+        host.record_process_group(self.schedule, process.pid)
+        self.assertIn(self.schedule, host._capacity_holds,
+                      "a killed worker keeps its owner custody fence")
+        self.assertIn(self.schedule, host.capacity_holds(), "live recorded group still occupies capacity")
+
+        manager_ref = {"authority": f.project.ref.authority, "kind": "wrk.assignment",
+                       "id": "manager-for-capacity-recovery"}
+        state = {"project_ref": f.project.ref.to_dict(), "manager": "manager",
+                 "assignment_ref": manager_ref, "manager_generation": 1,
+                 "schedule_id": self.schedule, "workers": {"J01": {"schedule_id": self.schedule}},
+                 "requested_model": "gpt-test", "requested_reasoning": "high"}
+        server = SimpleNamespace(owner=f.owner, portfolio=f.app.portfolio, due_port=f.port,
+                                 store=f.store, state=state, _execution=lambda **_options: f.app)
+        service = ManagerJourneyService(server=server, host=host,
+            run_path=self.directory, workspace=Path(f.temporary.name))
+        service._execution = lambda **_options: f.app
+        service.commands._authorize = lambda: f.actor
+
+        pins = {"expected_due_sha256": _digest(due.to_dict()),
+                "expected_unknown_result_sha256": _digest(result)}
+        base_request = {"command": "execution-control", "operation": "recover",
+                        "schedule_id": self.schedule, "request_key": "gone-unknown-v1",
+                        **pins, "reason": "Worker process was killed; settle its unknown attempt."}
+        with self.assertRaisesRegex(ValueError, "reason"):
+            service._execution_control({key: value for key, value in base_request.items() if key != "reason"})
+        stale = service._execution_control({**base_request,
+            "expected_due_sha256": "0" * 64})
+        self.assertEqual(stale.get("outcome"), "refused", stale)
+        self.assertTrue("stale" in stale.get("cause", "") or "pin" in stale.get("cause", ""), stale)
+        live = service._execution_control(base_request)
+        self.assertEqual(live.get("outcome"), "refused", live)
+        self.assertIn("process_group_alive", live.get("cause", ""), live)
+        self.assertEqual(f.port.read_due(self.schedule), before,
+                         "live group refusal leaves the UNKNOWN occurrence untouched")
+
+        self.kill_group(process)
+        self.assertEqual(host.reconcile_dead_holds(), [self.schedule])
+        self.assertIn(self.schedule, host._capacity_holds,
+                      "a killed worker keeps its owner custody fence until manager recovery")
+        self.assertNotIn(self.schedule, host.capacity_holds(),
+                         "a proven-dead process returns its capacity slot")
+        scope = host._capacity_holds[self.schedule]
+        follow_on = {**scope, "schedule_id": "follow-on-worker",
+                     "assignment": ("execution-owner", "follow-on-assignment", 1),
+                     "session": "follow-on-session"}
+        self.assertFalse(host._eligible(follow_on), "unresolved worker fences its project")
+        other_project = {**follow_on, "project": "project-b",
+                         "workspace": str(self.directory / "project-b")}
+        self.assertTrue(host._eligible(other_project), "fence does not block another project")
+
+        recovered = service._execution_control(base_request)
+
+        self.assertEqual(recovered.get("outcome"), "settled", recovered)
+        after = f.port.read_due(self.schedule)
+        self.assertEqual(after["stop_state"], "stopped")
+        self.assertEqual(after["completion_state"], "unknown")
+        self.assertIsNone(after["in_flight_request"])
+        self.assertEqual(after["host_evidence"]["gateway_attempt"], attempt_before)
+        self.assertIn("gone_unknown_worker_disposition", after["host_evidence"])
+        self.assertNotIn(self.schedule, host._capacity_holds)
+        self.assertTrue(host._eligible(follow_on),
+                        "manager disposition clears the same-project fence for follow-on work")
+        self.assertEqual(f.provider.calls, [])
+        replay = service._execution_control(base_request)
+        self.assertEqual(replay["outcome"], "replayed")
+        self.assertEqual(f.port.read_due(self.schedule), after)
+        reports = f.app.assignments.list_observations(
+            ResourceRef.from_dict(after["assignment_ref"]), kind="report")
+        self.assertEqual(len(reports), 1, "recovery replay must not write another disposition")
+
+        fresh_request = {**f.request(), "request_key": "post-recovery-launch"}
+        fresh = f.app.assign_worker(**fresh_request)
+        dispatched = f.app.assignments.dispatch(ResourceRef.from_dict(fresh["assignment_ref"]),
+            expected_generation=fresh["generation"], logical_request_key="post-recovery-dispatch",
+            actor=f.actor)
+        self.assertEqual(dispatched.status, "dispatched")
+        host.start()
+        self.addCleanup(host.close)
+        with host._command_lock:
+            launched = host._owned(lambda: f.app.start(schedule_id=fresh["schedule_id"]))
+        self.assertTrue(hasattr(launched, "then"), "fresh start enters the bounded host admission path")
+        finished = threading.Event()
+        launch_result = {}
+        launched.then(lambda value: (launch_result.update(value or {}), finished.set()),
+                      lambda error: (launch_result.update(error=str(error)), finished.set()))
+        self.assertTrue(finished.wait(10), "fresh same-project owner execution did not finish")
+        self.assertEqual(launch_result.get("outcome"), "succeeded", launch_result)
+        self.assertEqual(len(f.provider.calls), 1, "fresh same-project dispatch reaches the provider")
+
 
 
 if __name__ == "__main__":
