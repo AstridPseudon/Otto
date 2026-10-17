@@ -730,46 +730,47 @@ class ExecutionHost:
 
     @staticmethod
     def _group_state(record: Mapping[str, Any]) -> str:
-        """gone | alive | reused | unproven. Only gone may free capacity.
+        """gone | alive | reused | unproven. Gone or reused frees physical capacity.
 
         Gone needs both an empty process group and an absent pid. A pid that is
-        live with another start time is reused, a pgid that still has members is
-        alive, and anything unreadable is unproven; each of those stays held.
+        live with another start time is reused only if the recorded group is
+        empty. A live group with a changed leader is unproven: it may still
+        contain the old worker's descendants. Both live and unproven stay charged.
         """
         pid, pgid, birth = record.get("pid"), record.get("pgid"), record.get("birth")
         if (type(pid) is not int or type(pgid) is not int or pid <= 0 or pgid <= 0
                 or not isinstance(birth, list) or not birth or any(type(v) is not int for v in birth)):
             return "unproven"
         try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            return "alive"
-        except OSError:
-            return "unproven"
-        else:
-            return "alive"
-        try:
             live = _process_start_identity(pid)
         except (FileNotFoundError, ProcessLookupError):
-            return "gone"
+            live = None
         except PermissionError:
             # The native reader also reports an exiting process this way.
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                return "gone"
+                live = None
             except PermissionError:
                 return "alive"
-            return "alive"
+            else:
+                return "alive"
         except (OSError, ValueError, IndexError):
             return "unproven"
-        return "alive" if list(live["birth"]) == birth else "reused"
+        changed_birth = live is not None and list(live["birth"]) != birth
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return "reused" if changed_birth else "gone" if live is None else "alive"
+        except PermissionError:
+            return "unproven" if changed_birth else "alive"
+        except OSError:
+            return "unproven"
+        return "unproven" if changed_birth else "alive"
 
     def _reconcile_hold(self, schedule_id: str) -> bool:
         record = self._process_groups.get(schedule_id)
-        if record is None or self._group_state(record) != "gone":
+        if record is None or self._group_state(record) not in {"gone", "reused"}:
             return False
         self._capacity_freed.add(schedule_id)
         return True
@@ -1022,8 +1023,6 @@ class ExecutionHost:
         if self._threads:
             raise RuntimeError("execution host is already started")
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Holds were restored before the host serves; settle which are already dead.
-        self.reconcile_dead_holds()
         if self.owner_path is not None:
             # Exclusive custody; a live competing owner is never replaced.
             # PID alone is only a locator.  Re-read its process-start and boot
@@ -1083,6 +1082,9 @@ class ExecutionHost:
             # Only the owner that has claimed this directory may clean up its
             # prior worker records. A competing constructor must leave them alone.
             self._terminate_recorded_process_groups()
+        # Holds were restored before the host serves. Only the claimed owner
+        # may mutate retained physical capacity after checking their identity.
+        self.reconcile_dead_holds()
         # A partial atomic response from a crashed host is never a terminal
         # response. Only our own response-temp naming convention is removed.
         for temporary in self.directory.glob(".response-*.json.tmp"):

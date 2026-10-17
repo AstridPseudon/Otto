@@ -354,8 +354,11 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
             process.kill()      # our unreaped leader: a direct kill is safe even when the census is blind
         process.communicate()
         return TurnResult(None, None, "unknown", error="host process timed out", plan=plan)
-    custody.release()
+    disposition = custody.release()
     code = process.returncode
+    if not disposition.gone:
+        return TurnResult(None, None, "unknown", exit_status=code,
+                          error="host cleanup unresolved: " + disposition.reason, plan=plan)
     try:
         for line in stdout.splitlines():
             events.extend(parser.feed(line))

@@ -1002,7 +1002,8 @@ class CodexCliBinding(HostPort):
         ):
             physical_session = request.identity.physical_session_id
         identity = type(request.identity)(request.identity.logical_agent_id, physical_session)
-        if trace_error is not None:
+        cleanup_unresolved = custody_disposition is not None and not custody_disposition.gone
+        if trace_error is not None or cleanup_unresolved:
             outcome = HostOutcome.UNKNOWN
         elif exit_status == 0 and physical_session:
             outcome = HostOutcome.SUCCEEDED
@@ -1014,10 +1015,11 @@ class CodexCliBinding(HostPort):
                               request.requested_profile, observed_runner=RUNNER_ID,
                               observed_profile=observed_profile, process_id=str(process.pid),
                               unsupported_reason=None if outcome == HostOutcome.SUCCEEDED else (
+                                  "native_cleanup_unresolved" if cleanup_unresolved else (
                                   "native_invocation_context_unverified" if trace_error is not None else (
                                       "codex_execution_timeout" if exit_status is None
                                       else "codex_execution_interrupted" if exit_status < 0
-                                      else "codex_execution_failed")))
+                                      else "codex_execution_failed"))))
         verification_failures = []
         native_context = _native_host_context(
             native_lines,

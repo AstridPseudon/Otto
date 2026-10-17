@@ -112,6 +112,8 @@ def terminate_recorded_process_group(record: Mapping[str, Any], *,
     if current_birth != birth:
         return False
     try:
+        if os.getpgid(pid) != pgid:
+            return False
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         return False
@@ -452,11 +454,11 @@ class ClaudeCliTransport:
             code = process.wait(timeout=max(.01, deadline - time.monotonic()))
             turn = parser.finish(code)
             disposition = custody.release()     # sweeps stragglers the CLI left in its tree
+            if not disposition.gone:
+                raise ClaudeBindingError("owned process cleanup unresolved: " + disposition.reason)
             result = {**dict(turn.native), 'usage': turn.usage, 'usage_capture': turn.usage_capture, 'scope': proof,
                     'command': command, 'exit_status': code, 'stderr': stderr.decode('utf-8', errors='replace')[:4096],
                     'launcher': vars(self.pin), 'parser_schema': PARSER_SCHEMA}
-            if not disposition.gone:
-                result['custody'] = {'state': disposition.state, 'reason': disposition.reason}
             return result
         finally:
             selector.close()

@@ -621,6 +621,16 @@ class FakeHarness(Workspace):
         self.assertEqual(result.outcome, "failed")
         self.assertEqual(result.exit_status, 3)
 
+    def test_run_turn_keeps_unknown_when_cleanup_does_not_settle(self):
+        from herzchen.fleet.custody import Custody, Disposition
+        H = hosts()
+        spec = H.TurnSpec(executable=self.exe, workspace=self.root, prompt="p", model="m", reasoning="low",
+                          profile="workspace-write")
+        with mock.patch.object(Custody, "release", return_value=Disposition("uncertain", "census unavailable")):
+            result = H.run_turn(fake_host_class()(), spec)
+        self.assertEqual(result.outcome, "unknown")
+        self.assertIn("census unavailable", result.error)
+
     def test_a_host_that_skips_part_of_the_contract_cannot_register(self):
         H = hosts()
 

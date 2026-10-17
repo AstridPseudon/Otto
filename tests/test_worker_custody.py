@@ -7,8 +7,10 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from herzchen.contracts import ResourceRef
 from otto.portfolio.execution import _digest
@@ -127,6 +129,7 @@ class WorkerCustodyTests(unittest.TestCase):
                   'birth': [value + 1 for value in _process_start_identity(stale.pid)['birth']]}
         self.assertFalse(terminate_recorded_process_group(reused))
         self.assertIsNone(stale.poll(), 'a reused PID must be left alone')
+
 
     def test_owner_startup_terminates_a_recorded_worker_group(self):
         from otto.portfolio.execution_host import ExecutionHost, _process_start_identity
@@ -279,6 +282,76 @@ class WorkerCustodyTests(unittest.TestCase):
         with self.trace.open('a') as trace: trace.write(jsonl([{'type': 'world_state', 'payload': {}}]))
         self.assertFalse(permits_fresh_worker(self.f.app, self.f.app._read(self.schedule),
             request={'request_key': 'new-worker-v1', 'route': 'normal', 'principal': 'worker'}, model='gpt-test', reasoning='high'))
+
+
+class RestartProcessScopeTests(unittest.TestCase):
+    def test_competing_owner_cannot_reconcile_capacity_before_claim(self):
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-owner-') as root:
+            owner = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            owner.start()
+            try:
+                contender = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+                with mock.patch.object(contender, 'reconcile_dead_holds') as reconcile:
+                    with self.assertRaisesRegex(RuntimeError, 'another execution host owns'):
+                        contender.start()
+                    reconcile.assert_not_called()
+            finally:
+                owner.close()
+
+    def test_recorded_birth_without_recorded_group_cannot_signal_a_reused_group(self):
+        from otto.agents.claude_cli import terminate_recorded_process_group
+        record = {'pid': 123, 'pgid': 123, 'birth': [7]}
+        with mock.patch('otto.agents.claude_cli.os.getpgid', return_value=456), \
+                mock.patch('otto.agents.claude_cli.os.killpg') as kill:
+            self.assertFalse(terminate_recorded_process_group(record, birth_reader=lambda _pid: [7]))
+            kill.assert_not_called()
+
+    def test_changed_leader_with_live_recorded_group_keeps_physical_hold(self):
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-group-') as root:
+            host = ExecutionHost(directory=root, handler=lambda _request: None, bounded_transports=True)
+            host._process_groups['old'] = {'pid': 123, 'pgid': 123, 'birth': [7]}
+            with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                            return_value={'birth': [8]}), \
+                    mock.patch('otto.portfolio.execution_host.os.killpg', return_value=None):
+                self.assertEqual(host._group_state(host._process_groups['old']), 'unproven')
+                self.assertFalse(host._reconcile_hold('old'))
+
+    def test_restart_reuses_group_without_killing_it_and_frees_only_physical_capacity(self):
+        from otto.portfolio.execution_host import ExecutionHost
+        with tempfile.TemporaryDirectory(prefix='worker-restart-') as root:
+            directory = Path(root)
+            (directory / 'capacity-process-groups.json').write_text(json.dumps({
+                'old': {'pid': 123, 'pgid': 123, 'birth': [7]},
+                'matching': {'pid': 124, 'pgid': 124, 'birth': [9]}}))
+            host = ExecutionHost(directory=directory, handler=lambda _request: None, bounded_transports=True)
+            old = {'schedule_id': 'old', 'project': 'project-a', 'role': 'worker', 'session': 'a',
+                   'assignment': ('a', 1), 'workspace': str(directory / 'a'), 'writer': False}
+            host._capacity_holds['old'] = old
+            host.capacity.ensure_turn('old', uncertain=True)
+            signals = []
+            def signal_group(pgid, sig):
+                if pgid == 123 and sig == 0:
+                    raise ProcessLookupError
+                if sig == signal.SIGKILL:
+                    self.assertTrue(host.owner_path.exists(), 'the host must claim before signaling')
+                    signals.append(pgid)
+            with mock.patch('otto.portfolio.execution_host._process_start_identity',
+                               side_effect=lambda pid: {'birth': [8] if pid == 123 else [9] if pid == 124 else [1], 'pid': pid,
+                                                        'parent': 1, 'uid': os.getuid()}), \
+                    mock.patch('otto.agents.claude_cli.os.getpgid', side_effect=lambda pid: 456 if pid == 123 else pid), \
+                    mock.patch('otto.agents.claude_cli.os.killpg', side_effect=signal_group):
+                host.start()
+                try:
+                    self.assertEqual(signals, [124])
+                    self.assertIn('old', host._capacity_holds)
+                    self.assertNotIn('old', host.capacity_holds())
+                    other = {**old, 'schedule_id': 'new', 'project': 'project-b', 'session': 'b',
+                             'assignment': ('b', 1), 'workspace': str(directory / 'b')}
+                    self.assertTrue(host._eligible(other))
+                finally:
+                    host.close()
 
 
 if __name__ == '__main__': unittest.main()
