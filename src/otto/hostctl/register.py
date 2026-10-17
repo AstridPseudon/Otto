@@ -406,10 +406,16 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
         if not isinstance(criterion_text, str) or not criterion_text.strip():
             raise ValueError("registered task " + alias + " has no explicit proof criterion")
         criterion_aliases = aliases_by_task.get(alias) or [alias + "-criterion"]
-        criterion_specs = [{"id": criterion_alias, "source_alias": criterion_alias,
-                            "definition": criterion_text.strip()}
-                           for criterion_alias in criterion_aliases]
         scope_id = "host-activation-" + hashlib.sha256((project.id + ":" + alias).encode()).hexdigest()[:24]
+        criterion_specs = [{
+            # Criterion aliases are policy labels and may already identify a
+            # criterion declared by another owner path. Keep the product
+            # identity unique to this activation scope and resolve policy via
+            # source_alias instead of claiming the alias as a global id.
+            "id": "host-criterion-" + hashlib.sha256(
+                (scope_id + ":" + str(index) + ":" + criterion_alias).encode()).hexdigest()[:24],
+            "source_alias": criterion_alias, "definition": criterion_text.strip()}
+            for index, criterion_alias in enumerate(criterion_aliases)]
         scope = assessment.declare_scope(
             ResourceRef(project.authority, "assessment.scope", scope_id),
             parent_obligation=task.ref, protocol="otto-registered-run", criteria=criterion_specs,
