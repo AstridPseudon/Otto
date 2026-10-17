@@ -10,7 +10,6 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 
 ## Questions for the orchestrator
 
-- **PK3 §15 decision:** May PK3 update `tests/test_megado_templates.py::test_templates_are_json_and_match_the_host_profiles` so the two Megado run templates stop carrying seven static profile bindings and instead resolve them from the new pinned profile pack? The current test explicitly asserts those static values. §15 requires an Opus decision when an existing test's expected behavior changes; no such decision is recorded here. PK3 has no committed implementation. Its draft tests were not accepted: the source scan was overbroad and there is no production change to validate yet. PK5 depends on PK3. PK4 is independent and has landed.
 
 ## Astra final review
 
@@ -19,3 +18,7 @@ Reviewed the merged project diff against the goal and deletion budget. Astra fou
 **Needs the gate:** `src/otto/portfolio/tests/test_role_context.py` has 22 owner-backed tests that fail at Unix socket fixture setup with `PermissionError`; `src/otto/portfolio/tests/test_d05_events_candidate_proof.py` has 5 tests blocked at the same socket setup. The focused non-socket role-pack checks and `src/otto/portfolio/tests/test_observability_contract.py` pass.
 
 **Remaining scope:** PK3 is blocked on the requested §15 Opus decision about replacing the two Megado run templates' static profile bindings. PK5 and its cold-agent measurement are blocked by PK3. The `host_profiles.PROFILES` table and 101 static run-template lines therefore remain; this is outstanding deletion-budget work, not a defect in the merged tasks.
+
+## Decisions
+
+- **PK3 §15 decision approved by the orchestrator:** `tests/test_megado_templates.py::test_templates_are_json_and_match_the_host_profiles` may assert that both Megado run templates resolve their seven profile bindings from the pinned profile pack instead of carrying static values. The test intent—templates match the host profiles—remains unchanged.
