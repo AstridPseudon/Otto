@@ -45,6 +45,10 @@ class CapacityPolicy:
         return self.turn_units + self.manager_reserve + self.heavy_headroom
 
     @property
+    def total_turn_units(self) -> int:
+        return self.turn_units + self.manager_reserve
+
+    @property
     def worker_units(self) -> int:
         return self.turn_units
 
@@ -60,7 +64,7 @@ class CapacityPolicy:
         """
         if role == "manager":
             return (managers + 1 <= self.manager_units
-                    and workers + managers + 1 <= self.turn_units + self.manager_reserve)
+                    and workers + managers + 1 <= self.total_turn_units)
         return workers + max(0, managers - self.manager_reserve) + 1 <= self.turn_units
 
 
