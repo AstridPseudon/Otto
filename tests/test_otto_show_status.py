@@ -58,7 +58,8 @@ class ShowTests(unittest.TestCase):
         self.store.register_domain_handler(domains)
         self.addCleanup(self.store.close)
         binding = HerzchenBindingConfig("a3-show-test", "fixture-credential")
-        seed = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
+        seed = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+                                       operator_actor="fixture-operator")
         saved = OttoPortfolio(seed.consumer_operations()).save_project(
             _file(_task("A"), _task("B", dependencies=["A"])), actor="owner", request_id="show-seed")
         self.assertEqual(saved["outcome"], "saved", saved)
@@ -66,6 +67,7 @@ class ShowTests(unittest.TestCase):
         self.task_ref = saved["task_refs"]["B"]
         # The read is scoped: the owner reads this one project through a grant for it.
         self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+            operator_actor="fixture-operator",
             project_read_grant=ProjectReadGrant(binding.authenticated_actor("owner"),
                 (self.project_ref["id"],), "fixture-owner", "1"))
         self.portfolio = OttoPortfolio(self.owner.consumer_operations())
@@ -239,11 +241,13 @@ class StatusTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.store.register_domain_handler(host_domains())
         binding = HerzchenBindingConfig("owner", "credential")
-        owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
+        owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+                                        operator_actor="fixture-operator")
         self.portfolio = ResourceRef("owner", "wrk.portfolio", "portfolio")
         root = owner.assignments.assign(self.portfolio, role="orchestrator", principal="orchestrator",
                                         logical_request_key="root")
         self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+                                             operator_actor="fixture-operator",
                                              portfolio_ref=self.portfolio, main_assignment_ref=root.ref)
         self.session = SimpleNamespace(store=self.store, owner=self.owner, binding=binding,
             config={"home": temporary.name},

@@ -36,7 +36,7 @@ class ProjectFolderScaleTests(ProjectFolderProof):
         from otto.portfolio.intake import OttoPortfolio
         self.owner = PortfolioOwnerBootstrap(self.store,
             binding=HerzchenBindingConfig("d01-fixture", "fixture-credential"),
-            owner_actor="owner", materializer=self.materialize,
+            owner_actor="owner", operator_actor="fixture-operator", materializer=self.materialize,
             folder_transport_request_bytes=256 * 1024 * 1024)
         self.portfolio = OttoPortfolio(self.owner.consumer_operations())
 

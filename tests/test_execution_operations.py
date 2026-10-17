@@ -85,7 +85,7 @@ class Tests(unittest.TestCase):
     def _worker_admission_fixture(self, *, admitted=True, revision_available=True,
                                   project_dependency=None, task_blocked=False):
         from herzchen.contracts import ResourceRef
-        from herzchen.domains.work.admission import content_digest
+        from herzchen.domains.work.admission import authoring_stamp
 
         project_ref = {"authority": "owner", "kind": "work.project", "id": "p", "revision": "p-2"}
         task_ref = {"authority": "owner", "kind": "work.task", "id": "t", "revision": "t-2"}
@@ -108,9 +108,8 @@ class Tests(unittest.TestCase):
         gate = Record(gate_ref, {"project_ref": upstream_ref, "lifecycle": "active"})
         task_payload = {"project_ref": project_ref,
             "dependencies": [gate_ref] if task_blocked else [], "title": "admitted task"}
-        task_payload["metadata_namespaces"] = {"work.admission": {
-            "revision": "t-1", "digest": content_digest(task_payload),
-        }}
+        task_payload["metadata_namespaces"] = {
+            "work.admission": authoring_stamp("t-1", task_payload, "reviewer")}
         if not admitted:
             task_payload["title"] = "changed after admission"
         task = Record(task_ref, task_payload)

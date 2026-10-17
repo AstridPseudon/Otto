@@ -42,7 +42,8 @@ class PendingInertTaskTests(unittest.TestCase):
         self.store.register_domain_handler(domains)
         self.addCleanup(self.store.close)
         binding = HerzchenBindingConfig("a1-inert-tasks-test", "fixture-credential")
-        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
+        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+                                             operator_actor="fixture-operator")
         self.portfolio = OttoPortfolio(self.owner.consumer_operations())
         created = self.portfolio.create_draft(actor="owner", request_id="inert-create",
                                               title="A plan", brief="The plan brief")

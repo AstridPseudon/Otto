@@ -47,7 +47,8 @@ class ProjectAuthoringProof(unittest.TestCase):
     def bind(self):
         self.owner = PortfolioOwnerBootstrap(self.store,
             binding=HerzchenBindingConfig("d01-fixture", "fixture-credential"),
-            owner_actor="owner", materializer=self.materialize)
+            owner_actor="owner", operator_actor="fixture-operator",
+            materializer=self.materialize)
         self.portfolio = OttoPortfolio(self.owner.consumer_operations())
 
     def restart(self):

@@ -297,7 +297,8 @@ class ProjectFolderProof(ProjectAuthoringProof):
         target_path = self.root/'target.sqlite'
         target_store = Store.create(target_path,authority='target-fixture')
         target_store.register_domain_handler(self.domains)
-        target = PortfolioOwnerBootstrap(target_store,binding=HerzchenBindingConfig('target-fixture','fixture-credential'),owner_actor='owner')
+        target = PortfolioOwnerBootstrap(target_store,binding=HerzchenBindingConfig('target-fixture','fixture-credential'),
+            owner_actor='owner',operator_actor='fixture-operator')
         portfolio = OttoPortfolio(target.consumer_operations())
         original = FiniteWorkOperations._link_document
         def interrupt(operations,payload,**options):
@@ -310,7 +311,8 @@ class ProjectFolderProof(ProjectAuthoringProof):
         target_store.close()
         target_store = Store.open(target_path,authority='target-fixture',expected_domains=tuple(sorted(self.domains,key=lambda domain:domain.domain_id)))
         self.addCleanup(target_store.close)
-        target = PortfolioOwnerBootstrap(target_store,binding=HerzchenBindingConfig('target-fixture','fixture-credential'),owner_actor='owner')
+        target = PortfolioOwnerBootstrap(target_store,binding=HerzchenBindingConfig('target-fixture','fixture-credential'),
+            owner_actor='owner',operator_actor='fixture-operator')
         portfolio = OttoPortfolio(target.consumer_operations())
         completed = portfolio.import_project(snapshot,actor='owner',request_id='transfer')
         self.assertEqual(completed['outcome'],'imported',completed)
@@ -377,7 +379,7 @@ class ProjectFolderProof(ProjectAuthoringProof):
         from otto.portfolio.herzchen_binding import HerzchenBindingConfig
         from otto.portfolio.intake import OttoPortfolio
         owner = PortfolioOwnerBootstrap(self.store,binding=HerzchenBindingConfig('d01-fixture','fixture-credential'),
-            owner_actor='owner',materializer=unsafe)
+            owner_actor='owner',operator_actor='fixture-operator',materializer=unsafe)
         result = OttoPortfolio(owner.consumer_operations()).checkout_project(ref,actor='owner',request_id='unsafe-open')
         self.assertEqual(result['outcome'],'saved_project_edit_not_opened',result)
         self.assertFalse((self.root/'space name.md').exists())

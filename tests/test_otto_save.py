@@ -49,7 +49,8 @@ class OtToSaveTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         register_plan_metadata()
         binding = HerzchenBindingConfig("a2-otto-save-test", "fixture-credential")
-        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
+        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+                                             operator_actor="fixture-operator")
         self.portfolio = OttoPortfolio(self.owner.consumer_operations())
 
     def _counts(self):

@@ -52,7 +52,8 @@ class RevisionTests(unittest.TestCase):
         self.addCleanup(self.store.close)
         register_plan_metadata()
         binding = HerzchenBindingConfig("a2-revisions-test", "fixture-credential")
-        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner")
+        self.owner = PortfolioOwnerBootstrap(self.store, binding=binding, owner_actor="owner",
+                                             operator_actor="fixture-operator")
         self.portfolio = OttoPortfolio(self.owner.consumer_operations())
 
     # ---- helpers -----------------------------------------------------------------
@@ -199,7 +200,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_admitted_revision_resolves_to_its_own_content(self):
         created = self._created(_task("A"))
-        owner = self.owner.owner_actor
+        owner = self.owner.operator_actor
         task = self.owner.graph.create_task(self._project(created["project_ref"]), title="Admitted plan",
                                             logical_request_key="admitted-task", actor=owner)
         before = self.owner.graph.admission_state(unpinned(task.ref))
