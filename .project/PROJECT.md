@@ -169,3 +169,5 @@ Changed files: `src/otto/portfolio/cli.py`, `src/otto/hostctl/portfolio.py`, `te
 The portfolio CLI now accepts `--request-key` as an alias for `--request-id` on logical mutations: `save`, `retire`, `create-pending`, onboarding `create`/`reopen`, and `project-advisor-pair`. Each spelling maps to the same `request_id` destination. The `ottoctl portfolio save` forwarding parser accepts either spelling and forwards the value unchanged as `--request-id`. Transport-handle routes such as `ottoctl request-status --request-id` are unchanged and reject `--request-key`.
 
 Changed files: `src/otto/portfolio/cli.py`, `src/otto/hostctl/portfolio.py`, `tests/test_request_key_alias.py`, `.project/PROJECT.md`. Focused parser/forwarding regression: `tests/test_request_key_alias.py` (15 passed). `tests/test_owner_lane.py` needs the gate: its owner service fixture failed during setup because AF_UNIX socket bind was denied; no tests ran. No deletion in this task.
+
+2026-10-17 20:58 UTC | SL9E | merged 32e069e | +59/-7 | request-key alias 15 passed; owner-lane integration needs the gate; diff check clean | transport request-status retained request-id.
