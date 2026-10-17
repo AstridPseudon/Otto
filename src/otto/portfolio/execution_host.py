@@ -28,6 +28,7 @@ from .recovery_timing import ReceiptTiming, attach_receipt_timing, stable_correl
 from .owner_completion import OwnerCompletion, after_owner
 from .ipc_retention import prune_answered_responses
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
+from herzchen.fleet.draining import QueuedAdmissionDrain
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -251,6 +252,8 @@ class ExecutionHost:
         self._owner_thread: int | None = None
         # These are continuations of retained requests, not durable new work.
         self._executions: dict[str, dict[str, Any]] = {}
+        self._execution_drain = QueuedAdmissionDrain(
+            self._executions, lock=self._lock, closing=lambda: self._closing)
         # _capacity_holds is the custody fence: it lists every hold until an
         # exact disposition releases it. _capacity_freed names the holds whose
         # process group is provably gone; they keep the fence, not a slot.
@@ -935,16 +938,9 @@ class ExecutionHost:
                 "next_action": "Start this same prepared occurrence explicitly after owner restart."}
 
         while True:
-            with self._lock:
-                closing = self._closing
-                queued = []
-                if closing:
-                    queued = [self._executions.pop(schedule) for schedule, job in
-                              list(self._executions.items()) if not job["running"]]
-            if closing:
-                for job in queued:
-                    schedule = job["scope"]["schedule_id"]
-                    job["completion"].resolve(drain_held(schedule))
+            if self._execution_drain.settle_unstarted(
+                    running=lambda job: job["running"],
+                    settle=lambda schedule, job: job["completion"].resolve(drain_held(schedule))):
                 return
             if self._dispatch_held:
                 return
@@ -1014,10 +1010,9 @@ class ExecutionHost:
                     from .execution_operations import recheck_execution_admission
                     if recheck_execution_admission(job["app"], due) != job["admission_binding"]:
                         raise PermissionError("worker admission or dependency state changed before launch")
-                    with self._lock:
-                        if self._closing:
-                            return drain_held(schedule)
-                        job["operation_started"] = True
+                    if not self._execution_drain.mark_started_if_open(
+                            lambda: job.__setitem__("operation_started", True)):
+                        return drain_held(schedule)
                     token = _ACTIVE_EXECUTION.set((self, job))
                     try:
                         return job["operation"]()

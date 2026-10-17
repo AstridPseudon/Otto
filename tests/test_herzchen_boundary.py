@@ -112,7 +112,8 @@ def test_herzchen_imports_no_otto():
     assert offenders == {}
 
 
-@pytest.mark.parametrize("module", ["herzchen.domains.work.usage", "herzchen.adapters.host"])
+@pytest.mark.parametrize("module", ["herzchen.domains.work.usage", "herzchen.adapters.host",
+                                    "herzchen.fleet.draining"])
 def test_herzchen_import_loads_without_otto(module):
     code = (
         "import importlib, sys\n"
