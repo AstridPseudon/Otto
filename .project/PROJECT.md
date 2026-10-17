@@ -6,6 +6,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 
 2026-10-17 19:55 UTC | SL0 | merged 81abf5c | +410/-4 | `tests/test_slim_ledger.py` (1 passed) | files: `.project/PROJECT.md`, `.project/ledger.md`, `.project/tasklist.md`, `scripts/slim_ledger.py`, `tests/test_slim_ledger.py`; measured 47,920 baseline and 11,980 threshold, 99 portfolio modules plus 38 controller modules; no deletions.
 2026-10-17 20:05 UTC | SL4 | merged 9fdc4be | +22/-781 | `tests/test_usage_contract.py` (9 passed); `src/otto/portfolio/tests/test_observability_views.py`, `tests/test_portfolio_status.py`, `tests/test_host_startup_composition.py` needs the gate (AF_UNIX bind denied) | retired proof-only Events modules and wrappers; no controller files deleted; ledger regenerated. Files listed in SL4 evidence below.
+2026-10-17 20:20 UTC | SL1 | merged cd4d611 | +55/-414 | `tests/test_manager_journey_service.py -k effective_manager_brief` (2 passed); broader journey, advisor delivery, and direction invocation checks need the gate (AF_UNIX bind denied) | adopted exact direction revisions now reach the effective replacement brief; removed 282-line unused advisor adapter; Astra found no concrete defect. Files listed in SL1 evidence below.
 
 ### SL4 worker evidence
 
@@ -20,5 +21,9 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 Files changed: `src/otto/portfolio/role_context.py`, `src/otto/portfolio/__init__.py`, `src/otto/portfolio/advisor_context.py` (deleted), `src/otto/portfolio/tests/test_direction_invocation.py`, `tests/test_manager_journey_service.py`, and `tests/test_project_advisor_context.py` (deleted). `advisor_context.py` was 282 portfolio lines, with zero production callers beyond three package exports and one dedicated test file; source, controller, command, and dynamic-reference scans found no retained caller. Those 282 lines and four export lines were removed, along with 127 lines of tests specific to the retired adapter. The canonical direction resolver and DueRecord delivery code remain in place.
 
 The focused manager-brief projection regression failed before implementation on missing `direction_context` and passes after implementation: `tests/test_manager_journey_service.py -k effective_manager_brief` (2 passed). `tests/test_project_advisor_delivery.py` reports 28 passed and one **needs the gate**: `OwnerAdmissionTests.test_adoption_base_claim_reconciles_before_allowance_gateway_and_provider` reaches a Unix socket bind denied by this sandbox. `src/otto/portfolio/tests/test_direction_invocation.py` reports eight **needs the gate** at the same fixture socket bind, including the new replacement regression; none reached its assertion here. Assertions were not weakened.
+
+### SL1 Astra review
+
+Astra reviewed `4dee01c..task/SL1` before merge and found no concrete defects. It confirmed the brief projection uses the canonical adopted revision, the new replacement regression covers newer drafts and foreign responsibility directions, the removed adapter has no retained production caller, DueRecord delivery/wake and canonical resolution are unchanged, and the SL4 removals remain absent. The manager accepted the review without additional changes. 
 
 ## Questions for the orchestrator
