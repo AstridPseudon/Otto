@@ -324,7 +324,12 @@ class HostOwnerService:
                         # proof and marks its alias on the criterion record;
                         # that registered-run binding is authoritative for
                         # this canonical run policy.
-                        registered_run_scope = getattr(scope, "protocol", None) == "otto-registered-run"
+                        registered_run_scope = (
+                            getattr(scope, "protocol", None) == "otto-registered-run"
+                            or (getattr(scope, "protocol", None) == "check-accepted"
+                                and scope.policy.get("required_for_completion") is True
+                                and scope.policy.get("acceptance_mode") == "check-accepted")
+                        )
                         if registered_run_scope:
                             aliases[alias] = ref.to_dict()
                             registered_aliases.add(alias)
@@ -334,7 +339,10 @@ class HostOwnerService:
                             raise RuntimeError("assessment criterion alias is ambiguous: " + alias)
                     else:
                         aliases[alias] = ref.to_dict()
-                        if getattr(scope, "protocol", None) == "otto-registered-run":
+                        if (getattr(scope, "protocol", None) == "otto-registered-run"
+                                or (getattr(scope, "protocol", None) == "check-accepted"
+                                    and scope.policy.get("required_for_completion") is True
+                                    and scope.policy.get("acceptance_mode") == "check-accepted")):
                             registered_aliases.add(alias)
 
         # A retained alias may come from a prior canonical hydration for an

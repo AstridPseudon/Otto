@@ -398,6 +398,10 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
         if not all(isinstance(value, str) and value.strip() for value in (task_alias, criterion_alias)):
             raise ValueError("assessment_accounting contains an empty task/criterion alias")
         aliases_by_task.setdefault(task_alias, []).append(criterion_alias)
+    scope_mode = configured.get("scope_mode", "review-required") if isinstance(configured, Mapping) else "review-required"
+    if scope_mode not in {"review-required", "check-accepted"}:
+        raise ValueError("assessment_accounting scope_mode must be review-required or check-accepted")
+    check_accepted = scope_mode == "check-accepted"
     required_scopes = []
     for alias, raw_task_ref in task_refs.items():
         task_ref = ResourceRef.from_dict(raw_task_ref)
@@ -418,9 +422,13 @@ def materialize(session: Any, record: Any, registration: Mapping[str, Any], *, k
             for index, criterion_alias in enumerate(criterion_aliases)]
         scope = assessment.declare_scope(
             ResourceRef(project.authority, "assessment.scope", scope_id),
-            parent_obligation=task.ref, protocol="otto-registered-run", criteria=criterion_specs,
-            review_required=True, designated_approver=registration["manager"]["principal"],
-            authority=project.authority, policy={"required_for_completion": True},
+            parent_obligation=task.ref,
+            protocol="check-accepted" if check_accepted else "otto-registered-run",
+            criteria=criterion_specs, review_required=not check_accepted,
+            allow_no_review=check_accepted, designated_approver=registration["manager"]["principal"],
+            authority=project.authority,
+            policy={"required_for_completion": True,
+                    **({"acceptance_mode": "check-accepted"} if check_accepted else {})},
             logical_request_key=key + ":assessment-scope:" + alias, actor=session.owner.owner_actor)
         required_scopes.append({"task_ref": task.ref.to_dict(), "scope_ref": scope.ref.to_dict(),
                                 "criterion_refs": [ref.to_dict() for ref in scope.criterion_refs]})

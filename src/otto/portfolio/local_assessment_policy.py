@@ -148,8 +148,7 @@ class LocalAssessmentPolicy:
             ResourceRef(task.authority, task.kind, task.id)
         )
         if (current_project is None or current_task is None
-                or current_project.ref != project
-                or current_task.ref != task):
+                or current_project.ref != project):
             raise PermissionError("local assessment policy project/task is missing")
 
         if not isinstance(current_task.payload, Mapping):

@@ -6,7 +6,6 @@ record. Review-required scopes remain blocked until an owner review exists.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import replace
 from hashlib import sha256
@@ -14,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from herzchen.contracts import ResourceRef
-from herzchen.domains.work.admission import admitted_revision
+from herzchen.domains.work.admission import admitted_revision, task_content_matches
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 from herzchen.fleet.landing import LandingError, LandingService
 from herzchen.fleet.runner.runner import Runner
@@ -128,6 +127,9 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             raise LandingError("dispatch record is unavailable for assessment")
         view = binding.get("view")
         server = getattr(view, "server", None)
+        project_owner = getattr(server, "owner", None)
+        if project_owner is None:
+            raise LandingError("owner project view has no assessment owner")
         assert_policy_current = getattr(server, "assert_assessment_policy_current", None)
         if not callable(assert_policy_current):
             raise LandingError("owner project view cannot verify current assessment policy")
@@ -165,13 +167,20 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             if not isinstance(criterion_refs, Mapping) or not criterion_refs:
                 from herzchen.domains.assessment import AssessmentModule
                 from otto.portfolio.assessment import OttoAssessment
-                manager_principal = owner.binding.authenticated_actor(state.get("manager"))
-                assessed = OttoAssessment(AssessmentModule(owner.store, actor=manager_principal,
-                    payload_resolver=owner.evidence_payload_resolver), manager_principal)
+                manager_principal = project_owner.binding.authenticated_actor(state.get("manager"))
+                assessed = OttoAssessment(AssessmentModule(project_owner.store, actor=manager_principal,
+                    payload_resolver=project_owner.evidence_payload_resolver), manager_principal)
                 coverage = assessed.coverage(task_ref)
+                current_task_identity = project_owner.graph.reader.get_identity(task_ref)
+                if current_task_identity is None or current_task_identity.ref != task_ref:
+                    raise LandingError("owner assessment task is stale")
                 scopes = [assessed.get_scope(row["ref"]) for row in coverage.get("scopes", ())]
-                scopes = [scope for scope in scopes if scope.parent_obligation_ref == task_ref
-                          and scope.policy.get("required_for_completion") is True]
+                scopes = [scope for scope in scopes
+                          if scope.policy.get("required_for_completion") is True
+                          and task_content_matches(project_owner.graph.reader,
+                                                   scope.parent_obligation_ref,
+                                                   current_task_identity.payload,
+                                                   current_ref=task_ref)]
                 if len(scopes) != 1 or not scopes[0].criterion_refs:
                     raise LandingError("owner assessment setup has no exact required scope and criterion pins for this task")
                 criterion_refs = dict(criterion_refs or {})
@@ -180,7 +189,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                 policy_state["criterion_refs"] = criterion_refs
             from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
             policy = LocalAssessmentPolicy.from_run_config(config, state=policy_state)
-            policy.validate_binding(project_ref, task_ref, owner.graph.reader)
+            policy.validate_binding(project_ref, task_ref, project_owner.graph.reader)
             # Admission and other metadata writes can advance the task after
             # activation. Validation above proves its current content still
             # matches the retained policy pin; bind the issued command to the
@@ -203,11 +212,11 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                 or type(manager_generation) is not int or manager_generation < 1):
             raise LandingError("owner manager assignment is unavailable for assessment")
         try:
-            commands = owner.manager_assessment(
+            commands = project_owner.manager_assessment(
                 project_ref=project_ref.to_dict(), task_ref=task_ref.to_dict(),
                 manager_assignment_ref=manager_ref.to_dict(), manager_actor=manager_actor,
                 manager_generation=manager_generation, assessment_policy=policy)
-            owner.create_manager_assessment_pool(
+            project_owner.create_manager_assessment_pool(
                 project_ref=project_ref.to_dict(), task_ref=task_ref.to_dict(),
                 manager_assignment_ref=manager_ref.to_dict(), manager_actor=manager_actor,
                 manager_generation=manager_generation,
@@ -229,9 +238,9 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                            "assignment_ref": assignment_ref.to_dict(), "assignment_id": assignment_id,
                            "lab_commit": commit, **repo_line, "runner": runner}
         try:
-            candidate_record = owner.assignments.append_result(
+            candidate_record = project_owner.assignments.append_result(
                 assignment_ref, candidate_value, expected_generation=generation,
-                logical_request_key=candidate_key, actor=owner.owner_actor)
+                logical_request_key=candidate_key, actor=project_owner.owner_actor)
             if candidate_record.value != candidate_value:
                 raise LandingError("retained lab candidate differs from the verified commit and runner record")
             candidate = candidate_record.ref
@@ -247,20 +256,11 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
                 "request_key": execution_key + ":" + suffix, **expected})
 
         try:
-            # Only the trusted policy may authorize a fleet check scope.
-            scope = commands.required_scope(require=False)
+            # Activation owns the acceptance scope. Landing consumes its required
+            # scope and must never add a second policy declaration.
+            scope = commands.required_scope(require=True)
             if scope is None:
-                if getattr(policy, "scope_mode", None) != "check-accepted":
-                    raise LandingError("owner assessment setup has no required scope for this task")
-                scope_id = "fleet-check-" + sha256(json.dumps(
-                    task_ref.to_dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
-                declared_ref = ResourceRef(task_ref.authority, "assessment.scope", scope_id)
-                execute("declare-scope", {"scope_ref": declared_ref.to_dict(),
-                    "criterion_refs": [item.to_dict() for item in criteria],
-                    "protocol": "check-accepted"}, "scope")
-                scope = commands.required_scope(require=True)
-            if scope is None:
-                raise LandingError("owner assessment scope declaration did not produce a required scope")
+                raise LandingError("owner assessment setup has no required scope for this task")
             if set(scope.criterion_refs) != set(criteria):
                 raise LandingError("assessment scope criteria differ from the owner policy pins")
             if (scope.review_required is not False or scope.allow_no_review is not True
@@ -283,7 +283,7 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
         assessment = _FleetAssessmentCommands(commands, candidate, criteria, packet_ref,
                                                policy.pool_ref, manager_actor, execution_key)
         return {"candidate": candidate, "criterion": criterion, "parent_obligation": task_ref,
-                "actor": owner.binding.authenticated_actor(manager_actor),
+                "actor": project_owner.binding.authenticated_actor(manager_actor),
                 "criteria": criteria,
                 "scope": scope_ref, "input_packet": packet_ref, "limit_pool": policy.pool_ref,
                 "assessment": assessment,

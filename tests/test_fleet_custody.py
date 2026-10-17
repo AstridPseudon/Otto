@@ -455,7 +455,9 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         policy={"required_for_completion": True, "acceptance_mode": "check-accepted"})
     packet_requests = []
     class Commands:
-        declared = False
+        # Activation has already retained this run-policy scope before the
+        # worker is dispatched. Landing may add an input packet, never a scope.
+        declared = True
         def required_scope(self, *, require):
             assert require in {True, False}
             return scope if self.declared else None
@@ -486,7 +488,7 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         "project_ref": project.to_dict(), "assignment_ref": assignment.to_dict(),
         "generation": 3, "project_state": state,
         "view": SimpleNamespace(server=SimpleNamespace(
-            assert_assessment_policy_current=assert_policy_current))}
+            owner=owner, assert_assessment_policy_current=assert_policy_current))}
     service = make_landing_service(fleet=SimpleNamespace(_lab=lambda _name: None), result_store=ResultStore(tmp_path / "results"),
         repo_name="repo", repo_path=tmp_path, branch="main", owner=owner, runner=SimpleNamespace(call=lambda _r: {}),
         views_provider=lambda: {}, assignment_lookup=lambda assignment_id: binding if assignment_id == "dispatch-1" else {})
@@ -511,16 +513,7 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         candidate="worker-forged-candidate", criterion="worker-forged-criterion",
         parent_obligation="worker-forged-parent", actor="worker-forged-actor")
 
-    declaration = packet_requests[0]
-    assert declaration["operation"] == "declare-scope"
-    assert declaration["arguments"]["protocol"] == "check-accepted"
-    assert declaration["arguments"]["criterion_refs"] == [criterion.to_dict()]
-    import hashlib
-    import json
-    expected_scope_id = "fleet-check-" + hashlib.sha256(json.dumps(
-        task.to_dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
-    assert declaration["arguments"]["scope_ref"] == ResourceRef(
-        "owner", "assessment.scope", expected_scope_id).to_dict()
+    assert [request["operation"] for request in packet_requests] == ["freeze-input"]
 
     assert candidate_rows[0][0] == assignment
     assert candidate_rows[0][1] == {
@@ -528,7 +521,7 @@ def test_fleet_assessment_inputs_bind_verified_commit_and_owner_dispatch_policy(
         "assignment_ref": assignment.to_dict(), "assignment_id": "dispatch-1",
         "lab_commit": "a" * 40, "repo_name": "repo", "line_ref": "refs/heads/main",
         "lab_name": task.id, "runner": runner_record}
-    packet_args = packet_requests[1]["arguments"]
+    packet_args = packet_requests[0]["arguments"]
     assert packet_args["candidate_ref"] == candidate_ref.to_dict()
     assert packet_args["criterion_refs"] == [criterion.to_dict()]
     assert packet_args["packet"]["admitted_revision"] == "task-r1"
@@ -644,6 +637,13 @@ def test_fleet_accept_through_owner_assessment_without_review_evidence(tmp_path)
             f.actor.authority, "assessment.scope", "fleet-adapter-check").to_dict(),
             "criterion_refs": [criterion.to_dict()], "protocol": "check-accepted"}, "fleet-adapter-scope")["ref"]
         scope = AssessmentModule(f.store, actor=f.actor).get_scope(ResourceRef.from_dict(scope_ref))
+        from herzchen.domains.work import WorkGraph
+        advanced = WorkGraph(f.store, actor=f.actor).revise(
+            task, lifecycle="active", logical_request_key="fleet-adapter-task-metadata", actor=f.actor)
+        assert advanced.ref != scope.parent_obligation_ref
+        fixture.state["task_refs"]["PA06"] = advanced.ref.to_dict()
+        policy = LocalAssessmentPolicy.from_run_config(check_config, state=fixture.state)
+        task = advanced.ref
         packet_ref = fixture.call("PA06", "freeze-input", {"scope_ref": scope_ref,
             "candidate_ref": candidate.to_dict(), "criterion_refs": [criterion.to_dict()],
             "source_refs": [candidate.to_dict()], "evidence_refs": [candidate.to_dict()],
