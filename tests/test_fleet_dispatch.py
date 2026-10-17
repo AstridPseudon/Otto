@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 import threading
 import time
+import os
+import tempfile
 from types import SimpleNamespace
 
 from herzchen.fleet.capacity import CapacityPool, CapacityPolicy
@@ -513,3 +515,135 @@ def test_retained_automatic_failure_callback_settles_only_explicit_no_effect_evi
     assert view.server.state["automatic_dispatch_failures"]["A"]["reason"] == "runtime preparation failed"
     assert next(iter(dispatcher.records.values())).state == "settled"
     assert not dispatcher.tokens.live()
+
+
+def _process_fd_count():
+    """Count this process's descriptors on macOS/Linux; caller handles unsupported hosts."""
+    paths = ("/dev/fd", "/proc/self/fd")
+    for path in paths:
+        if os.path.isdir(path):
+            return len(os.listdir(path))
+    pytest.skip("no process descriptor census is available")
+
+
+def test_owner_direction_surface_reuse_keeps_descriptor_count_flat():
+    from herzchen.authoring import domain_contribution as authoring_contribution
+    from herzchen.content import domain_contribution as content_contribution
+    from herzchen.domains.work import contributions
+    from herzchen.contracts import ResourceRef
+    from herzchen.kernel import Store
+    from otto.portfolio.herzchen_binding import HerzchenBindingConfig
+    from otto.portfolio.owner_bootstrap import PortfolioOwnerBootstrap
+
+    with tempfile.TemporaryDirectory() as directory:
+        store = Store.create(os.path.join(directory, "owner.sqlite"), authority="fd-test-owner")
+        try:
+            store.register_domain_handler((*contributions(), content_contribution(), authoring_contribution()))
+            owner = PortfolioOwnerBootstrap(store,
+                binding=HerzchenBindingConfig(store.authority, "fd-test-credential"), owner_actor="owner")
+            # Prime the cache and let transient directory enumeration handles close.
+            try:
+                owner.direction_surface()
+                native_bodies = object()
+                project_ref = ResourceRef(store.authority, "work.project", "fd-project")
+                assignment_ref = ResourceRef(store.authority, "wrk.assignment", "fd-assignment")
+                owner.late_usage_operation(project_ref=project_ref,
+                    authorizing_assignment_ref=assignment_ref, authorizing_generation=1,
+                    native_bodies=native_bodies)
+                with pytest.raises(ValueError, match="different native bodies provider"):
+                    owner.late_usage_operation(project_ref=project_ref,
+                        authorizing_assignment_ref=assignment_ref, authorizing_generation=1,
+                        native_bodies=object())
+            except (PermissionError, OSError) as error:
+                pytest.skip(f"AF_UNIX bind denied in this sandbox: {error}")
+            before = _process_fd_count()
+            for _ in range(500):
+                assert owner.direction_surface() is not None
+                assert owner.late_usage_operation(project_ref=project_ref,
+                    authorizing_assignment_ref=assignment_ref, authorizing_generation=1,
+                    native_bodies=native_bodies) is not None
+            after = _process_fd_count()
+            assert after <= before + 3
+        finally:
+            store.close()
+
+
+def test_dispatch_ready_retries_prelaunch_failure_only_after_admitted_revision_changes():
+    task = _task("prelaunch-refusal")
+    attempts = []
+
+    def make_spec(current, _role, _token, _context):
+        attempts.append(current.payload["metadata_namespaces"]["work.admission"]["revision"])
+        raise RuntimeError("assignment is not ready: spec preparation failed")
+
+    dispatcher, _pool, _book = _dispatcher(_ready_with({}), lambda *_a: "unreachable",
+        make_spec=make_spec)
+    with pytest.raises(DispatchError, match="assignment is not ready: spec preparation failed"):
+        dispatcher.dispatch_ready([task])
+    assert attempts == ["rev-7"]
+
+    before = _process_fd_count()
+    for _ in range(500):
+        assert dispatcher.dispatch_ready([task]) is None
+    after = _process_fd_count()
+    assert after <= before + 3
+    assert attempts == ["rev-7"]
+
+    task.payload["metadata_namespaces"]["work.admission"] = authoring_stamp(
+        "rev-8", task.payload, "reviewer")
+    with pytest.raises(DispatchError, match="assignment is not ready: spec preparation failed"):
+        dispatcher.dispatch_ready([task])
+    assert attempts == ["rev-7", "rev-8"]
+
+
+def test_dispatch_ready_retries_transient_final_readiness_refusal_on_next_pump():
+    task = _task("transient-final-readiness")
+    readiness_checks = []
+    launches = []
+
+    def ready(_current, **_context):
+        readiness_checks.append(True)
+        # dispatch_ready's scan and dispatch's initial check pass. The final
+        # prelaunch check refuses once, then the next pump observes recovery.
+        return len(readiness_checks) != 3
+
+    dispatcher, _pool, _book = _dispatcher(_ready_with({}),
+        lambda _spec, _context: launches.append("launched") or "run")
+    dispatcher.ready = ready
+
+    assert dispatcher.dispatch_ready([task]) is None
+    assert launches == []
+    assert dispatcher.records["transient-final-readiness"].state == "refused"
+
+    record = dispatcher.dispatch_ready([task])
+    assert record is not None
+    assert record.state == "launched"
+    assert launches == ["launched"]
+    assert len(readiness_checks) == 6
+
+
+def test_automatic_failed_launch_is_fenced_per_admitted_revision_across_pumps(tmp_path):
+    calls = []
+
+    def submit(_host, _app, _view, _due_rows, request, *, automatic=False, automatic_revision=None):
+        assert automatic is True
+        calls.append((request["task"], automatic_revision))
+        return {"outcome": "rejected", "reason": "known pre-effect refusal",
+            "provider_called": False, "effects_started": False}
+
+    host, view, _due_rows, dispatcher = _staging_dispatch_fixture([("A", True)], submit, tmp_path)
+    host.dispatcher = dispatcher
+    host.dispatch_pump()
+    assert len(calls) == 1
+    for _ in range(500):
+        host.dispatch_pump()
+    assert len(calls) == 1
+
+    current = next(iter(dispatcher.records.values())).task
+    current.payload["metadata_namespaces"]["work.admission"] = authoring_stamp(
+        "revision-A-next", current.payload, "owner")
+    # The staged reader returns the same object, so this is a new admitted generation
+    # for the next pump; the existing failure fence must stop applying.
+    host.dispatch_pump()
+    assert len(calls) == 2
+    assert calls[0][1] != calls[1][1]

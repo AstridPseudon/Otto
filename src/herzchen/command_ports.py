@@ -272,9 +272,9 @@ class SerializedCommandClient:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
                 channel.connect(transport.socket_path)
-                stream = channel.makefile("rwb")
-                stream.write(_frame(request)); stream.flush()
-                response = _read(stream)
+                with channel.makefile("rwb") as stream:
+                    stream.write(_frame(request)); stream.flush()
+                    response = _read(stream)
         except (FileNotFoundError, ConnectionError, OSError) as exc:
             raise CommandTransportClosed("owner command service is unavailable") from exc
         if response.get("ok") is True:

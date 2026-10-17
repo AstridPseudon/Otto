@@ -29,6 +29,7 @@ class DispatchRecord:
     token: str | None = field(default=None, repr=False)
     result: Any = None
     blockers: tuple = ()
+    automatic_retry_blocked: bool = False
 
 
 class FleetDispatcher:
@@ -108,6 +109,7 @@ class FleetDispatcher:
         self.records[assignment] = record
         reserved = False
         launch_started = False
+        transient_refusal = False
         try:
             current = self.read_current(task, **context)
             if current is None:
@@ -115,7 +117,11 @@ class FleetDispatcher:
             if self.make_spec is not None:
                 spec = self.make_spec(current, role, token, context)
                 self._validate_spec(spec, token)
-                self.capacity.ensure_turn(assignment)
+                try:
+                    self.capacity.ensure_turn(assignment)
+                except Exception:
+                    transient_refusal = True
+                    raise
                 reserved = True
             # Final check is adjacent to launch on every path, including resume and retry.
             current = self.read_current(task, **context)
@@ -123,7 +129,11 @@ class FleetDispatcher:
                 raise DispatchError("assignment no longer exists")
             if self._admitted_revision(current) != record.admitted_revision:
                 raise DispatchError("assignment admission changed before launch")
-            self._require_ready(current, context)
+            try:
+                self._require_ready(current, context)
+            except DispatchError:
+                transient_refusal = True
+                raise
             record.task = current
             launch_started = True
             # Owner-composed launchers prepare a canonical occurrence. Its retained start
@@ -143,6 +153,9 @@ class FleetDispatcher:
                 if reserved:
                     self.capacity.release_turn(assignment)
                 record.state = "refused"
+                # Only readiness and host-turn capacity rejection at their actual gates
+                # are transient. A similarly worded setup/launcher error is still fenced.
+                record.automatic_retry_blocked = not transient_refusal
             if isinstance(exc, DispatchError):
                 raise
             raise DispatchError(str(exc)) from exc
@@ -169,6 +182,14 @@ class FleetDispatcher:
             current = self.read_current(task, **candidate_context)
             if current is None:
                 continue
+            # A prelaunch refusal is safe to reconsider only after admission changes.
+            # Automatic pumps run frequently, so retrying an unchanged generation here
+            # would repeatedly rebuild its spec and consume launch-side resources. Direct
+            # dispatch() still permits an owner-requested retry or resume of a refusal.
+            if (previous is not None and previous.state == "refused"
+                    and previous.automatic_retry_blocked
+                    and previous.admitted_revision == self._admitted_revision(current)):
+                continue
             try:
                 self._require_ready(current, candidate_context)
             except DispatchError:
@@ -187,7 +208,16 @@ class FleetDispatcher:
                 record = self.records.get(assignment)
                 if record is not None and record.state == "unknown":
                     raise
-                if str(exc).startswith(("assignment is not ready:", "capacity is full for role")):
+                # Readiness/capacity can also change in the pre-record gates. If the
+                # dispatch attempt did not replace the prior record, keep scanning.
+                # Once a new record exists, its stage classification decides whether
+                # the automatic pump may retry it.
+                if record is None or record is previous:
+                    if str(exc).startswith(("assignment is not ready:",
+                                            "capacity is full for role")):
+                        continue
+                    raise
+                if record.state == "refused" and not record.automatic_retry_blocked:
                     continue
                 raise
         return None
