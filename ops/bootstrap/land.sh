@@ -148,7 +148,11 @@ PY
   done
   if [ -n "$D19_MISSING" ]; then
     D19_MISSING="${D19_MISSING# }"
-    fail "D19 decision does not name changed test file(s): $D19_MISSING ($D19)"
+    # The decision is the orchestrator's, not the worker's: stop as a missing decision does (exit 4), so
+    # the manager asks the orchestrator instead of resuming the worker (TOOLING20, 17 Oct).
+    log "D19: decision does not name changed test file(s): $D19_MISSING ($D19)"
+    echo "D19: $D19 does not name changed test file(s): $D19_MISSING; extend the decision, then re-run land.sh $TASK --d19 $D19" >&2
+    exit 4
   fi
   VERDICT="$(grep -m1 -E 'LAND|SEND BACK' "$D19" || true)"
   case "$VERDICT" in

@@ -248,6 +248,7 @@ class LandGate(Scratch):
         decision = self.tmp / "partial.md"
         decision.write_text("Decision: LAND\ntests/test_mod.py\ntests/test_mod_extra.py.bak\n")
         r = self.land("T4A", "--d19", str(decision))
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)  # a D19 stop, for the orchestrator, not a refusal
         self.assertRefused(r, "T4A", "does not name changed test file(s): tests/test_mod_extra.py")
 
     def test_d19_decision_naming_both_changed_test_paths_passes(self):
