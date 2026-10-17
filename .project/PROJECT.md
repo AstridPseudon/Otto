@@ -127,7 +127,9 @@ Changed files: `src/otto/portfolio/manager_replacement.py`, `tests/test_manager_
 ### SL9B paused advisor host prototype retirement
 
 - Deleted `src/otto/portfolio/advisor_host_command.py` (115 lines) and its only importing test, `tests/test_manager_advisor_paused_host.py` (190 lines), for 305 gross lines removed. Before deletion, `git grep` across `src`, `tests`, `ops`, and `install` found only the dedicated test import outside runtime manifests; no production or ops caller existed. External imports were not verifiable in this clone.
-- Removed the active `install/runtime-manifest.json` digest entry for the deleted module. The prepared antecedent manifest remains historical and unchanged.
+- `install/README.md` identifies `install/runtime-manifest.json` as a byte-for-byte 15 Oct 2026 snapshot of the live controller, with S0 responsible for reproducible builds. Preserved its pinned digest entry and the prepared antecedent manifest unchanged; neither is a maintained current manifest for selective edits.
 - Added `tests/test_advisor_host_retirement.py` with a focused absence assertion. `advisor_delivery` and `DueRecord` were not changed; their maintained behavior tests remain intact.
-- Changed files: `.project/PROJECT.md`, `install/runtime-manifest.json`, `src/otto/portfolio/advisor_host_command.py` (deleted), `tests/test_manager_advisor_paused_host.py` (deleted), `tests/test_advisor_host_retirement.py`.
+- Changed files: `.project/PROJECT.md`, `src/otto/portfolio/advisor_host_command.py` (deleted), `tests/test_manager_advisor_paused_host.py` (deleted), `tests/test_advisor_host_retirement.py`.
 - Focused validation: `tests/test_advisor_host_retirement.py` (1 passed). `tests/test_project_advisor_delivery.py` ran 28 passed and 1 failed at owner-service AF_UNIX bind (`PermissionError`); this case needs the gate. No assertions were weakened.
+
+- Follow-up: restored the 15 Oct pinned runtime manifest unchanged after verifying its provenance in `install/README.md`; the snapshot remains historical evidence and its candidate path is not a live caller.
