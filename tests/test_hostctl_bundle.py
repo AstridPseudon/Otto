@@ -485,8 +485,12 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
     def test_legacy_pending_registration_persists_reselection_before_retry(self):
         """A pre-selection draft is upgraded from its stored run exactly once."""
         from otto.agents import host_profiles
+        from otto.agents.host_profiles import ProfileSelectionError
         from otto.hostctl import register as registration_module
         from otto.hostctl.bundle import parse_files
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.register import refusal_result
+        from otto.hostctl.service import _owner_exception_result
 
         bundle = read_bundle(self.root)
         # A run-level coordinator override must survive profile reselection.
@@ -516,10 +520,21 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
         host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
         restricted = {"kind": "codex", "adapters": {"codex": {"models": ["gpt-5.6-luna"]}}}
         with mock.patch.object(registration_module, "_check_in", side_effect=AssertionError("must not persist")):
-            with self.assertRaisesRegex(ValueError, "manager model is unsupported"):
-                registration_module.ensure_profile_selection(
-                    session, project, bundle, host=restricted, manager_principal="manager",
-                    worktree=str(self.root), tool_entrypoint="ottoctl")
+            refused_hosts = (
+                ({"kind": "codex", "adapters": {}}, "adapter is unavailable"),
+                (restricted, "model is unsupported"),
+            )
+            for refused_host, message in refused_hosts:
+                with self.subTest(message=message), self.assertRaisesRegex(
+                        ProfileSelectionError, message) as refused:
+                    registration_module.ensure_profile_selection(
+                        session, project, bundle, host=refused_host, manager_principal="manager",
+                        worktree=str(self.root), tool_entrypoint="ottoctl")
+                for serialize in (refusal_result, _owner_exception_result, _cli_exception_result):
+                    result = serialize(refused.exception)
+                    self.assertEqual(result["error"]["code"], "ValueError")
+                    self.assertEqual(result["error"]["message"], str(refused.exception))
+                    self.assertEqual(result["next_action"], ProfileSelectionError.next_action)
         with mock.patch.object(registration_module, "_check_in", side_effect=check_in):
             updated, facts = registration_module.ensure_profile_selection(
                 session, project, bundle, host=host, manager_principal="manager",

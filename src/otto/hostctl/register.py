@@ -361,10 +361,12 @@ def ensure_profile_selection(session: Any, record: Any, bundle: Mapping[str, Any
     binding = computed["manager"]["binding"]
     adapter_settings = (host.get("adapters") or {}).get(binding["adapter"])
     if not isinstance(adapter_settings, Mapping):
-        raise ValueError("registered manager adapter is unavailable on this host")
+        from otto.agents.host_profiles import ProfileSelectionError
+        raise ProfileSelectionError("registered manager adapter is unavailable on this host")
     allowed_models = adapter_settings.get("models")
     if allowed_models is not None and binding["model"] not in allowed_models:
-        raise ValueError("registered manager model is unsupported by this host")
+        from otto.agents.host_profiles import ProfileSelectionError
+        raise ProfileSelectionError("registered manager model is unsupported by this host")
     selected = computed["custom"]["otto_host_registration"]["profile_selection"]
     project = ResourceRef(record.ref.authority, record.ref.kind, record.ref.id)
     key = "legacy-profile-selection:" + record.ref.id + ":" + _digest(selected)[:20]
