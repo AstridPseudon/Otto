@@ -123,10 +123,11 @@ def _refresh_manager_setup(service, admitted_ref):
     """Rebind the unstarted staging manager to its operator-admitted task.
 
     Activation pins its first task in an immutable mandate and a retained Due.
-    Operator admission advances that task's revision. The product forbids a
-    second fresh manager while the first holds native custody, so replace the
+    Operator admission advances that task's revision. Until PINCONTENT makes
+    metadata-only admission revisions preserve content pins, replace the
     unattempted occurrence's task and mandate pins through the versioned Due
     port, then let the product's operating readiness validate the result.
+    The product forbids a second fresh manager while the first holds custody.
     """
     from dataclasses import replace
     from herzchen.contracts import ResourceRef
@@ -165,7 +166,7 @@ def _refresh_manager_setup(service, admitted_ref):
         target = old_due.get("target") if isinstance(old_due, Mapping) else None
         if (not isinstance(target, Mapping) or old_due.get("role") != "manager"
                 or old_due.get("assignment_ref") != state["assignment_ref"]
-                or schedule != state.get("schedule_id")
+                or (state.get("schedule_id") is not None and schedule != state["schedule_id"])
                 or not isinstance(before.get("setup_ref"), Mapping)):
             raise RuntimeError("stage-2 manager has no exact adopted operating setup")
         pinned_task = target.get("task_ref")
@@ -180,7 +181,7 @@ def _refresh_manager_setup(service, admitted_ref):
             readiness = evaluate_setup(app.runtime, project_ref, setup)
             if not readiness["ready"]:
                 raise RuntimeError("stage-2 manager setup is blocked: " + repr(readiness["blockers"]))
-            state.update(project_ref=project_ref, mandate_ref=target["mandate_ref"], schedule_id=schedule)
+            state.update(project_ref=project_ref, mandate_ref=target["mandate_ref"])
             server._save_state()
             return {"outcome": "already-current", "task_ref": admitted_ref,
                     "setup_ref": before["setup_ref"], "schedule_id": schedule}
@@ -215,7 +216,7 @@ def _refresh_manager_setup(service, admitted_ref):
         readiness = evaluate_setup(app.runtime, project_ref, setup)
         if not readiness["ready"]:
             raise RuntimeError("stage-2 manager setup is blocked: " + repr(readiness["blockers"]))
-        state.update(project_ref=project_ref, mandate_ref=mandate_ref, schedule_id=schedule)
+        state.update(project_ref=project_ref, mandate_ref=mandate_ref)
         server._save_state()
         return {"outcome": "rebound", "task_ref": admitted_ref,
                 "mandate_ref": mandate_ref, "setup_ref": before["setup_ref"],

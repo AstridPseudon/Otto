@@ -1020,7 +1020,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         state = {"project_ref": project, "task_refs": {"A": old_task}, "manager": "manager",
                  "assignment_ref": assignment, "manager_generation": 1,
                  "requested_model": "claude-haiku-5-5", "requested_reasoning": "medium",
-                 "schedule_id": "old"}
+                 "schedule_id": None}
         owner = SimpleNamespace(graph=Graph(), content=SimpleNamespace(
             read=lambda value: {"content": old_content}))
         server = SimpleNamespace(run_id="perch-stage2", state=state, owner=owner,
@@ -1053,12 +1053,18 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             self.assertEqual(events[1][1]["target"]["mandate_ref"], new_mandate)
             self.assertEqual(events[1][1]["context_refs"], (new_mandate,))
             self.assertEqual(updated["setup_ref"], setup_ref)
-            self.assertEqual(state["schedule_id"], "old")
+            self.assertIsNone(state["schedule_id"], "a prepared manager is not a started manager")
             self.assertEqual(state["mandate_ref"], new_mandate)
             self.assertEqual(events[-1][0], "saved")
             replay = self.launcher._refresh_manager_setup(service, task)
             self.assertEqual(replay["outcome"], "already-current")
             self.assertEqual([event[0] for event in events].count("due"), 1)
+            state["schedule_id"] = "foreign-manager"
+            before = len(events)
+            with self.assertRaisesRegex(RuntimeError, "no exact adopted operating setup"):
+                self.launcher._refresh_manager_setup(service, task)
+            self.assertEqual(len(events), before)
+            state["schedule_id"] = None
             # Admission of B does not move the manager off its selected A task.
             b_task = ref("work.task", "task-B", "rev-2")
             state["task_refs"]["B"] = ref("work.task", "task-B", "rev-1")
@@ -1121,7 +1127,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
 
         state = {"project_ref": project, "task_refs": {"A": task}, "manager": "manager",
                  "assignment_ref": manager.ref.to_dict(), "manager_generation": 1,
-                 "requested_model": "gpt-test", "requested_reasoning": "high", "schedule_id": schedule}
+                 "requested_model": "gpt-test", "requested_reasoning": "high", "schedule_id": None}
         saved = []
         server = SimpleNamespace(run_id="perch-stage2", state=state,
                                  owner=SimpleNamespace(graph=CanaryGraph(), content=fixture.owner.content),
@@ -1136,6 +1142,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         rebound = self.launcher._refresh_manager_setup(service, admitted)
         self.assertEqual(rebound["outcome"], "rebound")
         self.assertEqual(rebound["schedule_id"], schedule)
+        self.assertIsNone(state["schedule_id"], "rebind must not claim a manager launch")
         self.assertEqual(rebound["setup_ref"], applied["setup_ref"])
         due = fixture.port.read_due(schedule)
         self.assertEqual(due["target"]["task_ref"], admitted)
