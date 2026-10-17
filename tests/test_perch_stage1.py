@@ -53,7 +53,7 @@ class OwnerSocketSaveTests(HostctlFixture):
     def _save(self, name, document=SAVE_DOCUMENT, project_ref=None):
         path = _save_file(self.home, name, document, project_ref)
         return self._owner("portfolio", None, {"portfolio": "claude-code-portfolio",
-                                               "portfolio_args": ["save", path, "--actor", "owner"]})
+                                               "portfolio_args": ["save", path]})
 
     def test_save_sent_through_the_owner_socket_is_accepted(self):
         result = self._save("create.json")
@@ -131,14 +131,14 @@ class OwnerSocketSaveTests(HostctlFixture):
     def test_cold_client_save_reaches_the_owner_socket(self):
         # The client forwards save to the owner lane (hostctl/portfolio.py prepare_portfolio_request, client_request).
         code, result = self._ottoctl("portfolio", "--portfolio", "claude-code-portfolio",
-                                     "save", _save_file(self.home, "cold.json", SAVE_DOCUMENT), "--actor", "owner")
+                                     "save", _save_file(self.home, "cold.json", SAVE_DOCUMENT))
         self.assertEqual(code, 0, result)
         self.assertEqual(result.get("outcome"), "saved", result)
 
     def test_save_with_a_mistyped_portfolio_is_refused_naming_it_and_the_owner_is_untouched(self):
         before = self.owner_service.call(self._store_events)
         code, result = self._ottoctl("portfolio", "--portfolio", "claude-cod-portfolio",
-                                     "save", _save_file(self.home, "typo.json", SAVE_DOCUMENT), "--actor", "owner")
+                                     "save", _save_file(self.home, "typo.json", SAVE_DOCUMENT))
         self.assertNotEqual(code, 0, result)
         self.assertEqual(result.get("outcome"), "error", result)
         self.assertIn("claude-cod-portfolio", result["error"]["message"], result)

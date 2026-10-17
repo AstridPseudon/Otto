@@ -330,19 +330,11 @@ def cmd_portfolio(args: argparse.Namespace) -> Any:
     project_ids = tuple(_flag_values(args.portfolio_args, "--project-ref"))
     with HostSession(config, host=entry, project_ids=project_ids) as session:
         out, err = io.StringIO(), io.StringIO()
-        portfolio_args = list(args.portfolio_args)
-        owner_authorized = getattr(args, "owner_authorized", False)
-        bound_actor = session.owner.owner_actor.actor if owner_authorized else session.host_principal()
-        # Stage-1 owner-socket saves used "owner" as a lane selector. Resolve it
-        # here, where the owner identity is known; it never becomes a write actor.
-        if owner_authorized and portfolio_args[:1] == ["save"]:
-            selectors = [i for i, word in enumerate(portfolio_args[:-1]) if word == "--actor"]
-            if len(selectors) == 1 and portfolio_args[selectors[0] + 1] == "owner":
-                portfolio_args[selectors[0] + 1] = bound_actor
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = portfolio_cli.main(portfolio_args, portfolio=session.portfolio,
-                                          bound_actor=bound_actor)
+                code = portfolio_cli.main(list(args.portfolio_args), portfolio=session.portfolio,
+                                          bound_actor=(session.owner.owner_actor.actor if getattr(args, "owner_authorized", False)
+                                                       else session.host_principal()))
         except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
             return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code,
                     "message": (out.getvalue() + err.getvalue()).strip()}, "provider_called": False}

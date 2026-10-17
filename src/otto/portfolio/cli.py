@@ -34,7 +34,7 @@ def _add_format(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=("json", "text"), default="json", help="structured JSON or readable text with the full canonical response")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, bound_actor: Optional[str] = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m otto.portfolio.cli",
         description="manager entry over injected canonical Otto and Herzchen ports",
@@ -438,6 +438,18 @@ def build_parser() -> argparse.ArgumentParser:
     direction_overview.add_argument("--limit", type=int, default=50)
     direction_overview.add_argument("--cursor")
     _add_format(direction_overview)
+    if bound_actor is not None:
+        # Every --actor option is required for standalone callers. A host-bound
+        # invocation supplies the authenticated actor as its parser default.
+        pending = [parser]
+        while pending:
+            current = pending.pop()
+            for action in current._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    pending.extend(action.choices.values())
+                elif action.dest == "actor" and "--actor" in action.option_strings:
+                    action.required = False
+                    action.default = bound_actor
     return parser
 
 
@@ -1071,14 +1083,14 @@ def main(
     labs: Any = None,
     editor_host: Any = None,
 ) -> int:
-    parser = build_parser()
+    if bound_actor is not None and (not isinstance(bound_actor, str) or not bound_actor.strip()):
+        raise ValueError("bound_actor must be non-blank text")
+    parser = build_parser(bound_actor=bound_actor)
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
         return 0
     if bound_actor is not None:
-        if not isinstance(bound_actor, str) or not bound_actor.strip():
-            raise ValueError("bound_actor must be non-blank text")
         actor_selector = getattr(args, "actor", None)
         if actor_selector is not None and actor_selector != bound_actor:
             result = {
@@ -1090,6 +1102,8 @@ def main(
             }
             _emit(result, getattr(args, "format", "json"))
             return _exit_code(result)
+        if actor_selector is not None:
+            args.actor = bound_actor
     portfolio_injected = portfolio is not None
     if portfolio is None:
         portfolio = OttoPortfolio()

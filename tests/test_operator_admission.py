@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from otto.hostctl import cli as host_cli, config as host_config, lanes
 from otto.hostctl.owner import HostSession
 from otto.hostctl.presence import LocalAuthenticationProver, PresenceResult
 from otto.hostctl.service import owner_lane
+from otto.portfolio import cli as portfolio_cli
 from test_hostctl_cli import HostctlFixture
 
 
@@ -23,6 +25,13 @@ PORTFOLIO = "claude-code-portfolio"
 
 
 class OperatorInstallTests(unittest.TestCase):
+    def test_unbound_save_still_requires_actor(self):
+        with patch("sys.stderr", new_callable=StringIO) as stderr:
+            with self.assertRaises(SystemExit) as failure:
+                portfolio_cli.build_parser().parse_args(["save", "project.json"])
+        self.assertEqual(failure.exception.code, 2)
+        self.assertIn("the following arguments are required: --actor", stderr.getvalue())
+
     def test_install_records_explicit_distinct_operator(self):
         with tempfile.TemporaryDirectory(prefix="operator-install-") as directory:
             home = Path(directory) / "home"
@@ -142,17 +151,23 @@ class OperatorAdmissionTests(HostctlFixture):
         task = self._owner(lambda session: session.owner.graph.current(task_ref))
         self.assertNotIn("work.admission", task.payload.get("metadata_namespaces") or {})
 
-    def test_legacy_owner_save_selector_uses_bound_curator(self):
+    def test_bound_save_defaults_actor_and_mismatch_writes_nothing(self):
         save = Path(self.home) / "owner-selector-save.json"
         save.write_text(json.dumps({"project": {"title": "Owner selector", "outcome": "Saved"},
                                     "tasks": []}))
         code, result = self._ottoctl("portfolio", "--portfolio", PORTFOLIO, "save",
-                                     str(save), "--actor", "owner")
+                                     str(save))
         self.assertEqual((code, result["outcome"]), (0, "saved"), result)
         project = self._owner(lambda session: session.owner.graph.current(
             ResourceRef.from_dict(result["project_ref"])))
         self.assertEqual(project.payload["provenance"]["creator"]["actor"], self.operator)
         self.assertEqual(project.payload["provenance"]["curator"]["actor"], "otto-test-owner")
+        baseline = self._store_bytes()
+        code, denied = self._ottoctl("portfolio", "--portfolio", PORTFOLIO, "save",
+                                    str(save), "--actor", "owner")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(denied["error"]["code"], "bound_actor_mismatch")
+        self.assertEqual(self._store_bytes(), baseline)
 
     def test_owner_proves_presence_writes_as_operator_and_logs_once(self):
         code, answer = self._admit()
