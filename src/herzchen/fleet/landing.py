@@ -386,7 +386,7 @@ def _valid_argv(value: Any) -> bool:
 
 
 def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
-    """Narrow a direct pytest check to tests importing changed source modules."""
+    """Narrow a direct pytest check to changed tests and tests importing changed code."""
     if "pytest" not in argv:
         return argv
     try:
@@ -408,14 +408,21 @@ def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
         if "R" in status and index < len(fields):
             paths.append(fields[index])
             index += 1
-    modules = []
+    modules, ops_names = [], []
+    tests: set[str] = set()
     for name in paths:
         if name.startswith("src/") and name.endswith(".py"):
             module = name[4:-3].replace("/", ".")
             modules.append(module[:-9] if module.endswith(".__init__") else module)
-    tests: set[str] = set()
+        elif name.startswith("ops/"):
+            leaf = os.path.basename(name)
+            ops_names.append(leaf)
+            if leaf.endswith(".py"):
+                ops_names.append(leaf[:-3])
+        elif name.startswith("tests/test_") and name.endswith(".py"):
+            tests.add(name)
     test_dir = repo / "tests"
-    if modules and test_dir.is_dir():
+    if (modules or ops_names) and test_dir.is_dir():
         patterns = []
         for module in modules:
             parent, _, leaf = module.rpartition(".")
@@ -424,6 +431,8 @@ def _feedback_argv(repo: Path, argv: list[str]) -> list[str]:
             if parent:
                 patterns.append(re.compile(r"^\s*from\s+%s\s+import\b[^\n]*\b%s\b" %
                                            (re.escape(parent), re.escape(leaf)), re.M))
+        for name in ops_names:
+            patterns.append(re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name)))
         for path in sorted(test_dir.glob("test_*.py")):
             try:
                 source = path.read_text(encoding="utf-8", errors="replace")
