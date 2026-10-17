@@ -23,6 +23,8 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17T21:59Z | PK3R-UX11 | merged 0c0fb8568ba08be99f0e5b0191a8f265065519ba | +30/-0 | test_host_neutral_defaults.py 24 passed/13 subtests; diff --check passed | Every managed profile, including nondefault entries, must provide a nonblank adapter. No deletions.
 2026-10-17T22:05Z | PK3R-UX12 | merged 2a7edc7fd7e885225b4d8246bef096ee12dba4bd | +19/-1 | test_host_neutral_defaults.py 25 passed/16 subtests; test_hostctl_bundle.py 30 passed/7 subtests; diff --check passed | Non-string explicit run model_profile values are refused rather than raising TypeError or silently choosing a default. No deletions.
 2026-10-17T22:11Z | PK3R-UX13 | merged a6f8397155479c8ee31782681f3091e146ea5799 | +43/-4 | test_host_neutral_defaults.py 25 passed/24 subtests; diff --check passed | Required template policy, launcher qualification and host capability fields are now validated before consumers use them. No deletions.
+2026-10-17T22:14Z | PK3R-UX14 | merged 4d7e6d4bf43ff9356436590d190b2225102b5081 | +64/-0 | test_manager_role_pack_validation.py 2 passed; diff --check passed | Manager roles must provide the fields effective-context indexes; incomplete pinned roles raise RoleContextError with recovery guidance. No deletions.
+2026-10-17T22:15Z | PK3R-UX15 | merged 68e49b76ff56855d7d665886756b076d2a3357e9 | +59/-8 | test_hostctl_skills.py 16 passed; diff --check passed | Managed Megado source/provenance and missing skill resource refusals now retain next_action in CLI/service envelopes. No deletions.
 
 ## Questions for the orchestrator
 
@@ -55,7 +57,7 @@ Astra's ninth pass found a truthy non-string run `model_profile` raised TypeErro
 
 Astra's tenth pass found profile fields consumed directly by run templates and host admission were still optional/loosely typed. PK3R-UX13 now validates oracle/review/scheduled/assurance fields, launcher version/parser qualification and adapter capability lists before consumers use them. Its tests cover missing and malformed values through both envelopes.
 
-Astra's eleventh pass found two further §15.2 gaps: role-pack validation permits manager fields that rendering indexes directly, and Megado skill install's managed-source refusal has no recovery action. PK3R-UX14 and PK3R-UX15 will close these separately. The named profile-pack validations and other recovery families remain intact.
+Astra's eleventh pass found two further §15.2 gaps: role-pack validation permits manager fields that rendering indexes directly, and Megado skill install's managed-source refusal has no recovery action. PK3R-UX14 and PK3R-UX15 close these separately. Both focused checks passed without owner/socket setup. The named profile-pack validations and other recovery families remain intact.
 
 PK3R-UX14 is merged: manager role packs must supply manager_actions and nonblank help guidance before they can be returned. Socket-free loader tests prove both incomplete pinned-resource cases raise RoleContextError with a recovery action. PK3R-UX15 is in progress.
 
