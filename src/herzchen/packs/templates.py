@@ -89,12 +89,15 @@ def _ref_dict(value: ResourceRef) -> dict[str, Any]:
 
 
 def _origin(resource: Union["WorkTemplate", "WorkProtocol"]) -> dict[str, Any]:
-    return {
+    value = {
         "authority": RESOURCE_AUTHORITY,
         "kind": resource.kind,
         "id": resource.id,
         "revision": resource.revision,
     }
+    if resource.source_ref is not None:
+        value["source_ref"] = resource.source_ref.to_dict()
+    return value
 
 
 def _request_key(value: Optional[str], resource: WorkTemplate, rendered: RenderedTemplate) -> str:

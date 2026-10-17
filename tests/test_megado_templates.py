@@ -68,9 +68,11 @@ class TemplateTests(unittest.TestCase):
             store = Store.create(Path(directory) / "owner.sqlite", authority="domain-template-test")
             self.addCleanup(store.close)
             store.register_domain_handler(contributions())
-            with patch.dict(os.environ, {"HERZCHEN_IN_PROCESS_COMMAND_FALLBACK": "1"}):
-                graph = WorkGraph(store)
-                engine = TemplateEngine(store, graph=graph)
+            command_env = patch.dict(os.environ, {"HERZCHEN_IN_PROCESS_COMMAND_FALLBACK": "1"})
+            command_env.start()
+            self.addCleanup(command_env.stop)
+            graph = WorkGraph(store)
+            engine = TemplateEngine(store, graph=graph)
             for pack_id, templates in declarations.items():
                 pack = read_managed_pack(
                     pack_id, project_root=REPO, native_pack_root=REPO / "src" / "otto" / "packs"
@@ -100,7 +102,9 @@ class TemplateTests(unittest.TestCase):
                         project = graph.current(result.project)
                         self.assertEqual(project.kind.value, "project")
                         self.assertEqual(project.title, "Template proof")
-                        self.assertEqual(project.payload["metadata"]["template_origin"]["revision"], "1.0.0")
+                        template_origin = project.payload["metadata"]["template_origin"]
+                        self.assertEqual(template_origin["revision"], "1.0.0")
+                        self.assertEqual(template_origin["source_ref"], source_pin.to_dict())
                         criteria = [
                             item.title.lower()
                             for item in graph.list(project=project.ref)
