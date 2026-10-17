@@ -46,6 +46,13 @@ class UsageContractTests(unittest.TestCase):
         self.assertIn("events", contract["predecessor_seams"])
         self.assertFalse(contract["metric_schema"]["unknown_is_zero"])
 
+    def test_events_seam_lists_only_the_maintained_reader_authorities(self):
+        paths = self._contract_definition()["predecessor_seams"]["events"]["paths"]
+        self.assertEqual(paths, [
+            "src/herzchen/kernel/history.py",
+            "src/otto/portfolio/observability_views.py",
+        ])
+
     def test_same_contract_normalizes_both_codex_paths_and_selected_claude_fixture(self):
         catalog = fixture_catalog()
         for adapter_id, fixture in catalog["fixtures"].items():
