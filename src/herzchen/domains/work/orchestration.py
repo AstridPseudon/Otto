@@ -184,7 +184,7 @@ class _OrchestrationEngine:
         self._writer = work_handler(store)
         self.reader = self._writer.consumer()
         self.default_actor = actor
-        self.operator_actor = operator_actor or actor
+        self.operator_actor = operator_actor
         self.portfolio_ref = _ref(portfolio_ref, authority=self._writer.authority, kind=PORTFOLIO_KIND, field="portfolio_ref")
         self.main_assignment_ref = _maybe_ref(main_assignment_ref, authority=self._writer.authority, kind="wrk.assignment", field="main_assignment_ref")
         creators = tuple(_opaque(value, "allowed_creator_id") for value in allowed_creator_ids)
@@ -395,6 +395,9 @@ class _OrchestrationEngine:
         expected_project_version: int = 0,
     ) -> Mapping[str, Any]:
         actor_value = self._actor(actor)
+        operator_value = self.operator_actor
+        if operator_value is None:
+            raise WorkValidationError("authenticated operator identity is required to create a project")
         request_key = _opaque(request_id, "request_id")
         supplied_portfolio = _ref(portfolio_ref, authority=self.authority, kind=PORTFOLIO_KIND, field="portfolio_ref")
         if not _same_identity(supplied_portfolio, self.portfolio_ref):
@@ -458,7 +461,7 @@ class _OrchestrationEngine:
                 sheet=sheet,
                 logical_request_key=project_key,
                 actor=actor_value,
-                creator=self.operator_actor,
+                creator=operator_value,
                 curator=actor_value,
                 _owner_supervision=relation,
             )

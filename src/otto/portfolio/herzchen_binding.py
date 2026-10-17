@@ -417,6 +417,12 @@ class FiniteWorkOperations:
         return metadata
 
     def execute(self, operation: str, payload: Mapping[str, Any], *, request_id: str, actor: str) -> Mapping[str, Any]:
+        # Project creation must fail before the operation can reserve a
+        # request key, authoring scope, or project identity.
+        if operation in {"work.pending.create", "work.project.import"}:
+            self._operator()
+        elif operation == "work.project.save" and payload.get("project_ref") is None:
+            self._operator()
         if operation in {"work.project.dependency.link", "work.project.dependency.remove", "work.project.dependencies"}:
             from .dependencies import PortfolioDependencies
             authenticated = self._actor(actor)
@@ -2370,6 +2376,7 @@ class FiniteWorkOperations:
         if self.sheet_port is None:
             return self._unsupported(operation, request_id=request_id, code="canonical_project_sheet_port_unavailable", message="accepted ProjectSheet command port was not injected")
         actor_value = self._actor(actor)
+        operator_value = self._operator() if payload.get("project_ref") is None else None
         before = self._owner_reader.get_receipt(request_id)
         try:
             sheet = self.sheet_port.sheet_from_seed(seed, SAVE_TEMPLATE_ID)
@@ -2378,7 +2385,7 @@ class FiniteWorkOperations:
                 created = self.sheet_port.create_pending(
                     title=project_values.get("title"), outcome=project_values.get("outcome", ""),
                     sheet=sheet, logical_request_key=request_id, actor=actor_value,
-                    creator=self._operator(), curator=actor_value,
+                    creator=operator_value, curator=actor_value,
                 )
                 return {"outcome": "replayed" if before is not None else "saved",
                         "project_ref": _json_value(created.project.ref),

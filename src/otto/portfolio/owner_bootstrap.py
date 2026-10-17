@@ -453,6 +453,10 @@ class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
         if not isinstance(metadata, Mapping):
             raise TypeError("metadata must be a mapping")
 
+        # Resolve authority before AuthoringSessionService reserves the scope
+        # or records its request receipt; the callback reuses this actor.
+        operator_actor = self._operator_actor()
+
         selected = None
         selected_resource = None
         selected_parameters: dict[str, Any] = {}
@@ -476,7 +480,7 @@ class _CreateAndOpenOwnerEngine(ProjectFolderOwner):
             created = self.sheet.create_pending(
                 title=title,
                 outcome=outcome,
-                creator=self._operator_actor(),
+                creator=operator_actor,
                 curator=actor,
                 metadata=dict(metadata),
                 logical_request_key=project_key,
