@@ -21,6 +21,7 @@ class SerializedHost:
     capacity = SimpleNamespace(policy=CapacityPolicy(turn_units=2, manager_reserve=1, heavy_headroom=1, worker_floor=0))
 
     def capacity_holds(self):
+        self.status_read_threads.append(threading.get_ident())
         return dict(self._capacity_holds)
 
     def __init__(self, home):
@@ -33,6 +34,7 @@ class SerializedHost:
         self._owner_ready = threading.Event()
         self.owner_thread = None
         self.operation_threads = []
+        self.status_read_threads = []
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
         self._owner_ready.wait()
@@ -147,6 +149,8 @@ class EmbeddedHeartbeatTests(unittest.TestCase):
         self.assertEqual(len(list(lanes.requests(lane))), 0)
         self.assertEqual(set(host.operation_threads), {host.owner_thread})
         service.close()
+        self.assertTrue(host.status_read_threads)
+        self.assertEqual(set(host.status_read_threads), {host.owner_thread})
 
     def test_close_joins_pulse_and_dead_holder_is_stale(self):
         service, host = self.make_service()
