@@ -49,6 +49,8 @@ Astra's seventh pass found `oracle`, `review_stages`, and `scheduled_checks` sti
 
 Astra's eighth pass found nondefault profiles could omit `adapter`, pass load validation, and later raise KeyError when selected. PK3R-UX11 validates the required adapter on every profile and preserves recovery guidance. The regression exercises both envelopes.
 
+Astra's ninth pass found a truthy non-string run `model_profile` raises TypeError on profile lookup, while a falsey malformed list silently chooses the default. PK3R-UX12 will validate explicit non-string run values before lookup and preserve the refusal through both envelopes.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
