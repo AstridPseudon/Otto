@@ -43,9 +43,12 @@ admitted host in one home, pass `--host` (or set `OTTO_HOST_KIND`).
 |---|---|
 | `ottoctl service status` | is the owner busy? Holder, generation, heartbeat, attached project, manager turn, in-flight requests |
 | `ottoctl whoami` / `effective-context` | your principal, role, portfolio and adopted direction |
-| `ottoctl projects` / `project status --project R` | records; documents checked against the digests of the last sync |
+| `ottoctl projects` / `project status --project R` | records and project documents |
 | `ottoctl project register --bundle DIR` | an inert draft through the onboarding route; the WHOLE run dir becomes documents |
-| `ottoctl project sync-docs --project R` | records run-dir work in Otto, before and after activation |
+| `ottoctl manager --project R project-authoring --operation open\|check-in\|read` | the bound manager's owner-backed project.json authoring |
+| `ottoctl portfolio apply --root DIR` | registers and reconciles a file-mode portfolio tree, including root shared documents |
+| `ottoctl portfolio documents --operation list\|read` | reads shared portfolio documents |
+| `ottoctl manager --project R project-documents --operation list\|read` | reads project documents and associated shared portfolio documents |
 | `ottoctl project activate --project R` | materializes tasks, roles, pools and paused checks from Otto's documents; adopts the operating setup; nothing starts |
 | `ottoctl project import-history --bundle DIR --note ...` | keeps a closed run as withdrawn history |
 | `ottoctl admission dry-run --project R` | would the manager be admitted now? Writes nothing |
@@ -121,11 +124,13 @@ authorized delivery.
      whole directory, nested paths kept).
    - It enrolls the draft in your portfolio, so your orchestrator is the
      accountable supervisor and help routes to you.
-2. **Edit and sync.** While pending, the run directory is the authority;
-   `sync-docs` mirrors it.
-3. **Activate.** From activation on, Otto is the authority. `sync-docs` keeps
-   recording run work and never overwrites an Otto-side edit; it reports
-   `otto_newer` or `conflict`.
+2. **Edit.** A bound manager uses its owner-backed `manager project-authoring`
+   open/check-in operation for project.json. For file-mode portfolio bundles
+   and shared root documents, preview and apply with `portfolio apply --root DIR`; resolve
+   reported conflicts before reconciling again. There is no `project sync-docs`
+   route.
+3. **Activate.** `project activate --project R` materializes the project from
+   Otto's canonical documents; activation remains an explicit step.
 4. **Start.** `manager --project R start-manager --schedule-id <setup.roles.manager>`
    launches the manager. Its commands then reach the owner over its own
    lanes.

@@ -156,25 +156,25 @@ its previous manifest snapshot; hand-authored edges remain separate.
 
 ## Shared documents and project lifecycle
 
-Apply synchronizes all root files outside `projects/`. For a separate document
-directory, use the shared-document commands:
+Apply reconciles all root files outside `projects/` as shared documents. The
+parser exposes these read routes:
 
 ```sh
-ottoctl portfolio sync-docs --dir ./portfolio-docs
 ottoctl portfolio documents --operation list
 ottoctl portfolio documents --operation read --path portfolio.md
 ottoctl manager project-documents --operation list
 ottoctl manager project-documents --operation read --path portfolio/portfolio.md
 ```
 
-Sync accepts UTF-8 files nested up to four directories and records three-way
-digests. Conflicts and Otto-newer files are reported without overwriting Otto
-edits. Newly attached projects need shared-document associations; portfolio
-apply performs that enrollment, or repeat `sync-docs` after attaching one.
+`portfolio apply --root DIR` accepts the root's shared documents and reports
+conflicts without overwriting Otto edits. Newly attached projects receive
+shared-document associations through portfolio apply. There is no separate
+`sync-docs` command. The portfolio documents command is read-only; use apply
+to reconcile files from a registered portfolio root.
 Managers and workers can read shared documents through their project-bound
 document view. The `portfolio/` prefix distinguishes shared files from
 project-local paths. Only the current portfolio orchestrator or owner can
-write through the sync route.
+apply a portfolio root.
 
 Detach retains a project while removing its supervision and shared-document
 links. It refuses active or queued manager work. A dependent project is then
