@@ -1087,12 +1087,12 @@ def main(argv: Optional[list[str]] = None) -> int:
            or getattr(args, "service_command", None) or getattr(args, "help_command", None)
            or getattr(args, "repo_command", None))
     key = (args.command, sub)
-    launched = os.environ.get("OTTO_MANAGER_IPC") or os.environ.get("OTTO_CALLER_SOCKET")
+    launched = os.environ.get("OTTO_CALLER_SOCKET")
     try:
         if key in LOCAL_COMMANDS:
             result = LOCAL_COMMANDS[key](args)
         elif key == ("manager", None) and launched:
-            # A process the owner launched (the manager, or a worker) uses its own lanes.
+            # A process the owner launched uses its authenticated caller socket.
             from .manager_client import run_launched
             result = run_launched(args.manager_args, os.environ)
         else:

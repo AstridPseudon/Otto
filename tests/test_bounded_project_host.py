@@ -5,6 +5,8 @@ No provider, installed owner or operational database is opened by this fixture.
 from dataclasses import replace
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import threading
 import time
@@ -59,8 +61,8 @@ class NativeFixture(fixture.Provider):
                 outer.started.setdefault(key, threading.Event()).set()
                 release = outer.releases.setdefault(key, threading.Event())
                 try:
-                    if not outer.release_all and not release.wait(12):
-                        raise RuntimeError("fixture transport was not released")
+                    if not outer.release_all:
+                        release.wait()
                     if principal in outer.unknown_principals:
                         receipt, _ = observed
                         return replace(receipt, outcome=fixture.HostOutcome.UNKNOWN), {"delivery_state": "unknown"}
@@ -258,6 +260,107 @@ class BoundedProjectHostTests(unittest.TestCase):
     def delegate(self, letter):
         return self.response(self.send(letter, {"command": "run-worker", "task": "T", "route": "normal",
             "principal": "worker-" + letter, "request_key": "work-" + letter, "focus": "Implement only this project's bounded task"}))
+
+    def prepare_B_retained_start_with_A_running(self):
+        from otto.portfolio.identity_context import HostIngress
+
+        self.host.owner_file_compatibility = True
+        a_response = self.send("A", {"command": "start-manager"})
+        self.wait(lambda: self.native.has_started("manager-A"))
+
+        def prepare_b():
+            raw = self.f.request()
+            raw["project_ref"] = self.states["B"]["project_ref"]
+            raw["task_ref"] = self.states["B"]["task_refs"]["T"]
+            raw["principal"] = "worker-B"
+            raw["request_key"] = "fileauth-B"
+            contract = raw["instruction_contract"]
+            contract["task_ref"] = raw["task_ref"]
+            contract["authority"]["owner_actor"] = "worker-B"
+            contract["authority"]["workspace_roots"] = [
+                str(self.worker_labs[raw["task_ref"]["id"]][1])
+            ]
+            prepared = self.apps["B"].assign_worker(**raw)
+            self.states["B"]["workers"] = {"T": {
+                **prepared, "principal": "worker-B", "model": "gpt-test",
+                "reasoning": "high", "automatic": True,
+            }}
+            return prepared
+
+        prepared = self.host._owner_request(prepare_b)
+        self.assertEqual(prepared["outcome"], "committed")
+        request = {
+            "command": "start-retained-worker", "task": "T",
+            "principal": "worker-B", "schedule_id": prepared["schedule_id"],
+        }
+        self.assertEqual(self.host._owner_request(lambda:
+            self.apps["B"].recover(
+                schedule_id=prepared["schedule_id"], execute=False
+            ))["outcome"], "prepared")
+
+        def a_binding():
+            due = self.f.port.read_due(self.states["A"]["schedule_id"])
+            authorization = due["host_evidence"]["gateway_attempt"]["delivery_authorization"]
+            return self.router.managed_caller_binding(authorization)
+
+        binding = self.host._owner_request(a_binding)
+        self.host.caller_binding_reader = lambda ingress: binding
+        self.host.caller_context_resolver = self.router.caller_context
+        denied = self.host._dispatch(request, ingress=HostIngress("fixture-authenticated-native", "A"))
+        self.assertEqual(denied["outcome"], "error", denied)
+        self.assertIs(denied["effects_started"], False)
+        return a_response, request
+
+    def assert_B_owner_start_replays_once(self, a_response, request):
+        self.native.release("manager-A")
+        self.assertEqual(self.response(a_response)["outcome"], "succeeded")
+        owner_response = self.send("B", request)
+        self.wait(lambda: self.native.has_started("worker-B"))
+        self.native.release("worker-B")
+        self.assertEqual(self.response(owner_response)["outcome"], "succeeded")
+        self.assertEqual(self.response(self.send("B", request))["outcome"], "replayed")
+        self.assertEqual(self.native.counts["worker-B"], 1)
+
+    def test_authenticated_A_cannot_start_B_but_B_owner_file_can(self):
+        a_response, request = self.prepare_B_retained_start_with_A_running()
+        self.assert_B_owner_start_replays_once(a_response, request)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists(),
+        "real macOS manager fence",
+    )
+    def test_fenced_A_cannot_submit_B_retained_start(self):
+        from otto.agents.claude_cli import MacWriteScope
+        from otto.hostctl.serve import HostOwnerService
+
+        a_response, request = self.prepare_B_retained_start_with_A_running()
+
+        launch_view = SimpleNamespace(
+            paths={"ipc": self.directory, "socket": self.root / "caller.sock"},
+            run_id="A",
+        )
+        launch = HostOwnerService.manager_launch(launch_view)
+        state_root = self.root / "manager-native-state"
+        state_root.mkdir()
+        scope = MacWriteScope(
+            str(self.services["A"].workspace), str(state_root),
+            allow_subprocesses=True, extra_write_roots=launch["write_roots"],
+        )
+        self.assertTrue(scope.preflight()["verified"])
+        foreign = self.directory / ("request-" + "f" * 32 + ".json")
+        script = (
+            "from pathlib import Path; import sys; "
+            "Path(sys.argv[1]).write_text(sys.argv[2])"
+        )
+        probe = subprocess.run(
+            scope.wrap([sys.executable, "-c", script,
+                        str(foreign), json.dumps(request)]),
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(probe.returncode, 0, probe.stdout)
+        self.assertFalse(foreign.exists())
+        self.assertFalse(self.native.has_started("worker-B"))
+        self.assert_B_owner_start_replays_once(a_response, request)
 
     def test_five_projects_share_slots_and_A_settles_while_B_waits(self):
         starts = {letter: self.send(letter, {"command": "start-manager"}) for letter in "AB"}

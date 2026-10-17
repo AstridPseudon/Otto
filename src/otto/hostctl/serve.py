@@ -7,18 +7,15 @@ handles its commands. ``otto.hostctl.service.OwnerService`` attaches it; it
 shares the service's single command lock, so every Store write in the
 process is serialized. Per project (``<home>/projects/<id>/``):
 
-* ``manager-ipc/`` (0700): the manager's file lane, the one directory the
-  manager's write fence admits. Commands that claim no caller identity
-  (report, status, request-help, resolve-help, ...) travel here, served by
-  the owner even during the manager's own turn. Owner custody requests that
-  the orchestrator sends through its host lane are relayed here too.
-* the native caller socket (``<home>/run/c-<hash>.sock``): identity-bearing
-  commands (whoami, run-worker, project-documents, ...) from processes this
-  owner launched, authenticated by kernel peer-PID ancestry.
+* ``manager-ipc/`` (0700): the owner's private retained file lane. Owner
+  custody requests and callbacks use it, including after restart. Launched
+  roles have no write access to this directory.
+* the native caller socket (``<home>/run/c-<hash>.sock``): manager commands
+  (whoami, run-worker, project-documents, command-status, ...) from processes
+  this owner launched, authenticated by kernel peer-PID ancestry.
 * ``owner-grants/`` (0700, outside every launched role's fence): one grant per
   orchestrator reply the service forwarded. ``respond-help`` is accepted only
-  with its grant, so the manager, which can write its lane, cannot answer
-  its own escalation.
+  with its grant, so the manager cannot answer its own escalation.
 
 Attaching starts no Due and calls no provider. Only an explicit
 ``start-manager`` launches the prepared manager occurrence.
@@ -39,7 +36,7 @@ from .owner import HostSession
 STATE_SCHEMA = "otto.host-service-state.v1"
 GRANT_SCHEMA = "otto.owner-reply-grant.v1"
 # Finite reads a launched manager makes over the caller socket during its turn.
-HOST_SOCKET_READS = frozenset({"project-documents"})
+HOST_SOCKET_READS = frozenset({"project-documents", "command-status"})
 
 
 def socket_path(config: Mapping[str, Any], project_id: str) -> Path:
@@ -439,10 +436,9 @@ class HostOwnerService:
         return mandate["instruction_contract"]["authority"]["workspace_roots"][0]
 
     def manager_launch(self) -> dict[str, Any]:
-        """What a launched manager is given: its lane in the write fence, and where the lanes are."""
-        return {"write_roots": (str(self.paths["ipc"]),),
-                "env": {"OTTO_MANAGER_IPC": str(self.paths["ipc"]),
-                        "OTTO_CALLER_SOCKET": str(self.paths["socket"]),
+        """Give launched managers their authenticated caller socket only."""
+        return {"write_roots": (),
+                "env": {"OTTO_CALLER_SOCKET": str(self.paths["socket"]),
                         "OTTO_PROJECT": self.run_id}}
 
     def _claude_adapter(self, *, principal: str, model: str, reasoning: str, service: Any = None,

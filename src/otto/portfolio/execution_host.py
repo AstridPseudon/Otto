@@ -1284,6 +1284,21 @@ class ExecutionHost:
                 raise PermissionError("command has no caller-aware owner authorization")
             if authorizer(context, clean) is False:
                 raise PermissionError("owner command authorization rejected this caller")
+            if clean.get("command") == "command-status":
+                from .manager_journey_client import read_command_status
+                scope = {"principal": binding.actor.actor, "generation": binding.generation,
+                    "assignment_identity": {key: getattr(binding.assignment_ref, key)
+                        for key in ("authority", "kind", "id")},
+                    "project_identity": {key: context["project_ref"][key]
+                        for key in ("authority", "kind", "id")}}
+                try:
+                    status = read_command_status(self.directory, clean["request_id"],
+                        expected_socket_scope=scope)
+                except FileNotFoundError:
+                    status = None
+                return status or {"outcome": "unavailable", "terminal": False,
+                    "request_id": clean["request_id"], "retry": False,
+                    "next_action": "no exact authenticated socket receipt is visible; inspect retained owner receipts before any replay"}
             if not getattr(_INERT_STATUS_CONTEXT, "value", False):
                 recovered = self._retain_socket_admission(clean, binding, context)
                 if recovered is not None:
@@ -1369,7 +1384,7 @@ class ExecutionHost:
                 return self._call_bound(request, ingress)
             # The manager-only planning write uses the same custodian pump,
             # with socket peer authorization before its finite public effect.
-            if request.get("command") in {"status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker", "project-documents"}:
+            if request.get("command") in {"status", "command-status", "whoami", "effective-context", "task-list-author", "lookup-occurrence", "follow-occurrence", "read-result", "read-artifact", "consume-result", "run-worker", "project-documents"}:
                 def finite():
                     previous = getattr(_DISPATCH_CONTEXT, "value", None)
                     _DISPATCH_CONTEXT.value = (self, threading.get_ident(), False)
