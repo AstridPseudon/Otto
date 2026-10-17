@@ -57,6 +57,8 @@ Astra's tenth pass found profile fields consumed directly by run templates and h
 
 Astra's eleventh pass found two further §15.2 gaps: role-pack validation permits manager fields that rendering indexes directly, and Megado skill install's managed-source refusal has no recovery action. PK3R-UX14 and PK3R-UX15 will close these separately. The named profile-pack validations and other recovery families remain intact.
 
+PK3R-UX14 is merged: manager role packs must supply manager_actions and nonblank help guidance before they can be returned. Socket-free loader tests prove both incomplete pinned-resource cases raise RoleContextError with a recovery action. PK3R-UX15 is in progress.
+
 The final whole-project Astra review findings were fixed in PK3R: new registrations retain the exact role-pack pin (and inert pending PK3 selections persist it before materialization), while all live model/reasoning fallback defaults now require a resolved binding. Astra re-reviewed the last malformed-pin fix and found no additional defect. No user data or installed runtime was changed.
 
 ## Decisions
