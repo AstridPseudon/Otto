@@ -10,3 +10,7 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 2026-10-17 19:43:46Z | AF3 | merged fad4a1d | +29/-0 | acceptance rg; routes/citations/deletion review; git diff --check | Conditional yes for fleet pilot; no ledger merge; proposed follow-up 2.5d; safe deletion 0
 
 ## Questions for the orchestrator
+
+## Final review
+
+2026-10-17 19:44Z | Astra whole-project review of `git diff 163925e...proj/astridfleet`: no blocking defects. Astra verified the ledger/reconciler citations and key custody, authority, and unknown-outcome claims; confirmed Astrid `process_group.py` is 678 lines with 13 importing modules and Otto `otto-lab.sh` is 46 lines. Two low-severity defects were corrected: the three `otto-lab.sh` references are now described as two invocation sites plus one diagnostic reference, and AF1/AF2/AFUX/AF3 tasklist statuses now carry their merge SHAs. Astra's optional clarification that intentional repeated operations must remain distinct from retries was adopted in AF-FLEET-ADAPTER's logical request identity. The study retains a 0-line safe deletion budget. No runtime tests were run; the review was read-only source and diff inspection. `git diff --check` passed.
