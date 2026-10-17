@@ -35,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     documents = sub.add_parser("project-documents", help="the bound manager reads its project's documents through Otto")
     documents.add_argument("--operation", choices=("list", "read"), default="list")
     documents.add_argument("--path", help="the project path to read, e.g. briefs/M1.md")
+    lifecycle = sub.add_parser("project-lifecycle-read", help="read the current bound project lifecycle")
+    lifecycle.add_argument("--task", required=True)
     report = sub.add_parser("report", help="append a canonical manager progress report")
     report.add_argument("--task", required=True)
     report.add_argument("--request-key", help=argparse.SUPPRESS)
@@ -69,6 +71,11 @@ def run_launched(argv: list[str], environ: Mapping[str, str]) -> Mapping[str, An
     args = vars(build_parser().parse_args(argv))
     timeout = args.pop("timeout_seconds")
     args.pop("project", None)
+    if args["command"] == "route":
+        # The owner accepts only fields for the selected route operation.
+        # Argparse exposes the inactive reroute/retry options as None, so omit
+        # them from the identity-bearing caller request.
+        args = {key: value for key, value in args.items() if value is not None}
     if args["command"] in {"report", "save", "answer", "route"}:
         # Logical keys are tool-owned. The transport has a separate retained
         # request handle, so the manager never invents or reuses owner keys.

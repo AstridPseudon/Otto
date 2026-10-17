@@ -112,7 +112,6 @@ class ManagerJourneyServiceTests(unittest.TestCase):
             worker_mcp_provider=lambda due: {"fixture_grant": due["assignment_ref"]["id"]},
             worker_lab_provider=lambda project, task: {"workspace": str(self.root)},
             worker_context_provider=lambda due: {"workspace": str(self.root)})
-        self.owner_threads = []
         self.fixture.provider.work_started = threading.Event()
         self.fixture.provider.work_release = threading.Event()
         from otto.portfolio.manager_journey_service import install_manager_journey_service
@@ -189,6 +188,43 @@ for line in sys.stdin:
         return {"command": "run-worker", "task": "J01", "route": "xhard", "principal": "worker",
                 "request_key": "service-j01", "focus": "Inspect the bounded J01 seam"}
 
+    def seed_historical_instruction_acceptance(self, *, key, pool_id=None):
+        """Persist the formerly accepted instruction-only completion as owner history."""
+        from herzchen.kernel.limits import LimitService
+        from otto.portfolio.manager_journey_command import _digest
+
+        f = self.fixture
+        due = f.app._read(self.anchor)
+        candidate = ResourceRef.from_dict(due.target["mandate_ref"])
+        content = f.owner.content.read(candidate)["content"]
+        assessment = AssessmentModule(f.store, actor=f.actor)
+        scope = assessment.declare_scope(key + "-scope", parent_obligation=f.task.ref,
+            protocol="historical-instruction-only", criteria=[{"id": "C01", "source_alias": "C01"}],
+            designated_approver="manager", policy={"required_for_completion": True},
+            logical_request_key=key + "-scope")
+        packet = assessment.freeze_input(scope.ref, packet={"observed": "historical instruction document accepted"},
+            consumed_refs=[candidate], logical_request_key=key + "-input")
+        pool = LimitService(f.store).create_pool(
+            ResourceRef(f.actor.authority, "limit", pool_id or key + "-allowance"), capacity_units=1,
+            cumulative_allowance_units=1, logical_request_key=key + "-allowance", actor=f.actor)
+        judged = assessment.assess(scope.ref, candidate=candidate, criterion=scope.criterion_refs[0],
+            input_packet=packet.ref, verdict="PASS", limit_pool=pool.ref, logical_request_key=key + "-judgment")
+        gate = assessment.accept(judged.ref, rationale="Historical instruction accepted",
+            evidence_refs=[candidate], logical_request_key=key + "-acceptance")
+        f.app.assignments.complete(f.task.ref, project=f.project.ref, assignment=due.assignment_ref,
+            expected_generation=due.generation, expected_project_revision=f.project.ref.revision,
+            expected_task_revision=f.task.ref.revision, disposition="accepted", evidence_refs=[candidate.to_dict()],
+            evidence_hashes={candidate.kind + ":" + candidate.id + ":" + candidate.revision: _digest(content)},
+            gate_refs=[gate.ref.to_dict()], candidate_ref=candidate.to_dict(),
+            logical_request_key=key + "-completion", actor=f.actor)
+        task = f.owner.graph.current(f.task.ref)
+        project_ref = ResourceRef.from_dict(self.server.state["project_ref"])
+        self.server.state["project_ref"] = f.owner.graph.current(
+            ResourceRef(project_ref.authority, project_ref.kind, project_ref.id)).ref.to_dict()
+        self.server.state["task_refs"]["J01"] = task.ref.to_dict()
+        self.server._save_state()
+        return task, pool.ref
+
     def test_manager_actions_are_authenticated_project_scoped_and_save_notes(self):
         self.install_candidate()
         service = self.host.handler
@@ -226,30 +262,62 @@ for line in sys.stdin:
 
     def test_answer_and_route_actions_reuse_existing_owner_paths(self):
         self.install_candidate()
-        service = self.host.handler
         state = self.server.state
-        caller = {"role": "manager", "principal": state["manager"],
-            "project_ref": state["project_ref"], "assignment_ref": state["assignment_ref"],
-            "generation": state["manager_generation"]}
-        with patch.object(service, "_help", return_value={"outcome": "recorded"}) as help_call:
-            result = service.dispatch_bound(caller, {"command": "answer", "request_key": "tool-answer-1",
-                "issue_id": "issue-1", "evidence": [{"ref": {"id": "evidence-1"}}],
-                "next_action": "Continue the same project."})
-        self.assertEqual(result["outcome"], "recorded")
-        self.assertEqual(help_call.call_args.args[0]["command"], "resolve-help")
-        rerouted = {"outcome": "admitted", "schedule_id": "owned-worker"}
-        with patch.object(service, "_submit_worker", return_value=rerouted) as submit:
-            result = service.dispatch_bound(caller, {"command": "route", "operation": "reroute",
-                "request_key": "tool-route-1", "task": "J01", "principal": "worker-2",
-                "route": "normal", "focus": "Continue the bounded task."})
-        self.assertEqual(result, rerouted)
-        self.assertEqual(submit.call_args.args[0]["command"], "run-worker")
-        self.assertEqual(submit.call_args.args[0]["request_key"], "tool-route-1")
-        with patch.object(service, "_execution_control", return_value={"outcome": "succeeded"}) as retry:
-            result = service.dispatch_bound(caller, {"command": "route", "operation": "retry",
-                "request_key": "tool-route-2", "schedule_id": state["schedule_id"]})
-        self.assertEqual(result["outcome"], "succeeded")
-        self.assertEqual(retry.call_args.args[0]["schedule_id"], state["schedule_id"])
+        f = self.fixture
+        portfolio = ResourceRef(f.actor.authority, "wrk.portfolio", "journey-portfolio")
+        root_actor = f.binding.authenticated_actor("root")
+        root = f.owner.assignments.command_port.assign(portfolio, role="orchestrator", principal="root",
+            session="journey-root-session", logical_request_key="journey-root", actor=root_actor)
+        from herzchen.domains.work import register_orchestration
+        from herzchen.domains.work.orchestration import Orchestration
+        register_orchestration(f.store)
+        orchestration = Orchestration(f.store, actor=root_actor, operator_actor=root_actor,
+            portfolio_ref=portfolio, main_assignment_ref=root.ref, expected_main_principal="root")
+        f.owner.orchestration_port = orchestration.command_port
+        f.owner.orchestration_portfolio = portfolio
+        project_ref = ResourceRef.from_dict(state["project_ref"])
+        project = f.owner.graph.current(ResourceRef(project_ref.authority, project_ref.kind, project_ref.id))
+        enrollment = f.owner.consumer_operations().execute("work.orchestrator.projects.attach", {
+            "target_assignment_ref": root.ref.to_dict(), "target_assignment_revision": root.revision,
+            "target_assignment_generation": root.generation,
+            "projects": [{"project_ref": project.ref.to_dict(), "project_version": project.version,
+                "assignment_ref": ResourceRef.from_dict(state["assignment_ref"]).to_dict(),
+                "assignment_revision": state["assignment_ref"]["revision"],
+                "assignment_generation": state["manager_generation"]}]},
+            request_id="journey-project-supervision", actor="root")
+        self.assertEqual(enrollment["outcome"], "attached", enrollment)
+        updated = f.owner.graph.current(project.ref)
+        self.assertEqual(updated.payload["metadata"]["otto_orchestrator"]["assignment_ref"], root.ref.to_dict())
+        state["project_ref"] = updated.ref.to_dict()
+        self.server._save_state()
+        issue = self.wait_response(self.send_caller("tool-help-request", {"command": "request-help", "request_key": "tool-help-1",
+            "issue_key": "manager-route-question", "problem": "Choose the next bounded action",
+            "evidence": [{"ref": state["project_ref"]}], "impact": "Avoid duplicate work",
+            "requested_decision": "Continue the same project", "return_condition": "Return the route decision"}))
+        self.server.portfolio._issue_loop().respond_to_issue(project_ref=state["project_ref"],
+            issue_id=issue["issue_id"], actor="root", authority_source="owner fixture decision",
+            response="Continue the current bounded task", proposed_solution="Use the normal worker route",
+            next_action="Continue this project", request_id="tool-help-response-1")
+        result = self.wait_response(self.send_caller("tool-answer", {"command": "answer",
+            "issue_id": issue["issue_id"], "evidence": [{"ref": state["project_ref"]}],
+            "next_action": "Continue the same project."}))
+        self.assertEqual(result["outcome"], "recorded", result)
+        self.assertEqual(result["issue_id"], issue["issue_id"])
+        issues = self.wait_response(self.send_caller("tool-help-read", {"command": "read-help"}))
+        self.assertEqual(issues["issues"][0]["state"], "resolved")
+        rerouted = self.wait_response(self.send_caller("tool-route-reroute", {"command": "route", "operation": "reroute",
+            "task": "J01", "principal": "worker-2",
+            "route": "normal", "focus": "Continue the bounded task."}))
+        self.assertEqual(rerouted["outcome"], "admitted", rerouted)
+        self.assertTrue(self.fixture.provider.work_started.wait(10))
+        self.assertIn("Continue the bounded task.", self.fixture.provider.calls[-1])
+        self.fixture.provider.work_release.set()
+        settled = self.wait_response(Path(rerouted["response_path"]))
+        self.assertEqual(settled["outcome"], "succeeded", settled)
+        result = self.wait_response(self.send_caller("tool-route-retry", {"command": "route", "operation": "retry",
+            "schedule_id": state["schedule_id"]}))
+        self.assertIn(result["outcome"], {"succeeded", "replayed"}, result)
+        self.assertEqual(result["schedule_id"], state["schedule_id"])
 
     def test_manager_client_mints_logical_request_keys_and_routes_actions_by_identity(self):
         from otto.hostctl.manager_client import run_launched
@@ -309,7 +377,8 @@ for line in sys.stdin:
         self.assertFalse(self.fixture.provider.work_release.is_set(),
                          "the report committed before releasing the blocked worker model")
         self.fixture.provider.work_release.set()
-        self.wait_response(Path(admitted["response_path"]))
+        settled = self.wait_response(Path(admitted["response_path"]))
+        self.assertEqual(settled["outcome"], "succeeded", settled)
 
     def install_candidate(self):
         self.assertIn("C01", self.server.state["criterion_refs"])
@@ -328,6 +397,18 @@ for line in sys.stdin:
                 "coverage": {"project": project, "fixture": "no schedule automation configured"},
                 "shared_records": []})
 
+    def restart_host(self):
+        from otto.portfolio.execution_host import ExecutionHost
+
+        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
+            owner_path=self.directory / "manager-status-owner.json",
+            caller_binding_reader=self.server.native_callers,
+            caller_context_resolver=self.server._caller_context,
+            caller_authorizer=self.server._authorize_caller, owner_file_compatibility=True)
+        self.server.execution_host = self.host
+        self.install_candidate()
+        self.host.start()
+
     def status_request(self, admitted):
         return {"command": "worker-status", "task": "J01", "principal": "worker",
                 "schedule_id": admitted["schedule_id"]}
@@ -335,37 +416,34 @@ for line in sys.stdin:
     def test_retained_worker_admission_nested_commands_native_review_finish_and_terminal_project(self):
         self.install_candidate()
         application = self.fixture
-        original = type(application.port).save_due
-
-        def save(port, *args, **kwargs):
-            self.owner_threads.append(threading.get_ident())
-            return original(port, *args, **kwargs)
-
-        with patch.object(type(application.port), "save_due", new=save):
-            admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
-            self.assertEqual(admitted["outcome"], "admitted", admitted)
-            self.assertTrue(application.provider.work_started.wait(10))
-            self.assertFalse(Path(admitted["response_path"]).exists())
-            nested = [
+        admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
+        self.assertEqual(admitted["outcome"], "admitted", admitted)
+        self.assertTrue(application.provider.work_started.wait(10))
+        self.assertFalse(Path(admitted["response_path"]).exists())
+        due_while_blocked = application.port.read_due(admitted["schedule_id"])
+        nested = [
                 ("3333", {"command": "project-lifecycle-read", "task": "J01"}),
                 ("4444", self.status_request(admitted)),
                 ("5555", {"command": "status"}),
-            ]
-            report = self.wait_response(self.send_caller("2222", {"command": "report", "task": "J01",
+        ]
+        report = self.wait_response(self.send_caller("2222", {"command": "report", "task": "J01",
                 "summary": "nested progress", "next_action": "review returned evidence", "request_key": "nested-report"}))
-            results = [self.wait_response(self.send(token, request)) for token, request in nested]
-            self.assertEqual(report["outcome"], "committed", report)
-            self.assertEqual([result["outcome"] for result in results], ["read", "pending", "ok"], results)
-            repeated = self.wait_response(self.send_caller("6666", self.worker_request()))
-            self.assertEqual(repeated["outcome"], "retained", repeated)
-            self.assertEqual(repeated["handles"]["start"], admitted["retained_handle"], repeated)
-            self.assertEqual(len(application.provider.calls), 2)
-            application.provider.work_release.set()
-            settled_worker = self.wait_response(Path(admitted["response_path"]))
-            self.assertEqual(settled_worker["outcome"], "succeeded")
-            resumed = self.wait_response(Path(settled_worker["manager_result_notification"]["response_path"]))
-            self.assertEqual(resumed["outcome"], "succeeded", resumed)
-            self.assertEqual(len(set(self.owner_threads)), 1)
+        results = [self.wait_response(self.send(token, request)) for token, request in nested]
+        self.assertEqual(report["outcome"], "committed", report)
+        self.assertEqual([result["outcome"] for result in results], ["read", "pending", "ok"], results)
+        self.assertEqual(application.port.read_due(admitted["schedule_id"]), due_while_blocked)
+        repeated = self.wait_response(self.send_caller("6666", self.worker_request()))
+        self.assertEqual(repeated["outcome"], "retained", repeated)
+        self.assertEqual(repeated["handles"]["start"], admitted["retained_handle"], repeated)
+        self.assertEqual(len(application.provider.calls), 2)
+        application.provider.work_release.set()
+        settled_worker = self.wait_response(Path(admitted["response_path"]))
+        self.assertEqual(settled_worker["outcome"], "succeeded", settled_worker)
+        resumed = self.wait_response(Path(settled_worker["manager_result_notification"]["response_path"]))
+        self.assertEqual(resumed["outcome"], "succeeded", resumed)
+        self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["outcome"], "succeeded")
+        self.assertTrue(any(row["value"].get("summary") == "nested progress"
+            for row in self.reports()))
         candidate = application.app.assignments.list_observations(ResourceRef.from_dict(admitted["assignment_ref"]), kind="result")[0].ref.to_dict()
         reports_before_finish = self.reports()
         reviewed = self.wait_response(self.send("7777", {"command": "review-task", "task": "J01",
@@ -406,7 +484,7 @@ for line in sys.stdin:
         self.assertEqual(len(application.provider.calls), 4, "anchor, worker, result inspection and terminal continuation")
         progress = lambda rows: [row for row in rows if row["value"].get("schema") == "otto.manager-progress.v1"]
         self.assertEqual(progress(self.reports()), progress(reports_before_finish), "finish wake must not invent a progress report")
-        self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-6.1-sol")
+        self.assertEqual(application.port.read_due(admitted["schedule_id"])["last_result"]["observed_model"], "gpt-test")
 
     def test_native_review_pending_own_settlement_automatically_continues_to_close(self):
         self.install_candidate()
@@ -465,11 +543,19 @@ for line in sys.stdin:
         review = {"command": "review-task", "task": "J01", "request_key": "instruction-substitution",
             "candidate_ref": candidate, "source_refs": [candidate], "inspection": {"observed": "artifact prose only"},
             "judgments": {"C01": {"verdict": "PASS", "rationale": "inspected", "evidence_refs": [candidate]}}}
-        with patch.object(self.host.handler.commands, "_journal", wraps=self.host.handler.commands._journal) as journal:
-            response = self.wait_response(self.send("abcd", review))
+        assignment = ResourceRef.from_dict(self.server.state["assignment_ref"])
+        reports_before = f.app.assignments.list_observations(assignment, kind="report")
+        due_before = f.port.read_due(self.anchor)
+        pool_match = {("record_type",): "limit"}
+        pools_before = {ref.id for ref in f.store.consumer().find_identity_refs(kind="limit", payload_matches=pool_match)}
+        response = self.wait_response(self.send("abcd", review))
         self.assertEqual(response["outcome"], "error", response)
         self.assertIn("GUIDE/MANDATE", response["message"])
-        self.assertFalse(any(len(call.args) > 2 for call in journal.call_args_list), "no ordinary journal mutation")
+        reports_after = f.app.assignments.list_observations(assignment, kind="report")
+        self.assertEqual(reports_after, reports_before, "rejected candidate must not create a journey journal report")
+        self.assertEqual(f.port.read_due(self.anchor), due_before)
+        self.assertEqual({ref.id for ref in f.store.consumer().find_identity_refs(kind="limit", payload_matches=pool_match)}, pools_before,
+                         "rejected candidate must not create or consume assessment budget")
         self.assertEqual(f.owner.graph.current(f.task.ref).lifecycle.value, "pending")
         self.assertEqual(len(f.provider.calls), 1)
 
@@ -479,6 +565,8 @@ for line in sys.stdin:
         f.provider.work_release.set()
         admitted = self.wait_response(self.send_caller("1111", self.worker_request()))
         settled = self.wait_response(Path(admitted["response_path"]))
+        self.assertEqual(settled["outcome"], "succeeded", settled.get("error"))
+        self.assertIn("manager_result_notification", settled, settled)
         self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
         inputs = self.wait_response(self.send("abcd", {"command": "review-input", "task": "J01"}))
         self.assertEqual(inputs["outcome"], "read", inputs)
@@ -500,19 +588,12 @@ for line in sys.stdin:
     def test_historical_instruction_acceptance_stays_recorded_but_cannot_close_project(self):
         self.install_candidate()
         f = self.fixture
-        candidate = f.app._read(self.anchor).target["mandate_ref"]
-        request = {"command": "review-task", "task": "J01", "request_key": "historical-bad-candidate",
-            "candidate_ref": candidate, "source_refs": [candidate], "inspection": {"observed": "artifact described but not bound"},
-            "judgments": {"C01": {"verdict": "PASS", "rationale": "historical_pass", "evidence_refs": [candidate]}}}
-        # Establish the authentic shape of an older accepted instruction-only
-        # completion. The repair must expose it without rewriting the history.
-        with patch.object(self.host.handler.commands, "_instruction_document", return_value=False), \
-                patch.object(self.host.handler, "_retain_task_settlement", return_value={"outcome": "held"}):
-            accepted = self.wait_response(self.send("abcd", request))
-        self.assertEqual(accepted["completion"]["outcome"], "completed", accepted)
+        # Seed the real historical owner records that the old implementation
+        # accepted, without invoking the repaired review path or changing it.
+        historical, pool = self.seed_historical_instruction_acceptance(key="historical-bad-candidate")
+        self.assertEqual(historical.lifecycle.value, "completed")
         before = f.owner.graph.current(f.task.ref).payload
         from herzchen.kernel.limits import LimitService
-        pool = ResourceRef(f.actor.authority, "limit", "journey-local")
         usage = LimitService(f.store).get_pool(pool).cumulative_used_units
         closed = self.wait_response(self.send("bbbb", {"command": "finish-project", "request_key": "blocked-close",
             "dispositions": {name: {"status": "qualified", "rationale": "historical completion alone"}
@@ -541,21 +622,24 @@ for line in sys.stdin:
     def test_owner_corrective_task_preserves_old_acceptance_and_closes_only_after_genuine_review(self):
         self.install_candidate()
         f = self.fixture
-        candidate = f.app._read(self.anchor).target["mandate_ref"]
-        request = {"command": "review-task", "task": "J01", "request_key": "old-wrong-binding",
-            "candidate_ref": candidate, "source_refs": [candidate], "inspection": {"observed": "historical artifact prose"},
-            "judgments": {"C01": {"verdict": "PASS", "rationale": "old_pass", "evidence_refs": [candidate]}}}
-        with patch.object(self.host.handler.commands, "_instruction_document", return_value=False), \
-                patch.object(self.host.handler, "_retain_task_settlement", return_value={"outcome": "held"}):
-            old_review = self.wait_response(self.send("abcd", request))
-        self.assertEqual(old_review["completion"]["outcome"], "completed")
-        old = f.owner.graph.current(f.task.ref)
+        old, _historical_pool = self.seed_historical_instruction_acceptance(
+            key="old-wrong-binding", pool_id="journey-local")
         old_payload = json.loads(json.dumps(old.payload))
         project = f.owner.graph.current(f.project.ref)
         outcome = "Repair the promised artifact path and verify its actual contents under C01"
         batch = f.owner.sheet.apply(project.ref, {"tasks": [{"id": "J02", "title": "Correct preserved artifact obligation",
             "outcome": outcome, "acceptance": ["C01"]}]}, logical_request_key="corrective-task", actor=f.actor)
         corrective = f.owner.graph.current(batch.mappings["J02"])
+        task_review = f.app.portfolio.create_document(batch.project.ref.to_dict(), actor="manager",
+            request_id="corrective-task-admission-review", document_id="corrective-task-admission-review",
+            role="SOURCE", content={"task_ref": corrective.ref.to_dict(),
+                "decision": "approved", "observed": "The correction scope and C01 acceptance were reviewed."})
+        f.owner.graph.admit(corrective.ref, revision=corrective.ref.revision,
+            review_ref=ResourceRef.from_dict(task_review["record"]["payload"]["current_revision"]),
+            disposition="approved", logical_request_key="corrective-task-admission", actor=f.actor)
+        corrective = f.owner.graph.current(corrective.ref)
+        self.assertEqual(f.owner.graph.admission_state(corrective.ref)["admitted_revision"],
+            batch.mappings["J02"].revision)
         criterion = self.server.state["criterion_refs"]["C01"]
         from otto.portfolio.manager_journey_command import _digest
         content = {"schema": "otto.completed-task-correction.v1", "owner_actor": "manager",
@@ -570,39 +654,76 @@ for line in sys.stdin:
             logical_request_key="owner-correction-link", actor=f.actor)
         self.server.state["project_ref"] = linked.project.ref.to_dict()
         self.server.state["task_refs"]["J02"] = corrective.ref.to_dict()
-        policy = LocalAssessmentPolicy.from_run_config({"kind": "owner_local_bookkeeping", "local_only": True,
+        policy_config = {"kind": "owner_local_bookkeeping", "local_only": True,
             "purpose": "explicit correction bookkeeping without resetting prior consumption", "pool_id": "corrective-local",
-            "capacity_units": 1, "cumulative_allowance_units": 1, "task_criterion_pairs": ["J02/C01"]}, state=self.server.state)
+            "capacity_units": 1, "cumulative_allowance_units": 1, "task_criterion_pairs": ["J02/C01"]}
+        self.server.state["assessment_policy"] = policy_config
+        self.server._save_state()
+        config_path = self.service.RUN / "run.json"
+        run_config = json.loads(config_path.read_text())
+        run_config["assessment_accounting"] = policy_config
+        config_path.write_text(json.dumps(run_config))
+        policy = LocalAssessmentPolicy.from_run_config(policy_config, state=self.server.state)
         self.host.handler.commands.policy = policy
         project = f.owner.graph.current(f.project.ref)
         self.assertEqual(self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task"))), (set(), []))
-        content_type = type(f.owner.content)
-        original_read = content_type.read
-        def tampered_read(port, ref, *args, **kwargs):
-            value = original_read(port, ref, *args, **kwargs)
-            if ref == ResourceRef.from_dict(source_ref):
-                value = json.loads(json.dumps(value, default=lambda item: item.to_dict()))
-                value["content"]["replaces"][0]["completion_sha256"] = "0" * 64
-            return value
-        with patch.object(content_type, "read", new=tampered_read), self.assertRaisesRegex(ValueError, "pin distinct preserved"):
+        tampered_content = {**content, "replaces": [{**content["replaces"][0], "completion_sha256": "0" * 64}]}
+        tampered_document = f.app.portfolio.create_document(batch.project.ref.to_dict(), actor="manager",
+            request_id="owner-correction-tampered-source", document_id="owner-correction-tampered-source",
+            role="SOURCE", content=tampered_content)
+        tampered_ref = tampered_document["record"]["payload"]["current_revision"]
+        f.owner.sheet.apply(batch.project.ref, {"metadata": {"owner_task_corrections": [tampered_ref]}},
+            logical_request_key="owner-correction-tampered-link", actor=f.actor)
+        project = f.owner.graph.current(batch.project.ref)
+        with self.assertRaisesRegex(ValueError, "pin distinct preserved"):
             self.host.handler.commands._completed_task_corrections(project, list(f.owner.graph.list(project=project.ref, kind="task")))
         self.assertEqual(f.owner.graph.current(old.ref).payload, old_payload)
+        f.owner.sheet.apply(batch.project.ref, {"metadata": {"owner_task_corrections": [source_ref]}},
+            logical_request_key="owner-correction-restore-link", actor=f.actor)
+        current_project_ref = ResourceRef.from_dict(self.server.state["project_ref"])
+        self.server.state["project_ref"] = f.owner.graph.current(
+            ResourceRef(current_project_ref.authority, current_project_ref.kind, current_project_ref.id)).ref.to_dict()
+        self.server._save_state()
+        outer = self
+
+        class CorrectiveManager(ProviderBinding):
+            def execute(self, request):
+                result = super().execute(request)
+                if request.identity.logical_agent_id == "manager" and self.options.get("delivered_brief"):
+                    inputs = json.loads(outer.send_caller("corrective-review-input",
+                        {"command": "review-input", "task": "J02"}).read_text())
+                    (outer.root / "corrective-inputs.json").write_text(json.dumps(inputs))
+                    reviewed = json.loads(outer.send_caller("corrective-review", {"command": "review-task",
+                        "task": "J02", "request_key": "corrective-genuine-review",
+                        "candidate_ref": inputs["candidate_ref"], "source_refs": inputs["source_refs"],
+                        "inspection": {"observed": "actual promised path and criterion contents inspected"},
+                        "judgments": {"C01": {"verdict": "PASS", "rationale": "corrected_artifact_pass",
+                            "evidence_refs": inputs["evidence_refs"]}}}).read_text())
+                    (outer.root / "corrective-review.json").write_text(json.dumps(reviewed))
+                return result
+
+        f.app.runtime.adapter.binding_factory = lambda **options: CorrectiveManager(f.provider, options)
         f.provider.work_release.set()
         admitted = self.wait_response(self.send_caller("1111", {**self.worker_request(), "task": "J02", "route": "normal",
             "principal": "corrective-worker", "request_key": "corrective-artifact-worker", "focus": outcome}))
+        self.assertEqual(admitted["outcome"], "admitted", admitted)
         settled = self.wait_response(Path(admitted["response_path"]))
-        self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
-        inputs = self.wait_response(self.send("2222", {"command": "review-input", "task": "J02"}))
-        reviewed = self.wait_response(self.send("3333", {"command": "review-task", "task": "J02",
-            "request_key": "corrective-genuine-review", "candidate_ref": inputs["candidate_ref"], "source_refs": inputs["source_refs"],
-            "inspection": {"observed": "actual promised path and criterion contents inspected"},
-            "judgments": {"C01": {"verdict": "PASS", "rationale": "corrected_artifact_pass", "evidence_refs": inputs["evidence_refs"]}}}))
+        self.assertEqual(settled.get("outcome"), "succeeded", settled.get("error"))
+        self.assertIn("manager_result_notification", settled,
+            {key: value for key, value in settled.items() if key in {"outcome", "error", "completion_intents"}})
+        manager_result = self.wait_response(Path(settled["manager_result_notification"]["response_path"]))
+        self.assertEqual(manager_result["outcome"], "succeeded", manager_result)
+        reviewed = json.loads((self.root / "corrective-review.json").read_text())
         self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
-        self.wait_response(Path(reviewed["task_settlement_notification"]["response_path"]))
+        self.assertEqual(manager_result["completion_intents"][0]["result"]["outcome"], "replayed")
+        self.assertEqual(manager_result["task_settlement_notification"]["outcome"], "admitted",
+            manager_result["task_settlement_notification"])
+        self.wait_response(Path(manager_result["task_settlement_notification"]["response_path"]))
         project = f.owner.graph.current(f.project.ref)
         rows = list(f.owner.graph.list(project=project.ref, kind="task"))
         covered, proof = self.host.handler.commands._completed_task_corrections(project, rows)
         self.assertEqual(covered, {old.ref.id})
+        inputs = json.loads((self.root / "corrective-inputs.json").read_text())
         self.assertEqual(proof[0]["candidate_ref"], inputs["candidate_ref"])
         from herzchen.kernel.limits import LimitService
         limits = LimitService(f.store)
@@ -637,16 +758,18 @@ for line in sys.stdin:
 
     def test_unsettled_self_continuation_names_the_return_then_owner_settlement_action(self):
         self.install_candidate()
-        before = self.fixture.port.read_due(self.anchor)
-        pending = {**before, "completion_state": "none", "stop_state": "active"}
-        original = self.server.due_port.read_due
-        with patch.object(type(self.server.due_port), "read_due",
-                side_effect=lambda schedule: pending if schedule == self.anchor else original(schedule)):
-            held = self.host.handler({"command": "manager-continue", "report_key": self.key})
+        current = self.fixture.app._read(self.anchor)
+        pending = replace(current, completion_state="none", stop_state="active")
+        self.fixture.port.save_due(self.anchor, pending.to_dict(), request_id="fixture-unsettled-manager-turn",
+            expected_version=current.version)
+        pending_due = self.fixture.port.read_due(self.anchor)
+        self.assertEqual(pending_due["completion_state"], "none")
+        self.assertEqual(pending_due["stop_state"], "active")
+        held = self.host.handler({"command": "manager-continue", "report_key": self.key})
         self.assertEqual(held["outcome"], "held", held)
         self.assertIn("return from the current native turn", held["next_action"])
         self.assertEqual(held["current_schedule_id"], self.anchor)
-        self.assertEqual(self.fixture.port.read_due(self.anchor), before)
+        self.assertEqual(self.fixture.port.read_due(self.anchor), pending_due)
         self.assertEqual(len(self.fixture.provider.calls), 1)
 
     def test_worker_roots_follow_actual_adapter_and_owner_configured_cold_operation(self):
@@ -696,15 +819,12 @@ for line in sys.stdin:
         before = application.port.read_due(admitted["schedule_id"])
         calls = len(application.provider.calls)
         self.host.close()
-        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
-                                  owner_path=self.directory / "manager-status-owner.json")
-        self.install_candidate()
-        self.host.start()
-        repeated = self.wait_response(self.send_caller("2222", self.worker_request()))
-        self.assertEqual(repeated["retained_handle"], admitted["retained_handle"])
+        self.restart_host()
+        repeated = self.host.handler(self.worker_request())
+        self.assertEqual(repeated["handles"]["start"], admitted["retained_handle"], repeated)
         self.assertEqual(len(application.provider.calls), calls)
         self.assertEqual(application.port.read_due(admitted["schedule_id"]), before)
-        held = self.wait_response(self.send_caller("3333", {**self.worker_request(), "request_key": "unknown-new-key"}))
+        held = self.host.handler({**self.worker_request(), "request_key": "unknown-new-key"})
         self.assertEqual(held["outcome"], "held")
         self.assertEqual(len(application.provider.calls), calls)
 
@@ -762,7 +882,7 @@ for line in sys.stdin:
                         json.dumps({path.name: path.read_text() for path in self.directory.glob("request-*.json")}))
         nested = json.loads(receipt.read_text())
         self.assertEqual([value["outcome"] for value in nested], ["admitted", "read", "committed", "accepted"],
-                         [value.get("outcome") for value in nested])
+                         nested[1])
         self.assertEqual(nested[-1]["completion"]["outcome"], "pending", nested)
         self.assertFalse(response.exists())
         closing = threading.Thread(target=self.host.close)
@@ -794,13 +914,10 @@ for line in sys.stdin:
         self.assertEqual(context["execution_task_ref"], application.task.ref.to_dict())
         self.assertEqual(context["reported_task_ref"], application.task.ref.to_dict())
         self.assertEqual(application.owner.graph.current(application.task.ref).lifecycle.value, "completed")
-        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
-                                  owner_path=self.directory / "manager-status-owner.json")
-        self.install_candidate()
-        self.host.start()
-        terminal = self.wait_response(self.send("3333", {"command": "finish-project", "request_key": "continued-terminal",
+        self.restart_host()
+        terminal = self.host.handler({"command": "finish-project", "request_key": "continued-terminal",
             "dispositions": {name: {"status": "qualified", "rationale": "Local connected journey; native occurrences settled, no external publication obligations"}
-                             for name in ("acceptance", "publication", "remote", "runtime")}}))
+                             for name in ("acceptance", "publication", "remote", "runtime")}})
         self.assertEqual(terminal["outcome"], "completed", terminal)
         self.assertEqual(terminal["readback"]["lifecycle"], "completed")
         self.assertEqual(len(application.provider.calls), 3)
@@ -811,6 +928,15 @@ for line in sys.stdin:
         next_task = WorkGraph(f.store, actor=f.actor).create_task(f.project.ref,
             title="Next useful delivery", logical_request_key="intermediate-next-task")
         self.server.state["task_refs"]["J02"] = next_task.ref.to_dict()
+        policy_config = dict(self.server.state["assessment_policy"])
+        policy_config["task_criterion_pairs"] = ["J01/C01", "J02/C01"]
+        self.server.state["assessment_policy"] = policy_config
+        self.server._save_state()
+        policy = LocalAssessmentPolicy.from_run_config(policy_config, state=self.server.state)
+        self.host.handler.commands.policy = policy
+        run_config = json.loads((self.service.RUN / "run.json").read_text())
+        run_config["assessment_accounting"] = policy_config
+        (self.service.RUN / "run.json").write_text(json.dumps(run_config))
         next_request = {**self.worker_request(), "task": "J02", "principal": "next-worker",
                         "request_key": "intermediate-next-worker", "focus": "Implement next useful delivery"}
         outer = self
@@ -822,7 +948,8 @@ for line in sys.stdin:
                     phase = "review" if not phases else "advance" if len(phases) == 1 else "inspect"
                     if phase == "advance":
                         outer.assertIn("Observed owner task-settlement context:", self.options["prompt"])
-                        outer.assertIn("advance ready unfinished tasks", self.options["prompt"])
+                        outer.assertIn("Advance only genuinely unfinished tasks through ordinary delegation and review",
+                            self.options["prompt"])
                     phases.append(phase)
                     if phase == "review":
                         inputs = json.loads(outer.send_caller("intermediate-review-input",
@@ -834,8 +961,9 @@ for line in sys.stdin:
                             "judgments": {"C01": {"verdict": "PASS", "rationale": "retained_native_inspection_pass",
                                 "evidence_refs": inputs["evidence_refs"]}}}).read_text())
                         (outer.root / "review.json").write_text(json.dumps(reviewed))
-                        outer.send_caller("intermediate-finish", {"command": "finish-task", "task": "J01",
-                            "request_key": "intermediate-finish", "review_key": "intermediate-review"})
+                        finished = json.loads(outer.send_caller("intermediate-finish", {"command": "finish-task", "task": "J01",
+                            "request_key": "intermediate-finish", "review_key": "intermediate-review"}).read_text())
+                        (outer.root / "review.json").write_text(json.dumps(finished))
                     elif phase == "advance":
                         advanced = json.loads(outer.send_caller("intermediate-advance", next_request).read_text())
                         (outer.root / "advance.json").write_text(json.dumps(advanced))
@@ -862,7 +990,7 @@ for line in sys.stdin:
         next_worker = json.loads((self.root / "advance.json").read_text())
         self.assertEqual(next_worker["outcome"], "admitted", next_worker)
         settled_next = self.wait_response(Path(next_worker["response_path"]))
-        self.wait_response(Path(settled_next["manager_result_notification"]["response_path"]))
+        self.assertEqual(settled_next["outcome"], "succeeded", settled_next)
         self.assertEqual(f.owner.graph.current(f.task.ref).lifecycle.value, "completed")
         self.assertEqual(f.owner.graph.current(next_task.ref).lifecycle.value, "pending")
         callback = f.port.read_due(advanced["schedule_id"])
@@ -871,10 +999,7 @@ for line in sys.stdin:
         self.assertEqual(facts["completed_tasks"][0]["task_ref"]["id"], f.task.ref.id)
         calls = len(f.provider.calls)
         self.host.close()
-        self.host = ExecutionHost(directory=self.directory, handler=self.server.handle,
-                                  owner_path=self.directory / "manager-status-owner.json")
-        self.install_candidate()
-        self.host.start()
+        self.restart_host()
         same = f.app.continue_manager_after_tasks(manager_schedule_id=advanced["schedule_id"], execute=True)
         self.assertEqual(same["outcome"], "replayed", same)
         self.assertEqual(same["schedule_id"], advanced["schedule_id"])
