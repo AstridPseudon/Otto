@@ -4,6 +4,9 @@ Base: canon/main 163925e. Log: `<UTC> | <TASK> | merged <sha> | +a/-b | tests ru
 
 ## Log
 
+2026-10-17 20:13 UTC | SL0 ledger regression repair | merged b6f48f5 | +237/-21 | `tests/test_slim_ledger.py` (1 passed) | separates immutable base counts from current inventory; dynamically measures candidates; removed stale deleted candidates.
+2026-10-17 20:13 UTC | SL3/SL8 owner integration follow-up | merged f1b6a43 | +195/-4 | `tests/test_owner_observability_cli.py` (5 passed), `tests/test_cli_read_routes.py` (3 passed) | installed routes use the owner-issued finite project grant and actor; no owner started.
+2026-10-17 20:13 UTC | SL8 retained-history correction | merged 9ee11fd | +62/-4 | `tests/test_status_friction.py` (3 passed) | recognizes retained history shape and reports unproven category coverage as unavailable.
 2026-10-17 20:12 UTC | SL0 regression repair | Astra's report reproduced: the acceptance failed when current portfolio counts (47,187 lines / 96 modules) were asserted against the base. Generator now reports immutable `163925e` baseline (47,920 / 99) separately from the dynamically measured current inventory; the test checks both without pinning the current count. Candidate sizes and importer counts derive from current rows, retired candidates are absent. Files changed: `.project/ledger.md`, `.project/tasklist.md`, `scripts/slim_ledger.py`, `tests/test_slim_ledger.py`. Focused test failed before the fix and passed after. No deletions.
 
 2026-10-17 19:55 UTC | SL0 | merged 81abf5c | +410/-4 | `tests/test_slim_ledger.py` (1 passed) | files: `.project/PROJECT.md`, `.project/ledger.md`, `.project/tasklist.md`, `scripts/slim_ledger.py`, `tests/test_slim_ledger.py`; measured 47,920 baseline and 11,980 threshold, 99 portfolio modules plus 38 controller modules; no deletions.
@@ -58,7 +61,7 @@ The focused CLI regression was added before implementation and passes: `/opt/hom
 
 2. **SL2 replacement wiring:** `OwnerManagerReplacement` and `ManagerContinuity.replace_session` have zero production callers in this clone; the live manager handoff is a read projection through `manager_journey_service.py`. Wiring a native replacement entrypoint would overlap PROGRAM's in-flight owner/manager work. SL2 closes the live queued-generation admission defect and hardens the existing replacement composition, but cannot claim a live route consolidation or delete a redundant route until the owner entrypoint lands. Which PROGRAM-owned entrypoint should call the retained replacement composition after integration?
 
-3. **SLIM deletion budget:** the current diff removes a net 913 lines from `src/otto/portfolio` against the 11,980-line target, leaving 11,067 lines. Remaining candidates in the refreshed ledger are gross footprints with overlapping callers and retained behavior, not credible net savings yet. SL6 depends on SL2's unlanded production replacement route; SL7 also depends on the unanswered Vision/Native5 decision. Should the 25% budget remain a hard requirement after those upstream blocks clear, and may SLIM touch paths still owned by PROGRAM if the measured untouched candidates cannot meet it? No candidate is deleted on assumption.
+3. **SLIM deletion budget:** the current diff removes a net 733 lines from top-level `src/otto/portfolio` Python (219 added / 952 deleted) against the 11,980-line target, leaving 11,247 lines. This uses the same top-level module scope as the baseline; tests and documentation are outside the portfolio deletion measure. Remaining candidates in the refreshed ledger are gross footprints with overlapping callers and retained behavior, not credible net savings yet. SL6 depends on SL2's unlanded production replacement route; SL7 also depends on the unanswered Vision/Native5 decision. Should the 25% budget remain a hard requirement after those upstream blocks clear, and may SLIM touch paths still owned by PROGRAM if the measured untouched candidates cannot meet it? No candidate is deleted on assumption.
 
 ## SL2 worker evidence
 
@@ -74,7 +77,7 @@ Astra reviewed the original SL2 diff and reproduced the cross-schedule reacquisi
 
 - SL6 is blocked because its declared SL2 dependency has no production replacement entrypoint until PROGRAM/orchestrator wiring is decided.
 - SL7 is blocked by SL5's unanswered keep/retire decision and SL6.
-- SL9 is blocked by the dependent rows above and the measured deletion shortfall: 913 net portfolio lines removed versus 11,980 required. The remaining ledger entries are candidate gross sizes with live callers; further removals need measured parity evidence and an agreed path past PROGRAM-owned files.
+- SL9 is blocked by the dependent rows above and the measured deletion shortfall: 733 net top-level portfolio lines removed versus 11,980 required. The remaining ledger entries are candidate gross sizes with live callers; further removals need measured parity evidence and an agreed path past PROGRAM-owned files.
 
 ### SL8 retained-history correction
 
