@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping, Optional
 from urllib.parse import unquote
 
 from herzchen.fleet.capacity import CapacityPolicy
+from herzchen.fleet.landing import assert_line_checkout_clean
 from herzchen.fleet.labs import LabFleet
 from herzchen.fleet.runner.store import ResultStore
 
@@ -615,6 +616,7 @@ class OwnerFleetRegistry:
             raise LookupError("repo " + repo_name + " has no valid branch " + branch)
         pair_key = (repo_name, branch)
         with self._pair_lock:
+            assert_line_checkout_clean(repo, "refs/heads/" + branch)
             fleet, landing = self._pair(pair_key, repo, branch)
             lab_name = task.id
             lab = (fleet.get(lab_name) if lab_name in fleet.names()
