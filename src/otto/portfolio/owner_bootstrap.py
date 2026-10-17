@@ -599,6 +599,10 @@ class PortfolioOwnerBootstrap:
         "reviewed_policy",
         "evidence_payload_resolver",
         "on_project_finished",
+        "_direction_bindings_lock",
+        "_direction_bindings_instance",
+        "_late_usage_lock",
+        "_late_usage_cache",
     )
 
     def issue_attention_assignment_guard(self, scope: Mapping[str, Any], *, attention_authority: str) -> Any:
@@ -648,6 +652,16 @@ class PortfolioOwnerBootstrap:
             raise ValueError("project read grant must bind the authenticated owner principal")
 
         self.store = store
+        # These owner capabilities own command transports.  Keep one for the
+        # lifetime of this bootstrap instead of binding a fresh listening
+        # socket each time a manager asks for its direction surface.
+        import threading
+        self._direction_bindings_lock = threading.RLock()
+        self._direction_bindings_instance = None
+        # Native body providers can carry authority.  This owner session is
+        # bound to one provider, retained alongside its assignment port.
+        self._late_usage_lock = threading.RLock()
+        self._late_usage_cache = None
         # Called after a project's lifecycle becomes completed or withdrawn (see project_finished).
         self.on_project_finished = None
         self.reviewed_policy = reviewed_policy
@@ -760,7 +774,7 @@ class PortfolioOwnerBootstrap:
         # Read capability only: neither registering domains nor exposing bind
         # or adopt to workers. The explicit owner setup remains the issuer.
         def read(*, assignment_ref: Any, generation: Any, project_ref: Any, task_ref: Any = None) -> Any:
-            from .direction import DirectionBindings, DOMAIN_ID, ADOPTION_DOMAIN_ID
+            from .direction import DOMAIN_ID, ADOPTION_DOMAIN_ID
             from .direction_context import read_direction_context
             registered = {item.domain_id for item in self.store.registered_domains()}
             if DOMAIN_ID not in registered:
@@ -771,7 +785,7 @@ class PortfolioOwnerBootstrap:
                 raise PermissionError("direction context is outside the current project read grant")
             if ADOPTION_DOMAIN_ID not in registered:
                 raise ValueError("direction adoption reader unavailable; complete owner direction setup")
-            directions = DirectionBindings(self.store, owner_actor=self.owner_actor)
+            directions = self._get_direction_bindings()
             return read_direction_context(directions, actor=self.owner_actor,
                 assignment_ref=assignment_ref, generation=generation, project_ref=project_ref, task_ref=task_ref)
         return read
@@ -789,7 +803,17 @@ class PortfolioOwnerBootstrap:
         if not isinstance(project, ResourceRef) or project.kind != "work.project":
             raise ValueError("one admitted project required")
         actor = self.owner_actor
-        assignments = ResponsibilityAssignments(self.store, actor=actor, native_bodies=native_bodies).command_port
+        with self._late_usage_lock:
+            cached = self._late_usage_cache
+            if cached is None:
+                assignments = ResponsibilityAssignments(
+                    self.store, actor=actor, native_bodies=native_bodies
+                ).command_port
+                self._late_usage_cache = (native_bodies, assignments)
+            elif cached[0] is not native_bodies:
+                raise ValueError("owner session is already bound to a different native bodies provider")
+            else:
+                assignments = cached[1]
         owner = self
 
         class BoundLateUsage:
@@ -819,8 +843,18 @@ class PortfolioOwnerBootstrap:
         """
         from .direction import DirectionBindings, register_direction_bindings
         register_direction_bindings(self.store)
-        return DirectionBindings(self.store, owner_actor=self.owner_actor,
-                                 assignment_port=self.assignments.command_port)
+        return self._get_direction_bindings()
+
+    def _get_direction_bindings(self) -> Any:
+        """Return this session's direction capability, creating it once."""
+        from .direction import DirectionBindings
+        with self._direction_bindings_lock:
+            if self._direction_bindings_instance is None:
+                self._direction_bindings_instance = DirectionBindings(
+                    self.store, owner_actor=self.owner_actor,
+                    assignment_port=self.assignments.command_port,
+                )
+            return self._direction_bindings_instance
 
     def direction_surface(self, *, context_reader: Any = None,
                           caller_context_reader: Any = None,

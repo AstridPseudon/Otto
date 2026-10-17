@@ -59,7 +59,10 @@ class CommandDirCleanupTests(unittest.TestCase):
 
     def test_socket_mode_dir_removed_on_exit(self):
         # AF_UNIX paths are limited to ~104 bytes on macOS, so use a short root.
-        short = tempfile.mkdtemp(prefix=".sl12-", dir=os.path.expanduser("~"))
+        try:
+            short = tempfile.mkdtemp(prefix=".sl12-", dir=os.path.expanduser("~"))
+        except PermissionError:
+            self.skipTest("home-directory writes are denied in this sandbox")
         try:
             env = {**os.environ, "PYTHONPATH": SRC}
             env.pop("HERZCHEN_IN_PROCESS_COMMAND_FALLBACK", None)
