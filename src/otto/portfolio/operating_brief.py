@@ -204,13 +204,6 @@ def _observed_ref(record: Mapping[str, Any], field: str) -> dict[str, Any]:
     return _pinned_ref(raw, f"{field}.ref")
 
 
-def _require_exact_ref(actual: Any, expected: Mapping[str, Any], field: str) -> dict[str, Any]:
-    observed = _pinned_ref(actual, field)
-    if observed != dict(expected):
-        raise OperatingBriefError(f"{field} does not match the pinned canonical reference")
-    return observed
-
-
 def _require_task_pin(actual: Any, expected: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
     """Accept a newer task revision only with owner-reader content proof."""
     observed = _pinned_ref(actual, "task.ref")
@@ -218,6 +211,22 @@ def _require_task_pin(actual: Any, expected: Mapping[str, Any], record: Mapping[
         raise OperatingBriefError("task does not match the pinned canonical identity")
     if observed["revision"] != expected["revision"] and record.get("task_pin_content_matches") is not True:
         raise OperatingBriefError("task content no longer matches the pinned canonical revision")
+    return observed
+
+
+def _require_setup_content_pin(actual: Any, expected: Mapping[str, Any],
+                               record: Mapping[str, Any], field: str) -> dict[str, Any]:
+    """Accept a later owner revision only with trusted retained-content proof."""
+    observed = _pinned_ref(actual, f"{field}.ref")
+    if any(observed[key] != expected[key] for key in ("authority", "kind", "id")):
+        raise OperatingBriefError(f"{field} does not match the pinned canonical identity")
+    if observed["revision"] != expected["revision"] and record.get(f"{field}_pin_content_matches") is not True:
+        changed = record.get(f"{field}_pin_changed_fields")
+        name = changed[0] if isinstance(changed, list) and changed and isinstance(changed[0], str) else "content"
+        raise OperatingBriefError(
+            f"{field}.{name} changed since the pinned operating setup; "
+            "update the operating setup and run operating-setup activate"
+        )
     return observed
 
 
@@ -511,8 +520,9 @@ def prepare_canonical_operating_brief(
     schema.  They return normalized mappings with a pinned ``ref`` and a
     ``payload`` (the payload may be omitted for top-level fields). All readers
     receive identity-only refs and resolve current state; this function
-    compares returned revisions with the expected pins, including the
-    currently adopted mandate record. The normalized mandate record carries
+    compares returned revisions with the expected pins, accepting later
+    project, assignment and mandate revisions only with trusted content proof.
+    The normalized mandate record carries
     ``role``, ``scope_ref``, active state, and the adopted ``brief``.
     Assignment records carry role, scope, generation, principal, and active
     state. Project/task records carry lifecycle state; task records also
@@ -560,9 +570,9 @@ def prepare_canonical_operating_brief(
     assignment = read(assignment_reader, assignment_pin, "assignment", current=True)
     mandate_record = read(mandate_reader, mandate_pin, "mandate", current=True)
     task = None if task_pin is None else read(task_reader, task_pin, "task", current=True)
-    _require_exact_ref(_observed_ref(project, "project"), project_pin, "project")
-    _require_exact_ref(_observed_ref(assignment, "assignment"), assignment_pin, "assignment")
-    _require_exact_ref(_observed_ref(mandate_record, "mandate"), mandate_pin, "mandate")
+    _require_setup_content_pin(_observed_ref(project, "project"), project_pin, project, "project")
+    _require_setup_content_pin(_observed_ref(assignment, "assignment"), assignment_pin, assignment, "assignment")
+    _require_setup_content_pin(_observed_ref(mandate_record, "mandate"), mandate_pin, mandate_record, "mandate")
     if task is not None and task_pin is not None:
         _require_task_pin(_observed_ref(task, "task"), task_pin, task)
 

@@ -129,8 +129,15 @@ class _ScopedProjectReader:
         return identity if self.__grant.allows(parent) else None
 
     def get_revision(self, ref: Any) -> Any:
-        """Read one retained task revision only when its project is granted."""
-        if self.__grant is None or getattr(ref, "kind", None) != "work.task" or getattr(ref, "authority", None) != self.authority:
+        """Read a retained granted project or one of its task revisions."""
+        if self.__grant is None or getattr(ref, "authority", None) != self.authority:
+            return None
+        if getattr(ref, "kind", None) == "work.project":
+            read_revision = getattr(self.__reader, "get_revision", None)
+            if not callable(read_revision):
+                return None
+            return read_revision(ref) if self.__grant.allows(ref) else None
+        if getattr(ref, "kind", None) != "work.task":
             return None
         read_revision = self.__task_revision_reader or getattr(self.__reader, "get_revision", None)
         if not callable(read_revision):
