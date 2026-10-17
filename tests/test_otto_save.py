@@ -141,6 +141,30 @@ class OtToSaveTests(unittest.TestCase):
         self.assertEqual(shown.get("outcome"), "read", shown)
         self.assertEqual(shown["project"]["criteria"], criteria)
 
+    def test_task_brief_document_round_trips_through_save_and_show(self):
+        brief = "Follow the project brief."
+        saved = self._created(
+            _task("A", instructions=brief),
+            documents=[{"local_id": "brief-A", "title": "Brief A", "content": {"text": brief}}],
+        )
+        self.assertEqual(saved["outcome"], "saved", saved)
+        self.assertEqual(parse_save_file(_file(
+            _task("A", instructions=brief),
+            documents=[{"local_id": "brief-A", "title": "Brief A", "content": {"text": brief}}],
+        ))["seed"]["documents"][0]["content"], {"text": brief})
+
+        from otto.portfolio.herzchen_binding import ProjectReadGrant
+        from otto.portfolio.show import show_project
+        granted_owner = PortfolioOwnerBootstrap(
+            self.store, binding=self.owner.binding, owner_actor="owner",
+            project_read_grant=ProjectReadGrant(self.owner.owner_actor,
+                (saved["project_ref"]["id"],), "fixture-owner", "1"),
+        )
+        shown = show_project(OttoPortfolio(granted_owner.consumer_operations()), actor="owner",
+                             project_ref=saved["project_ref"], limit=100)
+        self.assertEqual(shown.get("outcome"), "read", shown)
+        self.assertEqual(shown["tasks"][0]["authored"]["instructions"], brief)
+
     def test_plan_namespace_accepts_replacement_and_null_key_removal(self):
         created = self._created(_task("A", metadata_namespace={PLAN_NAMESPACE: GOOD_PLAN}))
         replacement = dict(GOOD_PLAN, lines=72, size=1.25)
@@ -270,7 +294,6 @@ class OtToSaveTests(unittest.TestCase):
         for bad, reason in (
             ([], "JSON object"),
             ({"project": {}, "tasks": [], "efforts": []}, "unknown save-file fields"),
-            ({"project": {}, "tasks": [], "documents": [{"path": "x"}]}, "documents are not saved"),
             ({"project": {}, "tasks": [], "project_ref": {"id": "p1"}}, "needs the revision"),
             ({"tasks": [_task("A", lifecycle="active")]}, "must be pending"),
             ({"tasks": [_task("A"), _task("A")]}, "appears twice"),

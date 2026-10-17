@@ -34,8 +34,6 @@ def parse_save_file(document: Any) -> dict[str, Any]:
     unknown = sorted(str(key) for key in set(document) - SAVE_KEYS)
     if unknown:
         raise SaveFileError("unknown save-file fields: " + ", ".join(unknown))
-    if document.get("documents"):
-        raise SaveFileError("documents are not saved by otto save yet; author them through the document route")
     project_ref = document.get("project_ref")
     if project_ref is not None:
         if not isinstance(project_ref, Mapping) or not isinstance(project_ref.get("id"), str) or not project_ref["id"].strip():
@@ -55,6 +53,9 @@ def parse_save_file(document: Any) -> dict[str, Any]:
     criteria = document.get("criteria", [])
     if not isinstance(criteria, list):
         raise SaveFileError("criteria must be an array")
+    documents = document.get("documents", [])
+    if not isinstance(documents, list):
+        raise SaveFileError("documents must be an array")
     ids: list[str] = []
     for index, task in enumerate(tasks):
         if not isinstance(task, Mapping):
@@ -85,7 +86,7 @@ def parse_save_file(document: Any) -> dict[str, Any]:
                     raise SaveFileError(f"task {local_id!r} depends on unknown task {dep!r}")
     _refuse_cycles(dependencies)
     # The file's id is the task's durable alias, so a later save finds the same task.
-    seed = {"project": dict(project), "tasks": [dict(task, alias=task.get("alias", task["id"])) for task in tasks], "criteria": list(criteria)}
+    seed = {"project": dict(project), "tasks": [dict(task, alias=task.get("alias", task["id"])) for task in tasks], "criteria": list(criteria), "documents": list(documents)}
     return {"project_ref": project_ref, "seed": seed}
 
 
