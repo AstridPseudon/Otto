@@ -240,7 +240,7 @@ class AssertionKindTests(unittest.TestCase):
             path.write_text("module implementation\n", encoding="utf-8")
         self.assertTrue(perch_report.composefleet_landed(stage_root))
 
-    def test_stage_two_scenario_skip_is_explicit_and_gate_fails(self):
+    def test_stage_two_scenario_setup_failure_is_explicit_and_gate_fails(self):
         raw = self.tmp / "raw-stage2-skip"
         raw.mkdir()
         (raw / "config.json").write_text(json.dumps({"stage": "2", "scenarios": ["admit-and-dispatch"],
@@ -248,10 +248,11 @@ class AssertionKindTests(unittest.TestCase):
                     "stage2_tasks": ["A", "B", "C"], "stage2_admitted": ["A", "B", "C"],
                     "stage2_dependencies": {"A": [], "B": ["A"], "C": ["B"]},
                     "stage2_unadmitted_revision": {"task": "C", "revision": "rev-unadmitted", "admitted": False}}), encoding="utf-8")
-        (raw / "notes.json").write_text(json.dumps({"admit-and-dispatch": "skipped: COMPOSEFLEET has not landed"}), encoding="utf-8")
+        (raw / "notes.json").write_text(json.dumps({"admit-and-dispatch": "failed: COMPOSEFLEET prerequisites are absent from the staging tree"}), encoding="utf-8")
         got = {row["name"]: row for row in perch_report.assertions(raw)}
         self.assertEqual(got["admit-and-dispatch-ran"]["status"], "fail")
         self.assertIn("did not run", got["admit-and-dispatch-ran"]["detail"])
+        self.assertIn("failed:", json.loads((raw / "notes.json").read_text(encoding="utf-8"))["admit-and-dispatch"])
         self.assertEqual(got["admitted-ready-dependency-order"]["status"], "skip")
 
     def test_stage_two_seeded_faults_fail_their_matching_assertions_only(self):

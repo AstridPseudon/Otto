@@ -294,12 +294,14 @@ run_stage() {  # STAGE
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key save-through-socket --value "skipped: staging did not start"
         fi ;;
       admit-and-dispatch)
+        # Stage 2 is a proof gate: never turn missing prerequisites into a skip. Record why
+        # execution could not proceed, and let the stage-2 assertions fail with that evidence.
         if [ "$RESTART_RC" -ne 0 ]; then
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: staging did not start"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: staging did not start (rc $RESTART_RC)"
         elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: COMPOSEFLEET has not landed"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
         else
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "skipped: COMPOSEFLEET landed; stage 2 has no registered active canary project or authenticated manager occurrence"
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: stage-2 setup did not produce an authenticated canary manager occurrence"
         fi ;;
       *) die "perch.sh has no scenario called $scenario" ;;
     esac
