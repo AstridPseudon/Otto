@@ -298,6 +298,31 @@ class RegistrationProfileRetentionTests(unittest.TestCase):
             self.assertEqual(result["error"]["message"], str(error))
             self.assertIn("qualified for this host", result["next_action"])
 
+    def test_retained_activation_refusals_preserve_next_action_in_both_envelopes(self):
+        from otto.agents import host_profiles
+        from otto.hostctl.cli import _cli_exception_result
+        from otto.hostctl.register import plan, plan_retained
+        from otto.hostctl.service import _owner_exception_result
+
+        bundle = read_bundle(self.root)
+        selected = host_profiles.profile_for_run(bundle["run"], host_kind="codex", default_profile="codex")
+        kwargs = {"manager_principal": "manager", "worktree": str(self.root), "tool_entrypoint": "ottoctl"}
+        registration = plan(bundle, profile=selected, **kwargs)
+        facts = registration["custom"]["otto_host_registration"]
+        qualified_host = {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"]}}}
+        refused_hosts = (
+            {**qualified_host, "kind": "other"},
+            {"kind": "codex", "adapters": {"codex": {"profiles": ["workspace-write"], "models": []}}},
+        )
+        for host in refused_hosts:
+            with self.subTest(host=host):
+                with self.assertRaises(ValueError) as refused:
+                    plan_retained(bundle, facts=facts, host=host, **kwargs)
+                for serialize in (_cli_exception_result, _owner_exception_result):
+                    result = serialize(refused.exception)
+                    self.assertEqual(result["error"]["code"], "ValueError")
+                    self.assertIn("qualified for this host", result["next_action"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
