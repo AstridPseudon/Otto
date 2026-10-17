@@ -246,6 +246,7 @@ class ProjectFolderOwner:
         digest = sha256(canonical_json({'project_json': edit, 'files': files}).encode()).hexdigest()
         created = self.sheet.create_pending(title=edit['title'], outcome=edit.get('outcome', ''),
             metadata={'raw_folder': {'input_sha256': digest, 'canonical_transfer': False}},
+            creator=getattr(self, 'operator_actor', None) or actor, curator=actor,
             actor=actor, logical_request_key=request_id + ':project')
         ref = created.receipt.result_ref
         # Remaining fields still use the shared sheet path, before documents.

@@ -144,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--request-key", required=True)
     _add_format(release_parser)
 
-    admit = sub.add_parser("admit",help="pin the exact task revision a reviewer approved; an unreviewed agent revision or a changed sheet is refused (your own edits need no admit)")
+    admit = sub.add_parser("admit", help="unavailable here; the owner service admits after local operator presence")
     admit.add_argument("--task-ref", required=True, help="canonical work.task ResourceRef as JSON")
     admit.add_argument("--revision", required=True, help="the exact revision id that was reviewed, e.g. rev-3")
     admit.add_argument("--review-ref", required=True, help="the approving review's ResourceRef as JSON, pinned to its revision")
@@ -1431,17 +1431,9 @@ def _status_command(args: argparse.Namespace, session: Any, labs: Any) -> dict[s
 
 
 def _admit_command(args: argparse.Namespace, session: Any) -> dict[str, Any]:
-    if session is None:
-        return _surface_unavailable(
-            "otto.admit.v1", "owner_session_unavailable",
-            "Inject the owner session at cli.main(..., status_session=...).",
-        )
-    from .admit import admit_task
-    task_ref = _parse_ref(args.task_ref, "task_ref")
-    if task_ref.get("kind") != "work.task":
-        return _request_error("admit requires a work.task ref")
-    return admit_task(session, task_ref=task_ref, revision=args.revision,
-                      review_ref=_parse_ref(args.review_ref, "review_ref", pinned=True), request_key=args.request_key)
+    return {"outcome": "denied", "schema": "otto.admit.v1", "dispatch": False,
+            "error": {"code": "owner_presence_required",
+                      "message": "admission requires the dedicated owner service admit command"}}
 
 
 def _events_command(args: argparse.Namespace, views: Any, grant: Any) -> dict[str, Any]:
@@ -1653,7 +1645,8 @@ def owner_verb(argv: Sequence[str], *, session: Any, home: Path) -> dict[str, An
     out = StringIO()
     try:
         with redirect_stdout(out):
-            code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session)
+            code = main(words, portfolio=session.portfolio, editor_host=editor_host, status_session=session,
+                        bound_actor=session.owner.owner_actor.actor)
     except SystemExit as exc:  # argparse usage or --help: an error reply, never an owner exit
         return {"outcome": "error", "error": {"code": "usage", "exit_code": exc.code, "message": out.getvalue().strip()}}
     text = out.getvalue()

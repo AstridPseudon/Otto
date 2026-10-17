@@ -166,6 +166,7 @@ class _OrchestrationEngine:
         store: Any,
         *,
         actor: Optional[AuthenticatedActor] = None,
+        operator_actor: Optional[AuthenticatedActor] = None,
         portfolio_ref: Any,
         main_assignment_ref: Any = None,
         allowed_creator_ids: Sequence[str] = (),
@@ -176,9 +177,14 @@ class _OrchestrationEngine:
             raise TypeError("store must be the supplied FND writer")
         if not isinstance(actor, AuthenticatedActor):
             raise TypeError("owner actor must be an AuthenticatedActor")
+        if operator_actor is not None and (not isinstance(operator_actor, AuthenticatedActor)
+                                           or operator_actor.authority != actor.authority
+                                           or not operator_actor.authenticated):
+            raise WorkValidationError("operator actor must be authenticated by this owner")
         self._writer = work_handler(store)
         self.reader = self._writer.consumer()
         self.default_actor = actor
+        self.operator_actor = operator_actor or actor
         self.portfolio_ref = _ref(portfolio_ref, authority=self._writer.authority, kind=PORTFOLIO_KIND, field="portfolio_ref")
         self.main_assignment_ref = _maybe_ref(main_assignment_ref, authority=self._writer.authority, kind="wrk.assignment", field="main_assignment_ref")
         creators = tuple(_opaque(value, "allowed_creator_id") for value in allowed_creator_ids)
@@ -452,7 +458,7 @@ class _OrchestrationEngine:
                 sheet=sheet,
                 logical_request_key=project_key,
                 actor=actor_value,
-                creator=actor_value,
+                creator=self.operator_actor,
                 curator=actor_value,
                 _owner_supervision=relation,
             )

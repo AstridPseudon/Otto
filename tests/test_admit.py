@@ -247,29 +247,22 @@ class AdmitVerbTests(unittest.TestCase):
 
     # ---- tests -------------------------------------------------------------------
 
-    def test_admit_verb_pins_the_reviewed_revision(self):
+    def test_generic_admit_verb_is_denied_even_with_injected_owner_session(self):
         revised = self.agent_revise("Plan revised by agent", "agent-1")
-        code, out = self.run_admit(revised.revision, "verb-1")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(out["outcome"], "admitted", out)
-        self.assertEqual(out["admitted_revision"], revised.revision, out)
-        self.assertEqual(self.admitted_revision(), revised.revision)
         writes = self.revised_event_ids()
-        code, replay = self.run_admit(revised.revision, "verb-1")
-        self.assertEqual(code, 0, replay)
-        self.assertEqual(replay["outcome"], "replayed", replay)
+        code, out = self.run_admit(revised.revision, "verb-1")
+        self.assertEqual(code, 4, out)
+        self.assertEqual(out["error"]["code"], "owner_presence_required", out)
         self.assertEqual(self.revised_event_ids(), writes)
-        self.assertEqual(self.admitted_revision(), revised.revision)
+        self.assertIsNone(self.admitted_revision())
 
     def test_admit_verb_refuses_a_changed_sheet_with_the_diff(self):
         reviewed = self.agent_revise("Plan A", "agent-a")
         self.agent_revise("Plan B", "agent-b")
         code, out = self.run_admit(reviewed.revision, "verb-diff")
         self.assertEqual(code, 4, out)
-        self.assertEqual(out["outcome"], "rejected", out)
-        self.assertEqual(out["error"]["code"], "sheet_changed", out)
-        self.assertIn("title", out["error"]["diff"], out)
-        self.assertEqual(out["error"]["diff"]["title"], {"reviewed": "Plan A", "current": "Plan B"})
+        self.assertEqual(out["outcome"], "denied", out)
+        self.assertEqual(out["error"]["code"], "owner_presence_required", out)
         self.assertIsNone(self.admitted_revision())
 
     def test_admit_verb_refuses_without_an_owner_session(self):
@@ -278,8 +271,8 @@ class AdmitVerbTests(unittest.TestCase):
         with redirect_stdout(out):
             code = cli.main(self.argv(revised.revision, "verb-none"))
         result = json.loads(out.getvalue())
-        self.assertEqual(result["outcome"], "unavailable", result)
-        self.assertEqual(code, 3, result)
+        self.assertEqual(result["outcome"], "denied", result)
+        self.assertEqual(code, 4, result)
         self.assertIsNone(self.admitted_revision())
 
 
@@ -300,7 +293,7 @@ class ReviewedActivationAdmitsTests(unittest.TestCase):
 
     # ---- tests -------------------------------------------------------------------
 
-    def test_activation_admits_an_agent_written_task_at_the_reviewed_revision(self):
+    def test_activation_requires_a_previously_admitted_revision(self):
         plan_ref, review_ref = reviewed_fixture.ReviewedActivationTests._documents_for(self.f)
         graph, owner = self.f.owner.graph, self.f.owner.owner_actor
         task = graph.create_task(self.f.project.ref, title="Pair task", logical_request_key="pair-task", actor=owner)
@@ -317,6 +310,15 @@ class ReviewedActivationAdmitsTests(unittest.TestCase):
                                             "criterion_ref": criterion.ref.to_dict()}]}
         activation = self.f.owner.reviewed_plan_activation(owner_policy=policy)
         before = self.task_count()
+        from otto.portfolio.reviewed_activation import ReviewedActivationError
+        writes = self.revised_event_ids(task)
+        with self.assertRaises(ReviewedActivationError):
+            activation.activate(project_ref=self.f.project.ref.to_dict(), plan_ref=plan_ref,
+                review_ref=review_ref, owner_policy=policy, request_key="admit-activate", manager="manager")
+        self.assertEqual(self.revised_event_ids(task), writes)
+        graph.admit(unpinned(task.ref), revision=revised.revision, review_ref=self.f.owner.graph.create_effort(
+            self.f.project.ref, title="Operator review", logical_request_key="operator-review", actor=owner).ref,
+            logical_request_key="pre-admitted", actor=owner)
         result = activation.activate(project_ref=self.f.project.ref.to_dict(), plan_ref=plan_ref,
             review_ref=review_ref, owner_policy=policy, request_key="admit-activate", manager="manager")
         self.assertEqual(result["outcome"], "activated", result)

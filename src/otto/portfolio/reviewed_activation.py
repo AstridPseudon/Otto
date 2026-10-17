@@ -15,10 +15,8 @@ from typing import Any, Mapping
 from herzchen.contracts import ResourceRef
 from herzchen.domains.assessment import AssessmentModule
 from herzchen.domains.work.admission import admitted_revision
-from herzchen.domains.work.model import WorkError
 from herzchen.kernel import LimitService
 
-from .admit import admit_revision
 
 
 SCHEMA = "otto.reviewed-activation.v1"
@@ -140,16 +138,11 @@ class ReviewedPlanActivation:
                 raise
             return record
 
-    def _admit(self, task: Any, revision: str | None, review_ref: Any, request_key: str) -> Any:
-        """Admission is the one gate: the reviewed revision is pinned here, and no task is created again.
-
-        A task the owner wrote is already admitted by being made, so this writes nothing for it.
-        """
-        try:
-            admit_revision(self.owner, task_ref=task.ref, revision=revision or task.ref.revision,
-                           review_ref=_ref(review_ref, "review_ref"), request_key=f"{request_key}:admit:{task.ref.id}")
-        except WorkError as exc:
-            raise ReviewedActivationError(f"task {task.ref.id} cannot be admitted: {exc}") from exc
+    def _require_admitted(self, task: Any, revision: str | None) -> Any:
+        """Activation consumes a prior presence-checked admission; it cannot grant one."""
+        requested = revision or task.ref.revision
+        if admitted_revision(task.payload) != requested:
+            raise ReviewedActivationError(f"task {task.ref.id} requires operator admission of {requested}")
         return self._current_work(ResourceRef(task.ref.authority, task.ref.kind, task.ref.id), "task_ref")
 
     def _read_pin(self, value: Any, field: str) -> tuple[ResourceRef, Any, Mapping[str, Any]]:
@@ -404,7 +397,7 @@ class ReviewedPlanActivation:
                 # A task records its project without a revision, so compare the identity, not the pin.
                 if not _same(task.payload.get("project_ref"), project.ref) or criterion is None or criterion.ref != criterion_ref:
                     raise ReviewedActivationError("owner policy task/criterion pair is stale or foreign")
-                task = self._admit(task, task_ref.revision, review_ref, request_key)
+                task = self._require_admitted(task, task_ref.revision)
                 tasks.append(task.ref.to_dict()); criteria.append(criterion_ref.to_dict())
         else:
             assessment = AssessmentModule(self.owner.store, actor=self.owner.owner_actor,

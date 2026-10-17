@@ -1,8 +1,7 @@
-"""``otto admit``: pin the exact task revision a reviewer approved.
+"""Owner service admission of an exact reviewed task revision.
 
-The mechanism is Herzchen's (``WorkGraph.admit``). This is only the owner's call into it, shared by
-the ``admit`` verb and by reviewed activation. The user's own edits are admitted by being made, so
-only an agent-written revision needs this.
+Herzchen's ``WorkGraph.admit`` enforces the project-user invariant. The owner
+supplies its authenticated operator actor only after its local presence proof.
 """
 
 from __future__ import annotations
@@ -16,21 +15,21 @@ from herzchen.domains.work.model import WorkError
 SCHEMA = "otto.admit.v1"
 
 
-def admit_revision(owner: Any, *, task_ref: Any, revision: str, review_ref: Any, request_key: str,
+def admit_revision(owner: Any, *, task_ref: Any, revision: str, review_ref: Any, request_key: str, actor: Any,
                    disposition: str = "approved") -> Mapping[str, Any]:
-    """Admit ``revision`` of one task as the owner; raises Herzchen's refusals unchanged."""
+    """Admit one revision as the explicitly supplied, owner-authenticated actor."""
     task = task_ref if isinstance(task_ref, ResourceRef) else ResourceRef.from_dict(task_ref)
     review = review_ref if isinstance(review_ref, ResourceRef) else ResourceRef.from_dict(review_ref)
     return owner.graph.admit(task, revision=revision, review_ref=review, disposition=disposition,
-                             logical_request_key=request_key, actor=owner.owner_actor)
+                             logical_request_key=request_key, actor=actor)
 
 
-def admit_task(session: Any, *, task_ref: Any, revision: str, review_ref: Any, request_key: str,
+def admit_task(session: Any, *, task_ref: Any, revision: str, review_ref: Any, request_key: str, actor: Any,
                disposition: str = "approved") -> dict[str, Any]:
     """The verb's answer: the admission, or a refusal that says why (a changed sheet carries its diff)."""
     try:
         result = admit_revision(session.owner, task_ref=task_ref, revision=revision, review_ref=review_ref,
-                                request_key=request_key, disposition=disposition)
+                                request_key=request_key, disposition=disposition, actor=actor)
     except AdmissionDiffError as exc:
         return {"outcome": "rejected", "schema": SCHEMA, "error": {"code": "sheet_changed", "message": str(exc), "diff": exc.diff}}
     except TaskNotAdmittedError as exc:

@@ -44,6 +44,7 @@ from .owner import HostSession, join_host, runtime_dirs, service_store
 
 STATUS_SCHEMA = "otto.owner-service-status.v1"
 _RELAYED = object()
+_DEFAULT_PRESENCE = object()
 
 
 def owner_lane(home: Path) -> Path:
@@ -151,11 +152,16 @@ def read_status(path: Path) -> dict[str, Any]:
 class OwnerService:
     def __init__(self, config: Mapping[str, Any], *, adapter_factory: Optional[Callable[..., Any]] = None,
                  poll_seconds: float = 0.05, heartbeat_seconds: float = 1.0,
-                 max_active_manager_turns: Optional[int] = None) -> None:
+                 max_active_manager_turns: Optional[int] = None,
+                 presence_prover: Any = _DEFAULT_PRESENCE) -> None:
         self.config = dict(config)
         self.home = Path(config["home"])
         self.lock = threading.RLock()
         self.adapter_factory = adapter_factory
+        if presence_prover is _DEFAULT_PRESENCE:
+            from .presence import LocalAuthenticationProver
+            presence_prover = LocalAuthenticationProver()
+        self.presence_prover = presence_prover
         self.poll_seconds, self.heartbeat_seconds = poll_seconds, heartbeat_seconds
         self.journey: Any = None
         # A project is attached once and keeps its own manager service and
@@ -378,7 +384,10 @@ class OwnerService:
 
     # -- owner (operator) commands --------------------------------------------------------
     def _owner_command(self, who: str, request: Mapping[str, Any], token: str, lane: Path) -> Any:
-        command, args = request.get("command"), dict(request.get("args") or {})
+        command, raw_args = request.get("command"), request.get("args") or {}
+        if command == "admit":
+            return self.call(lambda: self._admit_revision(raw_args), hold_during_turn=True)
+        args = dict(raw_args)
         if command == "admit-host":
             return self.call(lambda: self._admit_host(args))
         if command == "attach":
@@ -417,6 +426,64 @@ class OwnerService:
             return result
         return {"outcome": "unavailable", "reason": "unknown owner command " + repr(command), "provider_called": False}
 
+    def _admit_revision(self, args: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Prove presence here, then write as the installation's operator."""
+        from .owner import HostSession
+        from .presence import PresenceResult
+        from otto.portfolio.admit import admit_task
+
+        if not isinstance(args, Mapping):
+            args = {}
+        allowed = {"task_ref", "revision", "review_ref", "request_key"}
+        proof = "not_run"
+        outcome = "refused"
+        task, review = args.get("task_ref"), args.get("review_ref")
+        try:
+            if set(args) != allowed:
+                raise PermissionError("admit accepts only task_ref, revision, review_ref and request_key")
+            if (not isinstance(task, Mapping) or not isinstance(review, Mapping)
+                    or not isinstance(args["revision"], str) or not args["revision"].strip()
+                    or not isinstance(args["request_key"], str) or not args["request_key"].strip()):
+                raise ValueError("admit requires exact task, revision, review and request key")
+            task_ref, review_ref = ResourceRef.from_dict(task), ResourceRef.from_dict(review)
+            if (task_ref.authority != self.config["store"]["authority"] or task_ref.kind != "work.task"
+                    or review_ref.authority != task_ref.authority or review_ref.revision is None):
+                raise ValueError("admit requires a local task and exact local review")
+            reason = f"Admit Otto task {task_ref.id} at revision {args['revision'][:12]}"
+            try:
+                result = (self.presence_prover.prove(reason=reason, timeout_seconds=30)
+                          if self.presence_prover is not None else PresenceResult("unavailable"))
+            except TimeoutError:
+                result = PresenceResult("timeout")
+            except Exception:
+                result = PresenceResult("unavailable")
+            proof = result.status if isinstance(result, PresenceResult) else "unavailable"
+            if proof != "approved":
+                outcome = "rejected"
+                return {"outcome": outcome, "error": {"code": "presence_" + proof,
+                                                       "message": "local operator presence was not proved"},
+                        "provider_called": False, "dispatch": False}
+            with HostSession(self.config) as session:
+                answer = admit_task(session, task_ref=task_ref, revision=args["revision"],
+                                    review_ref=review_ref, request_key=args["request_key"],
+                                    actor=session.owner.operator_actor)
+            outcome = answer["outcome"]
+            return {**answer, "provider_called": False}
+        finally:
+            self._admission_log({"task": task.get("id") if isinstance(task, Mapping) else None,
+                                 "revision": args.get("revision"),
+                                 "review": review.get("id") if isinstance(review, Mapping) else None,
+                                 "prover_result": proof, "outcome": outcome})
+
+    def _admission_log(self, entry: Mapping[str, Any]) -> None:
+        path = self.home / "run" / "operator-admission.jsonl"
+        data = (json.dumps({"at": _now(), **entry}, sort_keys=True) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+
     def _admit_host(self, args: Mapping[str, Any]) -> Mapping[str, Any]:
         """The owner action that admits an agent CLI host as its OWN principal."""
         from otto.agents.claude_cli import VERSION
@@ -439,6 +506,8 @@ class OwnerService:
             entry = host_config.host_entry(kind, principal=args.get("principal") or kind + "-orchestrator",
                                            launcher=args.get("launcher"), qualified_versions=qualified,
                                            model_profile=profile_for_host(kind), conversation=args.get("conversation"))
+            if entry["principal"] == config["operator"]["actor"]:
+                raise host_config.HostConfigError("host principal must differ from the operator principal")
             entry.update(lane=str(lane), client_home=str(client_home))
             entry = join_host(config, entry)
             host_config.write(self.home, config, replace=True)

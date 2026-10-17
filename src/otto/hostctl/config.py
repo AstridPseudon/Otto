@@ -62,11 +62,17 @@ def forbidden_runtime(path: str | Path) -> bool:
 
 
 def new_installation(home: Path, *, store_path: str, authority: str, owner_actor: str,
-                     credential_ref: str, python: str,
+                     credential_ref: str, python: str, operator_actor: Optional[str] = None,
                      repositories: Optional[Mapping[str, str | Path]] = None) -> dict[str, Any]:
+    operator_actor = operator_actor if operator_actor is not None else pwd.getpwuid(os.geteuid()).pw_name
     for name, value in (("owner_actor", owner_actor), ("authority", authority), ("credential_ref", credential_ref)):
         if not isinstance(value, str) or not value.strip() or value != value.strip() or "/" in value:
             raise HostConfigError(name + " must be exact nonblank text without '/'")
+    if (not isinstance(operator_actor, str) or not operator_actor.strip()
+            or operator_actor != operator_actor.strip() or "/" in operator_actor):
+        raise HostConfigError("operator_actor must be exact nonblank text without '/'")
+    if operator_actor == owner_actor:
+        raise HostConfigError("operator principal must differ from the owner service actor")
     if forbidden_runtime(home):
         raise HostConfigError("refusing an Otto home inside another host's receiving tree: " + str(home))
     repo_paths: dict[str, str] = {}
@@ -85,6 +91,7 @@ def new_installation(home: Path, *, store_path: str, authority: str, owner_actor
         "owner": {"actor": owner_actor, "credential_ref": credential_ref,
                   "note": "The owner service principal holds the Store for every host. Hosts act as their own "
                           "principals; none borrows another's."},
+        "operator": {"actor": operator_actor},
         "hosts": {},
         # Owner-local checkout map used by composed services. A missing or
         # empty map admits no repository for fleet assignment work.
@@ -126,9 +133,14 @@ def load(home: Path) -> dict[str, Any]:
                               "(see `ottoctl install --help`)")
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
         raise HostConfigError(str(path) + " is not an " + SCHEMA + " document")
-    for key in ("store", "owner", "hosts", "home"):
+    for key in ("store", "owner", "operator", "hosts", "home"):
         if key not in value:
             raise HostConfigError(str(path) + " lacks " + key)
+    operator = value["operator"].get("actor") if isinstance(value["operator"], Mapping) else None
+    if (not isinstance(operator, str) or not operator.strip() or operator != operator.strip()
+            or "/" in operator or operator == value["owner"].get("actor")
+            or any(entry.get("principal") == operator for entry in value["hosts"].values())):
+        raise HostConfigError(str(path) + " has an invalid or shared operator principal")
     if Path(value["home"]) != home:
         raise HostConfigError("installation belongs to " + value["home"] + ", not " + str(home))
     repositories = value.setdefault("repositories", {})
