@@ -231,6 +231,54 @@ def test_missing_exact_birth_for_known_pid_keeps_lease_unresolved(monkeypatch):
     assert module.stop_lease(record)["remaining"] == ["identity-unavailable:43210"]
 
 
+def test_census_gap_is_sticky_through_empty_cleanup_and_dead_holder_recovery(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+
+    directory = tmp_path / "state"
+    (directory / "holders").mkdir(parents=True)
+    path = directory / "holders" / "gap.json"
+    path.write_text(json.dumps({"lease_id": "gap", "holder_pid": 99999999, "weight": 1,
+                                "pid": 43210, "pgid": 43210,
+                                "processes": {"43210": {"birth": [1], "pgid": 43210}}}))
+    scans = iter((None, {}, {}))
+    monkeypatch.setattr(module, "_processes", lambda: next(scans))
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    first = module._reap_dead_holders(directory)[0]
+    assert first["sweep"] == "unavailable" and "census-gap" in first["remaining"]
+    assert path.exists() and json.loads(path.read_text())["census_gap"] is True
+
+    # A restarted process sees a complete empty census, but cannot erase the
+    # earlier period in which a detached descendant may have escaped.
+    restart = subprocess.run(py(f"""
+import json
+from pathlib import Path
+from otto.hostctl import heavy
+heavy._processes = lambda: {{}}
+heavy._group_alive = lambda _pgid: False
+print(json.dumps(heavy._reap_dead_holders(Path({str(directory)!r}))[0]))
+"""), env=dict(os.environ, PYTHONPATH=str(SRC)), capture_output=True, text=True, timeout=30)
+    assert restart.returncode == 0, restart.stderr
+    second = json.loads(restart.stdout)
+    assert "census-gap" in second["remaining"]
+    assert path.exists() and json.loads(path.read_text())["census_gap"] is True
+
+
+def test_normal_run_persists_a_census_gap_even_if_later_scans_succeed(tmp_path, monkeypatch):
+    from otto.hostctl import heavy as module
+
+    monkeypatch.setenv("OTTO_HEAVY_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("OTTO_HEAVY_CAPACITY", "1")
+    monkeypatch.setenv("PYTHONPATH", str(SRC))
+    monkeypatch.delenv("OTTO_HEAVY_LEASE", raising=False)
+    scans = iter((None,))
+    monkeypatch.setattr(module, "_processes", lambda: next(scans, {}))
+    monkeypatch.setattr(module, "_group_alive", lambda _pgid: False)
+    assert module.run(py("import time; time.sleep(0.3)"), weight=1, purpose="gap",
+                      max_minutes=1, wait=True, owner="test") == 0
+    record = json.loads(next((tmp_path / "state" / "holders").glob("*.json")).read_text())
+    assert record["census_gap"] is True
+
+
 def test_unidentified_descendant_is_retried_and_removed_after_complete_scan():
     from otto.hostctl import heavy as module
 
