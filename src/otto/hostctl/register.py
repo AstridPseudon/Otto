@@ -92,6 +92,10 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                                                   raw_sha256=dict(bundle_source.get("raw_sha256") or {})),
                   "run": bundle_source["run"]}
     run = bundle["run"]
+    if run.get("model_profile") and run["model_profile"] != profile["name"]:
+        raise ValueError("selected run model profile differs from the qualified host profile")
+    if run.get("profile_pack") is not None and run["profile_pack"] != profile.get("pin"):
+        raise ValueError("selected run profile pack pin is stale or inconsistent")
     run_id = run.get("run_id") or Path(bundle.get("root") or "run").name
     heading = _first_heading(bundle["files"]["agent_goal.md"]).split(":", 1)[-1].strip()
     title = heading if heading.startswith(run_id) else (run_id + ": " + heading if heading else run_id)
@@ -144,6 +148,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                                               "reasoning": "run file roles." + slot if "reasoning" in configured
                                               else "host profile " + profile["name"]}}
     configuration = {"schema": "otto.role-configuration.v1",
+                     "profile_pack": profile.get("pin"),
                      "model_profile": next(iter(profile_names)) if len(profile_names) == 1 else "mixed",
                      "roles": slot_bindings,
                      "role_bindings": {"manager": "coordinator", "orchestrator": "oracle"},
@@ -152,7 +157,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                                           "worker": tool_entrypoint},
                      "source": {"run_file": bundle["run_file"], "raw_sha256": bundle["raw_sha256"][bundle["run_file"]]}}
     allowances = []
-    oracle = (run.get("oracle") or {}).get("max_calls")
+    oracle = (run.get("oracle") or profile.get("oracle") or {}).get("max_calls")
     if isinstance(oracle, int) and oracle > 0:
         allowances.append({"id": "oracle", "purpose": "oracle decision requests (scheduled checks excluded)",
                            "units": oracle})

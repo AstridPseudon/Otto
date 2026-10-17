@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from otto.agents.host_profiles import PROFILES, SLOTS
+from otto.agents import host_profiles
+from otto.agents.host_profiles import SLOTS
 from otto.portfolio.run_config import read_run_config, run_config_path
 from herzchen.packs.authoring import read_managed_pack
 from herzchen.contracts import ResourceRef
@@ -38,10 +39,13 @@ class TemplateTests(unittest.TestCase):
     def test_templates_are_json_and_match_the_host_profiles(self):
         for name, profile in (("run.json", "codex"), ("run.claude.json", "claude")):
             template = json.loads((SKILL / "templates" / name).read_text())
-            self.assertEqual(set(template["roles"]), set(SLOTS), name)
-            self.assertEqual(template["roles"], {slot: dict(PROFILES[profile]["roles"][slot]) for slot in SLOTS}, name)
+            self.assertEqual(template["model_profile"], profile, name)
+            self.assertNotIn("roles", template, name)
+            resolved = host_profiles.run_template(template["model_profile"])
+            self.assertEqual(set(resolved["roles"]), set(SLOTS), name)
+            self.assertEqual(resolved["roles"],
+                             {slot: dict(host_profiles.profile(profile)["roles"][slot]) for slot in SLOTS}, name)
         self.assertFalse((SKILL / "templates" / "run.yaml").exists())
-        self.assertNotIn("model_profile", json.loads((SKILL / "templates" / "run.json").read_text()))
 
     def test_skill_carries_one_edition_marker_and_the_named_modes(self):
         text = (SKILL / "SKILL.md").read_text()

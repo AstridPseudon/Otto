@@ -1,41 +1,5 @@
 {
   "mode": "planning_only",
-  "roles": {
-    "coordinator": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "medium"
-    },
-    "worker_normal": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "high"
-    },
-    "worker_xhard": {
-      "model": "gpt-5.6-sol",
-      "reasoning": "high"
-    },
-    "reviewer_normal": {
-      "model": "gpt-5.6-luna",
-      "reasoning": "xhigh"
-    },
-    "reviewer_xhard": {
-      "model": "gpt-5.6-sol",
-      "reasoning": "high"
-    },
-    "oracle": {
-      "model": "gpt-6-astra",
-      "reasoning": "high"
-    },
-    "final_reviewer": {
-      "model": "gpt-6-astra",
-      "reasoning": "high"
-    }
-  },
-  "oracle": {
-    "max_calls": 3
-  },
-  "review_stages": [],
-  "assurance_selection": "Planning only: no active stages. Before new substantial delivery, explicitly adopt one final independent gpt-6-astra high review with max_calls 1, exact criteria and frozen candidate. Select intermediate reviews proportionately; existing instance policy and user overrides prevail.",
-  "scheduled_checks": [],
   "project_advisor_policy": {
     "resource": "protocols/project-advisor.json",
     "adoption": "explicit_instance_adoption",
@@ -46,5 +10,6 @@
     "target": null,
     "allowed_refs": [],
     "source_upstream_write": false
-  }
+  },
+  "model_profile": "codex"
 }

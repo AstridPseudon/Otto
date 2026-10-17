@@ -506,8 +506,7 @@ class OwnerService:
 
     def _admit_host(self, args: Mapping[str, Any]) -> Mapping[str, Any]:
         """The owner action that admits an agent CLI host as its OWN principal."""
-        from otto.agents.claude_cli import VERSION
-        from otto.agents.host_profiles import profile_for_host
+        from otto.agents.host_profiles import host_entry as packed_host_entry, profile_for_host
         kind = args["host"]
         config = host_config.load(self.home)
         client_home = Path(args.get("client_home") or self.home).absolute()
@@ -521,7 +520,8 @@ class OwnerService:
                 entry.update(lane=str(lane), client_home=str(client_home))
                 host_config.write(self.home, config, replace=True)
         else:
-            qualified = ([VERSION] + [v for v in args.get("qualify_versions") or () if v != VERSION]
+            parser_version = packed_host_entry(kind)["launcher_qualification"]["version"]
+            qualified = ([parser_version] + [v for v in args.get("qualify_versions") or () if v != parser_version]
                          if kind == "claude-code" else [])
             entry = host_config.host_entry(kind, principal=args.get("principal") or kind + "-orchestrator",
                                            launcher=args.get("launcher"), qualified_versions=qualified,

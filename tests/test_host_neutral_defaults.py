@@ -37,6 +37,41 @@ def load_manager_ctl(environ):
 
 
 class ModelProfileTests(unittest.TestCase):
+    def test_adopted_run_profile_wins_over_host_default_but_cannot_cross_hosts(self):
+        selected = host_profiles.profile_for_run({"model_profile": "claude"}, host_kind="claude-code",
+                                                 default_profile="codex")
+        self.assertEqual(selected["name"], "claude")
+        self.assertEqual(selected["roles"]["worker_normal"]["model"], "claude-haiku-5-5")
+        with self.assertRaises(ValueError):
+            host_profiles.profile_for_run({"model_profile": "codex"}, host_kind="claude-code",
+                                          default_profile="claude")
+
+    def test_host_pack_rejects_a_profile_model_outside_its_qualified_adapter(self):
+        pack = host_profiles.load_profile_pack()
+        altered = json.loads(json.dumps(pack))
+        altered["profiles"]["claude"]["roles"]["worker_normal"]["model"] = "unsupported-claude-model"
+        with mock.patch.object(host_profiles, "load_profile_pack", return_value=altered):
+            with self.assertRaisesRegex(ValueError, "unsupported"):
+                host_profiles.host_entry("claude-code", model_profile="claude")
+
+    def test_profiles_and_host_definitions_are_loaded_from_the_pinned_pack(self):
+        pack = host_profiles.load_profile_pack()
+        self.assertEqual(set(pack), {"default_profile", "profiles", "hosts", "pin"})
+        self.assertEqual(pack["default_profile"], "codex")
+        self.assertEqual(pack["profiles"]["codex"]["host_kinds"], ["codex"])
+        self.assertEqual(host_profiles.profile("claude")["roles"], pack["profiles"]["claude"]["roles"])
+        self.assertEqual(host_profiles.profile_for_host("claude-code"), "claude")
+        self.assertEqual(host_profiles.host_entry("claude-code")["adapter"], "claude-code")
+        self.assertTrue(pack["pin"])
+
+    def test_profile_selection_rejects_unknown_and_cross_host_profiles(self):
+        with self.assertRaises(ValueError):
+            host_profiles.resolve_profile_name("missing", environ={})
+        with self.assertRaises(ValueError):
+            host_profiles.resolve_profile_name("claude", host_kind="codex", environ={})
+        with self.assertRaises(ValueError):
+            host_profiles.slot_binding("worker_normal", "codex", host_kind="claude-code", environ={})
+
     def test_codex_profile_is_the_unchanged_edition_default(self):
         roles = host_profiles.PROFILES["codex"]["roles"]
         self.assertEqual(roles["worker_normal"], {"model": "gpt-5.6-luna", "reasoning": "high"})
@@ -48,6 +83,8 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(host_profiles.resolve_profile_name(environ={"OTTO_HOST_KIND": "claude-code"}), "claude")
         self.assertEqual(host_profiles.resolve_profile_name(host_kind="claude-code", environ={}), "claude")
         self.assertEqual(host_profiles.resolve_profile_name("codex", environ={"OTTO_HOST_KIND": "claude-code"}), "codex")
+        self.assertEqual(host_profiles.resolve_profile_name(environ={"OTTO_HOST_KIND": "claude-code",
+                                                                      "OTTO_MODEL_PROFILE": "codex"}), "codex")
         binding = host_profiles.slot_binding("coordinator", "claude")
         self.assertEqual(binding, {"model": "claude-haiku-5-5", "reasoning": "medium", "adapter": "claude-code"})
         self.assertEqual(host_profiles.slot_binding("worker_xhard", "claude")["model"], "claude-sonnet-5-5")

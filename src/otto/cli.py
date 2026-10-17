@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from typing import Any, Optional
 
 from .agents import OttoGateway, Responsibility
@@ -54,8 +55,9 @@ def main(argv: Optional[list[str]] = None, *, gateway: Optional[OttoGateway] = N
         # Host-aware default: OTTO_MODEL_PROFILE / OTTO_HOST_KIND select the
         # profile; with neither set this is the unchanged Codex default.
         from .agents.host_profiles import resolve_profile_name, slot_binding
-        name = resolve_profile_name()
-        binding = slot_binding("worker_normal", name)
+        host_kind = os.environ.get("OTTO_HOST_KIND") or None
+        name = resolve_profile_name(host_kind=host_kind)
+        binding = slot_binding("worker_normal", name, host_kind=host_kind) if host_kind else slot_binding("worker_normal", name)
         result = {"mode": "dry-run", "effects": "none", "route": "normal",
                   "requested_model": binding["model"], "requested_reasoning": binding["reasoning"],
                   "operations": ["invoke", "resume", "send", "inspect", "cancel", "wait"]}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "id": "otto-profiles",
+  "name": "Otto model profiles and qualified hosts",
+  "version": "1.0.0",
+  "documentation": {
+    "kind": "profile_defaults",
+    "path": "profiles.json"
+  },
+  "resources": [
+    {
+      "path": "profiles.json",
+      "kind": "profile_defaults"
+    },
+    {
+      "path": "hosts.json",
+      "kind": "host_definition"
+    }
+  ]
+}

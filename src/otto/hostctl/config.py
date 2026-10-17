@@ -106,18 +106,16 @@ def host_entry(kind: str, *, principal: str, launcher: Optional[str], qualified_
         raise HostConfigError("host kind must be one of " + ", ".join(HOST_KINDS))
     if not isinstance(principal, str) or not principal.strip() or "/" in principal:
         raise HostConfigError("host principal must be exact nonblank text without '/'")
-    adapters: dict[str, Any] = {}
+    from otto.agents.host_profiles import host_entry as packed_host_entry
+    try:
+        host_policy = packed_host_entry(kind, model_profile=model_profile)
+    except ValueError as exc:
+        raise HostConfigError(str(exc)) from exc
+    settings = dict(host_policy["adapter_settings"])
+    settings["launcher"] = launcher
     if kind == "claude-code":
-        adapters["claude-code"] = {
-            "launcher": launcher, "qualified_versions": qualified_versions,
-            "roles": ["worker", "manager"], "profiles": ["workspace-write"],
-            "efforts": ["low", "medium", "high", "xhigh", "max"],
-            "models": ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"],
-            "authentication": "existing-user",
-        }
-    elif kind == "codex":
-        adapters["codex"] = {"launcher": launcher, "roles": ["worker", "manager"],
-                             "profiles": ["read-only", "workspace-write"]}
+        settings["qualified_versions"] = list(qualified_versions)
+    adapters = {host_policy["adapter"]: settings}
     # Without a native session id the orchestrator's conversation is its receipt
     # mailbox: help is retained for inspection (`ottoctl help read`), not pushed.
     return {"kind": kind, "principal": principal, "model_profile": model_profile, "adapters": adapters,

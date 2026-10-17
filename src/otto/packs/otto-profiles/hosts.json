@@ -1,0 +1,55 @@
+{
+  "schema": "otto.host-definitions.v1",
+  "hosts": {
+    "codex": {
+      "adapter": "codex",
+      "model_profile": "codex",
+      "adapter_settings": {
+        "roles": [
+          "worker",
+          "manager"
+        ],
+        "profiles": [
+          "read-only",
+          "workspace-write"
+        ]
+      },
+      "launcher_qualification": {
+        "pin": "exact-realpath-and-sha256",
+        "version": "host-qualified"
+      }
+    },
+    "claude-code": {
+      "adapter": "claude-code",
+      "model_profile": "claude",
+      "adapter_settings": {
+        "roles": [
+          "worker",
+          "manager"
+        ],
+        "profiles": [
+          "workspace-write"
+        ],
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "models": [
+          "claude-haiku-5-5",
+          "claude-sonnet-5-5",
+          "claude-opus-5-5"
+        ],
+        "authentication": "existing-user"
+      },
+      "launcher_qualification": {
+        "pin": "exact-realpath-and-sha256",
+        "version": "2.1.293 (Claude Code)",
+        "parser_schema": "otto.claude-code-2.1.293.stream-json.v1",
+        "qualified_versions": "installation-exact-list"
+      }
+    }
+  }
+}
