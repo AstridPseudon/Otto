@@ -153,6 +153,50 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.commands.review_task({**request, "inspection": {"different": True}})
 
+    def test_accepted_a_finishes_after_b_sheet_edit_with_current_policy_state(self):
+        review = {**self.request(alias="PA01", key="completepin-review"),
+                  "finish": False}
+        accepted = self.commands.review_task(review)
+        self.assertEqual(accepted["outcome"], "accepted")
+
+        state = self.fixture.state
+        a_pin = state["task_refs"]["PA01"]
+        b_pin = ResourceRef.from_dict(state["task_refs"]["PA06"])
+        project_pin = ResourceRef.from_dict(state["project_ref"])
+        retained_review = self.commands._journal("completepin-review", "review")
+        pool_ref = ResourceRef(self.application.actor.authority, "limit",
+                               "local-inspection")
+        pool_before = LimitService(self.application.store).get_pool(pool_ref)
+
+        edited = self.application.owner.sheet.batches.apply_project_sheet(
+            project_pin,
+            {"tasks": [{"id": b_pin.id, "title": "PA06 revised after A review"}]},
+            logical_request_key="completepin-edit-b",
+            actor=self.application.actor,
+        )
+        state["project_ref"] = edited.project.ref.to_dict()
+        state["task_refs"]["PA06"] = edited.mappings[b_pin.id].to_dict()
+        self.assertNotEqual(state["project_ref"], project_pin.to_dict())
+        self.assertNotEqual(state["task_refs"]["PA06"], b_pin.to_dict())
+        self.assertEqual(state["task_refs"]["PA01"], a_pin)
+
+        finish = {"command": "finish-task", "task": "PA01",
+                  "request_key": "completepin-finish",
+                  "review_key": "completepin-review"}
+        result = self.commands.finish_task(finish)
+        self.assertEqual(result["outcome"], "completed", result)
+        self.assertEqual(result["completion"]["project_ref"], state["project_ref"])
+        self.assertEqual(self.commands._journal("completepin-review", "review"),
+                         retained_review)
+        self.assertEqual(LimitService(self.application.store).get_pool(pool_ref),
+                         pool_before)
+
+        state["task_refs"]["PA01"] = result["task_ref"]
+        counts = self.application.store.consumer().snapshot_counts()
+        self.assertEqual(self.commands.finish_task(finish)["outcome"], "replayed")
+        self.assertEqual(self.application.store.consumer().snapshot_counts(),
+                         counts)
+
     def test_same_key_review_replay_rejects_changed_scope_mode(self):
         request = {**self.request(key="scope-mode-replay"), "finish": False}
         first = self.commands.review_task(request)

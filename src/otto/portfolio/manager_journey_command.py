@@ -6,9 +6,8 @@ import json
 from typing import Any, Mapping
 
 from herzchen.contracts import ResourceRef
-from herzchen.kernel.history import HISTORY_SCHEMA
 from .local_assessment_policy import LocalAssessmentPolicy
-from .owner_readers import json_value
+from .owner_readers import OwnerRoleRuntimeError, json_value, task_reader
 
 
 def _digest(value: Any) -> str:
@@ -257,7 +256,8 @@ class ManagerJourneyCommands:
                 "authority": "input shape only; PASS requires your independent favorable inspection"}
 
     def _review_policy(self, alias: str, *, validate_current: bool = True,
-                       completed_task_ref: Mapping[str, Any] | None = None) -> LocalAssessmentPolicy:
+                       completed_task_ref: Mapping[str, Any] | None = None,
+                       allow_project_revision_change: bool = False) -> LocalAssessmentPolicy:
         """Use an owner-issued task supplement without changing setup/base authority."""
         configured = self.policy or self.state["assessment_policy"]
         policy_state = self.state
@@ -282,7 +282,8 @@ class ManagerJourneyCommands:
             project = ResourceRef.from_dict(self.state["project_ref"])
             task = ResourceRef.from_dict(policy_state["task_refs"][alias])
             if (not isinstance(binding, Mapping)
-                    or binding.get("project_ref") != project.to_dict()
+                    or (not _same_identity(binding.get("project_ref"), project.to_dict())
+                        if allow_project_revision_change else binding.get("project_ref") != project.to_dict())
                     or binding.get("task_ref") != task.to_dict()
                     or binding.get("generation") != current.generation
                     or binding.get("principal") != current.principal
@@ -798,11 +799,13 @@ class ManagerJourneyCommands:
         if (manifest["generation"] != self.state["manager_generation"]
                 or any(manifest["assignment_ref"].get(k) != self.state["assignment_ref"].get(k) for k in ("authority", "kind", "id"))):
             raise PermissionError("accepted review task or manager generation changed")
-        if prior is None:
-            current_task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][request["task"]]))
-            if current_task is not None and current_task.payload.get("lifecycle") == "completed":
-                committed = self._committed_finish_for_review(request["task"], request["review_key"], manifest, reviewed)
+        current_task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][request["task"]]))
+        if current_task is not None and current_task.payload.get("lifecycle") == "completed":
+            committed = self._committed_finish_for_review(request["task"], request["review_key"], manifest, reviewed)
+            if prior is None:
                 raise PermissionError("review already has a completion intent; replay exact request_key " + committed["committed_request_key"])
+            return committed
+        if prior is None:
             # One review owns one completion intent. A new correlation key
             # cannot create a second intent while the original awaits native
             # settlement, including after a same-generation resource adoption.
@@ -824,14 +827,7 @@ class ManagerJourneyCommands:
                         or self._journal(existing_key, "finish-intent", adopted_history=True) != existing):
                     raise PermissionError("existing completion intent provenance differs")
                 raise PermissionError("review already has a completion intent; replay exact request_key " + existing_key)
-        completion_project = self._completion_project(request, manifest, reviewed)
-        if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
-            # Completion itself advances the task revision. A later worker
-            # settlement revisits this retained finish intent, so only the
-            # exact already-committed completion may cross that revision fence.
-            # The owner completion API still verifies the original replay
-            # digest; no new completion or native settlement is attempted.
-            return self._committed_finish_for_review(request["task"], request["review_key"], manifest, reviewed)
+        completion_project = self._completion_project(request["task"], manifest)
         self._journal(key, "finish-intent", dict(request))
         settlement = self._native_settlement(reviewed)
         if settlement is not None:
@@ -875,138 +871,78 @@ class ManagerJourneyCommands:
                 "retry_provider": False,
                 "next_action": "inspect completion prerequisites; settle retained native evidence if required; repeat this exact finish request"}
 
-    def _completion_project(self, request: Mapping[str, Any], manifest: Mapping[str, Any],
-                            reviewed: Mapping[str, Any], *, retain: bool = True) -> Mapping[str, Any]:
-        """Retain a completion pin across same-root resource-only join refreshes.
+    @staticmethod
+    def _fresh_review_required(alias: str, fields: list[str]) -> PermissionError:
+        return PermissionError("accepted review changed " + ", ".join(fields)
+            + "; use review-input --task " + alias
+            + " then review-task --task " + alias
+            + " --request-key <new-key> with fresh inputs")
 
-        An accepted review stays immutable. Only WRK's authenticated supervision
-        refresh plus the matching same-generation root resource adoption may
-        bridge its project revision; task and manager fences remain unchanged.
+    def _completion_project(self, alias: str, manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Prove the reviewed task and policy against current owner state.
+
+        Project revisions may advance independently of this task. The owner
+        completion write still fences the exact task and current project refs.
         """
-        original = ResourceRef.from_dict(manifest["project_ref"])
-        key = request["request_key"]
-        retained = self._journal(key, "finish-project-pin")
-        proof = {"accepted_project_ref": original.to_dict(), "task_ref": manifest["task_ref"],
-                 "assignment_ref": self.state["assignment_ref"], "generation": self.state["manager_generation"],
-                 "manifest_sha256": _digest(manifest), "review_sha256": _digest(reviewed)}
-        current = self.owner.graph.reader.get_identity(ResourceRef(original.authority, original.kind, original.id))
-        if current is None:
-            raise PermissionError("accepted completion project is missing")
-        if retained is not None:
-            if any(retained.get(k) != v for k, v in proof.items()):
-                raise PermissionError("retained completion project proof changed")
-            target = ResourceRef.from_dict(retained["project_ref"])
+        task_pin = manifest["task_ref"]
+        project_pin = manifest["project_ref"]
+        if (not _same_identity(project_pin, self.state["project_ref"])
+                or not _same_identity(task_pin, self.state["task_refs"][alias])):
+            raise PermissionError("accepted review task or project identity changed")
+        identity = {key: task_pin[key] for key in ("authority", "kind", "id")}
+        try:
+            observed = task_reader(self.portfolio.operations, project_pin, task_pin)(identity)
+        except (OwnerRoleRuntimeError, KeyError, TypeError, ValueError) as exc:
+            raise PermissionError("accepted review task or project owner read failed") from exc
+        if (not _same_identity(observed["project_ref"], project_pin)
+                or observed["lifecycle"] == "completed"):
+            raise PermissionError("accepted review task or project identity changed")
+        if observed["task_pin_content_matches"] is not True:
+            from herzchen.domains.work.admission import reviewed_content_diff
+            retained = self.owner.graph.reader.get_revision(ResourceRef.from_dict(task_pin))
+            changed = (reviewed_content_diff(retained.payload, observed["payload"])
+                if retained is not None and isinstance(retained.payload, Mapping) else {})
+            fields = ["task." + field for field in sorted(changed)] or ["task.retained_revision"]
+            raise self._fresh_review_required(alias, fields)
+        # The owner completion API requires the accepted task revision exactly.
+        if observed["ref"] != task_pin or self.state["task_refs"][alias] != task_pin:
+            raise self._fresh_review_required(alias, ["task.revision"])
+
+        accepted = manifest.get("assessment_policy_selection")
+        if not isinstance(accepted, Mapping):
+            raise self._fresh_review_required(alias, ["assessment_policy.selection"])
+        current = self._review_policy_pin(alias, self._review_policy(alias,
+            validate_current=False, allow_project_revision_change=True))
+        changed = []
+        for field in ("purpose", "local_only", "scope_mode", "pool_ref",
+                      "capacity_units", "cumulative_allowance_units",
+                      "allocation_key", "source"):
+            if accepted.get(field) != current[field]:
+                changed.append("assessment_policy." + field)
+        if not _same_identity(accepted.get("project_ref"), current["project_ref"]):
+            changed.append("assessment_policy.project_ref")
+        # Other tasks' revision pointers and the all-pairs digest may advance
+        # with an unrelated sheet edit. Only this task's exact pairs matter.
+        def task_pairs(selection: Mapping[str, Any]) -> list[Any]:
+            pairs = selection.get("task_criterion_pairs")
+            if not isinstance(pairs, list):
+                return []
+            return [pair for pair in pairs if isinstance(pair, Mapping)
+                and _same_identity(pair.get("task_ref"), task_pin)]
+        selected_pairs = task_pairs(accepted)
+        current_pairs = task_pairs(current)
+        if not selected_pairs or selected_pairs != current_pairs:
+            changed.append("assessment_policy.task_criterion_pairs")
         else:
-            # An exact committed task replay keeps its original completion pin,
-            # even when project terminal bookkeeping advanced the project later.
-            if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
-                return original.to_dict()
-            target = current.ref
-        prior_pin = None
-        refresh_stage = None
-        if retained is not None:
-            if manifest["task_ref"] == self.state["task_refs"][request["task"]]:
-                desired = current.ref
-            else:
-                task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(self.state["task_refs"][request["task"]]))
-                completion = {} if task is None else task.payload.get("completion", {})
-                desired = ResourceRef.from_dict(completion.get("project_ref", target.to_dict()))
-            if desired != target:
-                prior_pin = retained
-                target = desired
-                refresh_stage = "finish-project-pin-refresh:" + target.revision
-                retained = self._journal(key, refresh_stage)
-                if retained is not None and any(retained.get(k) != v for k, v in proof.items()):
-                    raise PermissionError("retained completion project proof changed")
-        if target == original:
-            return original.to_dict()
-        if (target.authority, target.kind, target.id) != (original.authority, original.kind, original.id):
-            raise PermissionError("accepted completion project identity changed")
-        events = self.owner.graph.reader.list_events(stream="work:" + original.id)
-        transitions = {}
-        for event in events:
-            transitions.setdefault(event.subject, []).append(event)
-        cursor, chain = target, []
-        while cursor != original:
-            matches = transitions.get(cursor, ())
-            if len(matches) != 1 or len(chain) >= 32:
-                raise PermissionError("completion project revision chain is missing or ambiguous")
-            event = matches[0]
-            effects = event.effects
-            before = effects.get("from_assignment")
-            after = effects.get("to_assignment")
-            relation = effects.get("supervision", {})
-            history = effects.get("history_summary")
-            # FND reserves this capture field at the authoritative writer. It
-            # carries history, never authorization for the completion bridge.
-            allowed_effects = {"from_assignment", "to_assignment", "supervision", "root_resource_refresh"}
-            if history is not None:
-                if not isinstance(history, Mapping) or history.get("schema") != HISTORY_SCHEMA:
-                    raise PermissionError("completion project history summary is invalid")
-                allowed_effects.add("history_summary")
-            if (event.event_type != "work.project.supervision-transferred"
-                    or event.operation != "work.project.supervision.transfer"
-                    or not isinstance(before, Mapping) or not isinstance(after, Mapping)
-                    or any(before.get(k) != after.get(k) for k in ("authority", "kind", "id"))
-                    or before == after or relation.get("assignment_ref") != after
-                    or relation.get("project_ref") != cursor.to_dict()
-                    or not event.actor.authenticated
-                    or set(effects) - allowed_effects):
-                raise PermissionError("completion project changed beyond same-root resource refresh")
-            root_events = self.owner.graph.reader.list_events(stream="assignment:" + after["id"])
-            adopted = [e for e in root_events if e.subject == ResourceRef.from_dict(after)
-                       and e.event_type == "work.assignment.resources-adopted"]
-            body = adopted[0].effects.get("result_payload", {}) if len(adopted) == 1 else {}
-            if (len(adopted) != 1 or adopted[0].actor != event.actor
-                    or body.get("resource_adoption_base_ref") != before
-                    or body.get("role") != "orchestrator" or body.get("principal") != event.actor.actor
-                    or body.get("generation") != relation.get("generation")
-                    or body.get("scope") != relation.get("portfolio_ref")):
-                raise PermissionError("completion project refresh has no exact root adoption proof")
-            bases = [ref for ref in event.before_refs if
-                     (ref.authority, ref.kind, ref.id) == (original.authority, original.kind, original.id)]
-            if len(bases) != 1 or bases[0] == cursor or bases[0] in [x[0] for x in chain]:
-                raise PermissionError("completion project predecessor is invalid")
-            chain.append((cursor, event.event_id, adopted[0].event_id))
-            cursor = bases[0]
-        if manifest["task_ref"] == self.state["task_refs"][request["task"]]:
-            task = self.owner.graph.reader.get_identity(ResourceRef.from_dict(manifest["task_ref"]))
-            if task is None or task.ref.to_dict() != manifest["task_ref"] or task.payload.get("lifecycle") == "completed":
-                raise PermissionError("accepted completion task revision changed")
-        proof.update(project_ref=target.to_dict(), event_ids=[x[1] for x in reversed(chain)],
-                     root_adoption_event_ids=[x[2] for x in reversed(chain)])
-        if prior_pin is not None:
-            old_target = ResourceRef.from_dict(prior_pin["project_ref"])
-            prefix = list(reversed(chain))
-            positions = [index for index, item in enumerate(prefix) if item[0] == old_target]
-            if (len(positions) != 1
-                    or prior_pin.get("event_ids") != [x[1] for x in prefix[:positions[0] + 1]]
-                    or prior_pin.get("root_adoption_event_ids") != [x[2] for x in prefix[:positions[0] + 1]]):
-                raise PermissionError("retained completion project ancestry changed")
-            # Every admitted transition above is the maintained supervision-only
-            # transfer operation, which copies every non-supervision field.
-            # Preserve the old proof; append this exact extension immutably.
-            payload_digest = _digest({**current.payload,
-                "metadata": {k: v for k, v in current.payload.get("metadata", {}).items()
-                             if k != "otto_orchestrator"}})
-            if manifest["task_ref"] != self.state["task_refs"][request["task"]]:
-                # Exact committed completion replay pins its original semantics;
-                # later project bookkeeping cannot rewrite this historical proof.
-                # _completed_finish still verifies the canonical completion.
-                if retained is None or not isinstance(retained.get("non_supervision_payload_sha256"), str):
-                    raise PermissionError("committed completion refresh proof is missing")
-                payload_digest = retained["non_supervision_payload_sha256"]
-            proof.update(prior_pin_sha256=_digest(prior_pin),
-                         non_supervision_payload_sha256=payload_digest)
-        if retained is not None:
-            if retained != proof:
-                raise PermissionError("retained completion project ancestry changed")
-        else:
-            if current.ref != target or manifest["task_ref"] != self.state["task_refs"][request["task"]]:
-                raise PermissionError("completion task or current project changed")
-            if retain:
-                self._journal(key, refresh_stage or "finish-project-pin", proof)
-        return target.to_dict()
+            for pair in current_pairs:
+                criterion = ResourceRef.from_dict(pair["criterion_ref"])
+                record = self.owner.graph.reader.get_identity(criterion)
+                if record is None or record.ref != criterion:
+                    changed.append("assessment_policy.task_criterion_pairs")
+                    break
+        if changed:
+            raise self._fresh_review_required(alias, changed)
+        return observed["project_ref"]
 
     def _committed_finish_for_review(self, alias: str, review_key: str,
                                     manifest: Mapping[str, Any], reviewed: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1039,6 +975,10 @@ class ManagerJourneyCommands:
         current = ResourceRef.from_dict(self.state["task_refs"][request["task"]])
         original = ResourceRef.from_dict(manifest["task_ref"])
         record = self.owner.graph.reader.get_identity(current)
+        # The controller may still hold the accepted pre-completion task pin.
+        # Only that exact pin may resolve to the owner-issued completion head.
+        if current == original and record is not None and record.payload.get("lifecycle") == "completed":
+            current = record.ref
         key = "journey:" + request["request_key"]
         receipt = self.owner.graph.reader.get_receipt(key)
         completion = {} if record is None else record.payload.get("completion", {})
