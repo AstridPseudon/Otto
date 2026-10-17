@@ -33,14 +33,14 @@ SANDBOX_SKIP = "admission dry-run runs the macOS sandbox-exec preflight"
 TASKLIST = """# Tasklist: demo-run
 
 ## Phase 1: build
-| id | outcome | deps | route | proof |
-|---|---|---|---|---|
-| T1 | **The first:** build it | - | normal | tests pass |
+| id | repo | branch | outcome | deps | route | proof |
+|---|---|---|---|---|---|---|
+| T1 | demo | feature/setup | **The first:** build it | - | normal | tests pass |
 
 ## Phase 2: harden
-| id | outcome | deps | route | proof |
-|---|---|---|---|---|
-| T2 | **The second:** harden it | T1 | **xhard** | review passes |
+| id | repo | branch | outcome | deps | route | proof |
+|---|---|---|---|---|---|---|
+| T2 | demo | release | **The second:** harden it | T1 | **xhard** | review passes |
 
 | id | dispatched | worker |
 |---|---|---|
@@ -202,6 +202,14 @@ class HostctlCliTest(HostctlFixture):
             host_config.new_installation(Path("~/Documents/Codex/otto-test-home"), store_path="/x/owner.sqlite",
                 authority="a", owner_actor="o", credential_ref="c", python="/usr/bin/python3")
 
+    def test_repo_map_command_updates_owner_installation(self):
+        self._init()
+        checkout = os.path.join(os.path.dirname(self.bundle), "checkout")
+        code, out = self._ottoctl("repo", "map", "--name", "demo", "--path", checkout)
+        self.assertEqual((code, out["outcome"]), (0, "mapped"), out)
+        config = host_config.load(Path(self.home))
+        self.assertEqual(config["repositories"]["demo"], os.path.abspath(checkout))
+
     def test_a_second_host_joins_the_same_store_as_its_own_principal(self):
         self._init()
         code, codex = self._ottoctl("service", "admit-host", "--host", "codex", "--principal", "codex-orchestrator")
@@ -240,16 +248,30 @@ class HostctlCliTest(HostctlFixture):
 
     def test_register_creates_only_a_draft_and_activation_materializes(self):
         self._init()
+        run_path = Path(self.bundle, "run.json")
+        run = json.loads(run_path.read_text())
+        run["assessment_accounting"] = {
+            "kind": "owner_local_bookkeeping", "purpose": "task review", "local_only": True,
+            "pool_id": "demo-review-pool", "capacity_units": 1, "cumulative_allowance_units": 1,
+            "task_criterion_pairs": ["T1/C1"],
+        }
+        run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
         receipt = self._register()
         self.assertEqual((receipt["outcome"], receipt["lifecycle"]), ("registered", "pending"))
         self.assertIs(receipt["dispatch"], False)
         self.assertEqual(receipt["steps"]["registration"]["tasks"], 0)
+        code, planned = self._ottoctl("project", "register", "--bundle", self.bundle,
+                                      "--worktree", self.worktree, "--plan-only")
+        self.assertEqual(code, 0, planned)
+        task = next(row for row in planned["plan"]["tasks"] if row["id"] == "T1")
+        self.assertEqual(task["custom"]["otto.plan"], {"repo": "demo", "branch": "feature/setup"})
         # Queued in the host's own portfolio: its orchestrator supervises (help routes there).
         enrollment = receipt["steps"]["enrollment"]
         self.assertEqual(enrollment["portfolio_ref"]["id"], "claude-code-portfolio")
         self.assertIsNotNone(enrollment["supervisor_assignment_ref"])
         code, draft = self._ottoctl("project", "status", "--project", "demo-run")
         self.assertEqual((draft["tasks"], draft["schedules"], draft["allowances"]), ([], [], []))
+        self.assertEqual(draft["assessment_scope"], run["assessment_accounting"])
         self.assertEqual([a["role"] for a in draft["assignments"]], [])
         code, refused = self._ottoctl("admission", "dry-run", "--project", "demo-run")
         self.assertNotEqual(code, 0)
@@ -314,6 +336,7 @@ class HostctlCliTest(HostctlFixture):
         self.assertEqual(set(tasks), {"T1", "T2"})
         self.assertEqual(tasks["T2"]["route"], "xhard")
         self.assertEqual(tasks["T2"]["depends_on"], 1)
+        self.assertEqual((tasks["T1"]["repo"], tasks["T1"]["branch"]), ("demo", "feature/setup"))
 
     # -- 6. operating-setup ------------------------------------------------
     def test_operating_setup_read_reports_ready_but_not_started(self):

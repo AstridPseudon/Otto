@@ -155,6 +155,18 @@ def load(home: Path) -> dict[str, Any]:
     return value
 
 
+def map_repository(home: Path, name: str, local_path: str | Path) -> dict[str, Any]:
+    """Add or update one owner-local repository checkout mapping."""
+    config = load(home)
+    if not isinstance(name, str) or not name or name != name.strip() or "\x00" in name:
+        raise HostConfigError("repository names must be exact nonblank text")
+    if not isinstance(local_path, (str, Path)) or not str(local_path).strip() or "\x00" in str(local_path):
+        raise HostConfigError("repository path for " + repr(name) + " must be nonblank path text")
+    config.setdefault("repositories", {})[name] = str(Path(os.path.expanduser(str(local_path))).absolute())
+    write(home, config, replace=True)
+    return config["repositories"]
+
+
 def host(config: Mapping[str, Any], kind: Optional[str]) -> Mapping[str, Any]:
     """The joined host this command acts for (explicit, OTTO_HOST_KIND, or the only one)."""
     hosts = config.get("hosts") or {}

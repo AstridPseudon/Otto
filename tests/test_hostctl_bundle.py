@@ -137,6 +137,14 @@ class ReadBundleTests(unittest.TestCase):
         self.assertEqual(bundle["run_file"], "run.json")
         self.assertEqual(bundle["run"]["mode"], "setup_not_activated")
 
+    def test_tasklist_branch_column_is_parsed(self):
+        task = next(task for task in parse_tasklist("""## Phase 1
+| id | repo | branch | outcome |
+|---|---|---|---|
+| S0 | AS | feature/setup | Ship it |
+""") if task["id"] == "S0")
+        self.assertEqual(task["branch"], "feature/setup")
+
     def test_generated_run_view_cannot_be_registered_as_a_source_bundle(self):
         root = write_bundle(self.base / "generated")
         run = json.loads((root / "run.yaml").read_text(encoding="utf-8"))

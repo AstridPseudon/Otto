@@ -113,6 +113,7 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
                              "external_deps": [dep for dep in task["deps"] if dep not in task_ids],
                              "card_dependencies": list(declared_dependencies or ()),
                              "source": "tasklist.md"}}
+        custom["otto.plan"] = {"repo": task.get("repo"), "branch": task.get("branch")}
         # The alias keeps the Megado id (M1, P1–P7, ...) as the durable task handle.
         value = {"id": task["id"], "alias": task["id"], "title": task["title"] or task["id"], "outcome": task["outcome"],
                  "acceptance": task["proof"] or "", "dependencies": internal, "custom": custom}
@@ -171,7 +172,8 @@ def plan(bundle_source: Any, *, profile: Mapping[str, Any], manager_principal: s
     custom = {"otto_host_registration": {
         "schema": REGISTRATION_SCHEMA, "run_id": run_id, "mode": run.get("mode"),
         "activation_trigger": run.get("activation_trigger"), "control_root": run.get("control_root"),
-        "source_bundle": bundle.get("root"),
+        "assessment_scope": run.get("assessment_accounting"),
+        "source_bundle": bundle.get("root"), "raw_sha256": bundle["raw_sha256"],
         "activation": "pending: no role occurrence is prepared, no schedule is active, nothing is dispatched"}}
     brief = "\n".join(line for line in [
         "Megado run " + run_id + " (" + str(run.get("mode") or "draft") + ").",
