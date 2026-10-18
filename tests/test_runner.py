@@ -599,6 +599,21 @@ def test_tree_change_before_launch_settles_stale(harness):
 
 # -- 5. report totals equal the stored results -----------------------------------------------------
 
+def test_submit_and_pump_wait_for_start(harness):
+    runner = Runner(CapacityPool(CapacityPolicy(heavy_headroom=3)), harness.store,
+                    state_dir=harness.state, resolve_commit=lambda cwd: "c1")
+    harness._runners.append(runner)
+    marker = harness.tmp / "prestart.marker"
+    harness.submit(runner, [PY, "-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"],
+                   request_id="prestart")
+    runner.pump()
+    assert harness.store.get("prestart")["state"] == "queued"
+    assert not marker.exists()
+    runner.start()
+    wait_state(harness.store, "prestart", "settled")
+    assert marker.read_text() == "ran"
+
+
 def test_report_totals_equal_results(harness):
     runner, store = harness.runner(), harness.store
     specs = [

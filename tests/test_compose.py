@@ -13,6 +13,7 @@ import json
 import os
 import queue
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,43 @@ class ProductFixture(HostctlFixture):
         document = events.get(timeout=60)
         self.assertEqual(document["outcome"], "ready", document)
         return document
+
+    def _retained_runner_queue(self):
+        from herzchen.fleet.runner.commit import git_commit_identity
+        from herzchen.fleet.runner.store import ResultStore
+
+        repo = Path(self.home).parent / "runner-repo"
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        (repo / "seed").write_text("seed\n")
+        subprocess.run(["git", "-C", str(repo), "add", "seed"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo),
+             "-c", "user.name=owner-claim",
+             "-c", "user.email=owner-claim@example.invalid",
+             "commit", "-qm", "seed"],
+            check=True,
+        )
+        commit = git_commit_identity(str(repo))
+        self.assertIsNotNone(commit)
+
+        marker = repo.parent / "runner-launched"
+        argv = [sys.executable, "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"]
+        results = ResultStore(Path(self.home) / "runner-results")
+        results.put({
+            "run_id": "retained-q", "seq": results.next_seq(),
+            "binding": results.binding(argv, str(repo), commit),
+            "argv": argv, "cwd": str(repo), "commit": commit,
+            "task": "custody", "purpose": "retained-q", "units": 1,
+            "weight_requested": 1, "max_seconds": 3600,
+            "state": "queued", "outcome": None, "exit_code": None,
+            "nested_in": None, "backfill": False, "submitted_at": time.time(),
+            "started_at": None, "settled_at": None, "seconds": None,
+            "unit_seconds": None, "tokens": 0, "custody": None,
+            "output_sha256": None, "output_bytes": None,
+        })
+        return results, marker
 
 
 class ProductStartTests(ProductFixture):
@@ -243,6 +281,24 @@ class OrderTests(SpyMixin, ProductFixture):
 
 
 class RefusalTests(ProductFixture):
+    def test_refusal_leaves_retained_runner_queue_unlaunched(self):
+        self._prepared()
+        results, marker = self._retained_runner_queue()
+
+        host_dir = lanes.private_dir(Path(self.home) / "shared-host")
+        lanes.submit(host_dir,
+                     {"command": "start-retained-worker",
+                      "schedule_id": "killed-run-handle"},
+                     token=lanes.new_token())
+        events, thread = self._product()
+        thread.join(timeout=60)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(events.get(timeout=5)["outcome"], "startup-refused")
+        self.assertEqual(self.product_result["error"].code, 78)
+        self.assertEqual(results.get("retained-q")["state"], "queued")
+        self.assertFalse(marker.exists())
+
     def test_startup_refusal_records_exit_78(self):
         self._prepared()
         host_dir = lanes.private_dir(Path(self.home) / "shared-host")
@@ -278,6 +334,31 @@ class RefusalTests(ProductFixture):
 
 
 class HoldTests(SpyMixin, ProductFixture):
+    def test_held_then_normal_restart_admits_the_same_retained_record(self):
+        self._prepared()
+        results, marker = self._retained_runner_queue()
+
+        held_events, held_thread = self._product(hold_dispatch=True)
+        self.assertEqual(self._ready_doc(held_events)["dispatch"], "held")
+        self.assertEqual(results.get("retained-q")["state"], "queued")
+        self.assertFalse(marker.exists())
+        stop_marker(Path(self.home)).write_text("stop\n")
+        held_thread.join(timeout=60)
+        self.assertFalse(held_thread.is_alive())
+        self.assertEqual(results.get("retained-q")["state"], "queued")
+        self.assertFalse(marker.exists())
+
+        normal_events, normal_thread = self._product()
+        self.assertEqual(self._ready_doc(normal_events)["dispatch"], "open")
+        deadline = time.monotonic() + 30
+        while results.get("retained-q")["state"] != "settled" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(results.get("retained-q")["state"], "settled")
+        self.assertTrue(marker.exists())
+        stop_marker(Path(self.home)).write_text("stop\n")
+        normal_thread.join(timeout=60)
+        self.assertFalse(normal_thread.is_alive())
+
     def test_dispatch_hold_refuses_admission(self):
         self._prepared()
         events, captured = self._spy()
@@ -313,6 +394,46 @@ class HoldTests(SpyMixin, ProductFixture):
         self.assertEqual(held["ProgramArguments"][-1], "--hold-dispatch")
         with self.assertRaises(PermissionError):
             launchd_definition({**config, "python": "python3"}, label="org.otto.owner")
+
+
+class HomeCustodyTests(ProductFixture):
+    def test_distinct_stores_under_one_home_admit_only_one_starter(self):
+        from herzchen.kernel.store import WriterBusyError
+        from otto.hostctl import product_service
+        from otto.hostctl.owner import create_store
+        from otto.hostctl.serve import socket_path
+
+        self._prepared()
+        config = host_config.load(Path(self.home))
+        alternate = create_store({**config, "store": {
+            "path": str(Path(self.home) / "store" / "alternate.sqlite"),
+            "authority": config["store"]["authority"],
+        }})
+        self.assertNotEqual(config["store"]["device_inode"], alternate["store"]["device_inode"])
+
+        first = SpawnedProduct(self.home)
+        self.addCleanup(first.kill)
+        self.assertEqual(first.wait_for("ready")["outcome"], "ready")
+        owner_file = Path(self.home) / "run" / "shared-host-owner.json"
+        caller_socket = socket_path(config, "shared-project-services")
+        owner_contents = owner_file.read_bytes()
+        owner_identity = (owner_file.stat().st_dev, owner_file.stat().st_ino)
+        socket_identity = (caller_socket.stat().st_dev, caller_socket.stat().st_ino)
+        self.assertTrue(stat.S_ISSOCK(caller_socket.stat().st_mode))
+
+        emitted = []
+        with mock.patch.object(product_service, "compose", side_effect=AssertionError("loser composed")) as composed:
+            with self.assertRaises(WriterBusyError):
+                product_service.run_product_service(alternate, emit=emitted.append)
+        composed.assert_not_called()
+        self.assertEqual(emitted, [])
+        self.assertEqual(owner_file.read_bytes(), owner_contents)
+        self.assertEqual((owner_file.stat().st_dev, owner_file.stat().st_ino), owner_identity)
+        self.assertEqual((caller_socket.stat().st_dev, caller_socket.stat().st_ino), socket_identity)
+        self.assertTrue(stat.S_ISSOCK(caller_socket.stat().st_mode))
+        self.assertIsNone(first.process.poll())
+        self.assertEqual(read_status(status_path(Path(self.home)))["outcome"], "running")
+        self.assertEqual(list((Path(self.home) / "run").glob("owner-startup-refusal-*.json")), [])
 
 
 def owner_lane_path(home):
