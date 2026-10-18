@@ -12,6 +12,7 @@ from contextvars import ContextVar, copy_context
 import hashlib
 import os
 import queue
+import re
 from pathlib import Path
 import socket
 import threading
@@ -83,15 +84,45 @@ def _host_boot_identity() -> str | None:
         if sys.platform.startswith("linux"):
             value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         elif sys.platform == "darwin":
-            value = subprocess.check_output(
-                ["/usr/sbin/sysctl", "-n", "kern.boottime"],
-                text=True, stderr=subprocess.DEVNULL, timeout=1,
-            ).strip()
+            # Read the kernel's timeval directly.  Starting `sysctl` here
+            # would cross the process boundary before native transport has
+            # been admitted and pinned.
+            import ctypes
+
+            class Timeval(ctypes.Structure):
+                _fields_ = [("seconds", ctypes.c_long), ("microseconds", ctypes.c_int32)]
+
+            value_out = Timeval()
+            value_size = ctypes.c_size_t(ctypes.sizeof(value_out))
+            sysctlbyname = ctypes.CDLL(None, use_errno=True).sysctlbyname
+            sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                                     ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p,
+                                     ctypes.c_size_t]
+            sysctlbyname.restype = ctypes.c_int
+            if sysctlbyname(b"kern.boottime", ctypes.byref(value_out),
+                            ctypes.byref(value_size), None, 0) != 0 \
+                    or value_size.value != ctypes.sizeof(value_out) \
+                    or not 0 <= value_out.microseconds < 1_000_000:
+                return None
+            value = "kern.boottime:%d:%d" % (value_out.seconds, value_out.microseconds)
         else:
             return None
     except (OSError, subprocess.SubprocessError):
         return None
     return value or None
+
+
+def _normalized_boot_identity(value: Any) -> Any:
+    """Compare canonical and legacy macOS `sysctl kern.boottime` values."""
+    if not isinstance(value, str):
+        return value
+    canonical = re.fullmatch(r"kern\.boottime:(-?\d+):(-?\d+)", value.strip())
+    if canonical:
+        return (int(canonical.group(1)), int(canonical.group(2)))
+    legacy = re.search(r"\bsec\s*=\s*(-?\d+)\s*,\s*usec\s*=\s*(-?\d+)", value)
+    if legacy:
+        return (int(legacy.group(1)), int(legacy.group(2)))
+    return value
 
 
 def _process_start_identity(pid: int) -> dict[str, Any]:
@@ -1157,7 +1188,9 @@ class ExecutionHost:
                     raise RuntimeError("owner custody locator is incomplete")
                 recorded_identity = prior.get("process_start_identity")
                 boot = _host_boot_identity()
-                boot_matches = (boot is None or prior.get("boot_identity") in {None, boot})
+                boot_matches = (boot is None or prior.get("boot_identity") is None
+                                or _normalized_boot_identity(prior.get("boot_identity"))
+                                == _normalized_boot_identity(boot))
                 try:
                     live_identity = _process_start_identity(int(prior["pid"]))
                 except (FileNotFoundError, ProcessLookupError):
