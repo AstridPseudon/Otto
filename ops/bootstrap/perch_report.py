@@ -1504,7 +1504,7 @@ def stage2_event_time(row):
 
 
 def stage2_timeline_failures(raw, config):
-    _data, events, failures = stage2_event_evidence(raw, config)
+    data, events, failures = stage2_event_evidence(raw, config)
     final_status = read_json(raw / "stage2-dispatch-status.json", None)
     status_tasks = final_status.get("tasks") if isinstance(final_status, dict) else None
     if not isinstance(status_tasks, list):
@@ -1515,6 +1515,7 @@ def stage2_timeline_failures(raw, config):
         by_alias = None
     else:
         by_alias = {row.get("id"): row for row in status_tasks if isinstance(row, dict)}
+    previous_completion_time = None
     for alias in config.get("stage2_expected_completed") or []:
         dispatch, landing, completion = (events.get((alias, kind)) for kind in
                                          ("dispatch", "landing", "completion"))
@@ -1522,16 +1523,57 @@ def stage2_timeline_failures(raw, config):
             failures.append(alias + " missing landing observation in its assignment stream")
         if completion is None:
             failures.append(alias + " missing manager completion event in the Store")
+        else:
+            body = (completion.get("effects") or {}).get("completion") or {}
+            gates = body.get("gate_refs") or []
+            evidence = body.get("evidence_refs") or []
+            checked = body.get("assessment_gate_check") or {}
+            actor = (completion.get("actor") or {}).get("actor")
+            if (body.get("logical_request_key") != "journey:perch-stage2-review-" + alias + ":finish"
+                    or actor != body.get("manager")
+                    or not any(turn.get("native_turn_started") is True
+                               and turn.get("recipient") == actor
+                               and turn.get("generation") == body.get("generation")
+                               and stage2_event_time(turn) is not None
+                               and stage2_event_time(completion) is not None
+                               and (previous_completion_time is None
+                                    or previous_completion_time < stage2_event_time(turn))
+                               and stage2_event_time(turn) < stage2_event_time(completion)
+                               for turn in data.get("manager_turns") or [])):
+                failures.append(alias + " completion lacks an owner-started manager turn and journey finish key")
+            decisions = data.get("decisions") or {}
+            cited = [decisions.get(gate.get("id")) for gate in gates if isinstance(gate, dict)]
+            if (not gates or len(cited) != len(gates) or not evidence
+                    or body.get("candidate_ref") not in evidence
+                    or checked.get("evidence_verification") != "verified"
+                    or checked.get("blockers") != []
+                    or {json.dumps(ref, sort_keys=True) for ref in checked.get("accepted_decision_refs") or []}
+                       != {json.dumps(ref, sort_keys=True) for ref in gates}
+                    or any(not isinstance(decision, dict) or decision.get("ref") != gate
+                           or (decision.get("payload") or {}).get("disposition") != "accept"
+                           or (decision.get("payload") or {}).get("candidate_ref") != body.get("candidate_ref")
+                           for decision, gate in zip(cited, gates))
+                    or {json.dumps(ref, sort_keys=True) for decision in cited if isinstance(decision, dict)
+                        for ref in (decision.get("payload") or {}).get("evidence_refs") or []}
+                       != {json.dumps(ref, sort_keys=True) for ref in evidence}):
+                failures.append(alias + " completion does not cite its accepted decision evidence")
         if dispatch and landing and completion:
             times = [stage2_event_time(row) for row in (dispatch, landing, completion)]
             if None in times or not times[0] < times[1] < times[2]:
                 failures.append(alias + " dispatch, landing observation and completion are not in event order")
             if landing.get("assignment_id") != dispatch.get("assignment_id"):
                 failures.append(alias + " landing observation belongs to another assignment")
+        previous_completion_time = stage2_event_time(completion) if completion else None
         if by_alias is not None:
             status = by_alias.get(alias) or {}
             if status.get("lifecycle") != "completed" or (status.get("dispatch") or {}).get("state") != "landed":
                 failures.append(alias + " has no landed and completed product status")
+    owner_status = read_json(raw / "stage2-owner-status.json", None)
+    holds = (owner_status.get("native_capacity") or {}).get("holds") if isinstance(owner_status, dict) else None
+    if not isinstance(holds, list) or any(not isinstance(hold, dict)
+            or not isinstance(hold.get("next_action"), str) or not hold["next_action"].strip()
+            for hold in holds):
+        failures.append("final owner capacity holds are missing or have no next action")
     return failures
 
 
@@ -1801,6 +1843,15 @@ def stage2_failures(raw, config):
         found["worker-kill-recovery"].append("killed worker slot was not released")
     if killed.get("unrelated_processes_alive") is not True:
         found["worker-kill-recovery"].append("worker recovery killed or lost an unrelated process")
+    recovered = store_events.get("worker_recovery") or {}
+    marker = recovered.get("marker") or {}
+    if (recovered.get("stop_state") != "stopped"
+            or recovered.get("completion_state") != "failed"
+            or recovered.get("in_flight_request") is not None
+            or marker.get("schema") != "otto.worker-gone-failed-disposition.v1"
+            or marker.get("request_key") != "perch-stage2-recover-C"
+            or (marker.get("disposition_ref") or {}).get("kind") != "wrk.report"):
+        found["worker-kill-recovery"].append("C has no retained manager recovery disposition")
 
     snapshots = observations.get("store_snapshots") or []
     if len(snapshots) < 2 or any(s.get("integrity") != "ok" for s in snapshots):

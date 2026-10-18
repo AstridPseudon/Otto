@@ -598,7 +598,19 @@ stage2_kill_worker() {
   while :; do
     if cold_client service status > "$RAW/stage2-capacity-after-kill.json" 2>> "$RAW/stage2-setup-errors.txt"; then
       "$PY" -I "$REPORT_PY" census --out "$RAW/stage2-census-after-kill.txt" --stage-root "$STAGE_ROOT"
-      if "$PY" -I "$REPORT_PY" stage2-kill-check --raw "$RAW" > /dev/null 2>&1; then return 0; fi
+      if "$PY" -I "$REPORT_PY" stage2-kill-check --raw "$RAW" > /dev/null 2>&1; then
+        while :; do
+          if cold_client service status > "$RAW/stage2-recovery-owner.json" 2>> "$RAW/stage2-setup-errors.txt"; then
+            if "$PY" -I "$REPORT_PY" stage2-boundary-closed --status "$RAW/stage2-recovery-owner.json" \
+                > /dev/null 2>&1; then return 0; fi
+          fi
+          if ! stage2_owner_alive; then
+            echo "owner exited before C's retained kill fence was settled" >> "$RAW/stage2-setup-errors.txt"
+            return 1
+          fi
+          sleep 0.25
+        done
+      fi
     fi
     if ! stage2_owner_alive; then
       echo "owner exited before C worker kill evidence showed its capacity slot released" >> "$RAW/stage2-setup-errors.txt"
