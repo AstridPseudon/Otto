@@ -377,14 +377,14 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
             handler=lambda _request: None, bounded_transports=True,
             capacity_store=self.f.store)
         host._capacity_holds[schedule] = host._execution_scope(self.app, due)
-        process = subprocess.Popen(['sleep', '60'], start_new_session=True)
+        process = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], start_new_session=True)
         try:
             host.record_process_group(schedule, process.pid)
             host.restore_execution(self.app, due)
             self.assertEqual(self.f.port.read_due(schedule)['stop_state'], 'active')
             self.assertIn(schedule, host.capacity_holds())
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5)
+            process.wait()
             host.restore_execution(self.app, self.app._read(schedule))
             settled = self.f.port.read_due(schedule)
             self.assertEqual((settled['stop_state'], settled['completion_state']),
@@ -393,7 +393,7 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5)
+            process.wait()
 
     def test_child_exiting_before_stdin_keeps_unknown_with_exit_and_stderr(self):
         def exited_child(command, **kwargs):

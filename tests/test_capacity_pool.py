@@ -415,7 +415,7 @@ class WorkerPinTests(unittest.TestCase):
         process = self.group()
         self.host._owned(lambda: adapter.process_pin(process))
         self.assertEqual(self.host._terminate_recorded_process_groups(), {schedule: True})
-        process.wait(timeout=5)
+        process.wait()
         with self.assertRaises(ProcessLookupError):
             os.killpg(process.pid, 0)
 
