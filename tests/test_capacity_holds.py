@@ -392,7 +392,19 @@ class CapacityHoldTests(unittest.TestCase):
                          "workspace": str(self.directory / "project-b")}
         self.assertTrue(host._eligible(other_project), "fence does not block another project")
 
-        recovered = service._execution_control(base_request)
+        # Exercise the maintained manager command parser and public dispatch,
+        # with the worker's retained Due/result pins after a real SIGKILL.
+        from otto.hostctl.manager_client import build_parser
+        command = vars(build_parser().parse_args([
+            "execution-control", "--operation", "recover", "--schedule-id", self.schedule,
+            "--request-key", base_request["request_key"],
+            "--expected-due-sha256", pins["expected_due_sha256"],
+            "--expected-unknown-result-sha256", pins["expected_unknown_result_sha256"],
+            "--reason", base_request["reason"],
+        ]))
+        command.pop("timeout_seconds")
+        command.pop("project")
+        recovered = service(command)
 
         self.assertEqual(recovered.get("outcome"), "settled", recovered)
         after = f.port.read_due(self.schedule)

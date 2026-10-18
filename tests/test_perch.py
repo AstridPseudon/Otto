@@ -219,6 +219,10 @@ def clean_stage2_raw(root):
                        "recorded_at": "2026-10-17T10:00:%02dZ" % when,
                        "subject": {"kind": "wrk.dispatch", "id": "dispatch-" + alias}, "effects": {}, "value": None})
         if alias != "C":
+            candidate = {"authority": "owner", "kind": "wrk.result", "id": "result-" + alias,
+                         "revision": "rev-1"}
+            gate = {"authority": "owner", "kind": "assessment.decision", "id": "decision-" + alias,
+                    "revision": "rev-1"}
             events.append({"task_id": task_id, "alias": alias, "assignment_id": assignment_id,
                            "event_type": "work.result.appended", "stream": "result:" + assignment_id,
                            "recorded_at": "2026-10-17T10:00:%02dZ" % (when + 1),
@@ -228,8 +232,14 @@ def clean_stage2_raw(root):
             events.append({"task_id": task_id, "alias": alias, "assignment_id": None,
                            "event_type": "work.revised", "stream": "work:" + task_id,
                            "recorded_at": "2026-10-17T10:00:%02dZ" % (when + 2),
+                           "actor": {"actor": "perch-stage2-manager"},
                            "subject": {"kind": "work.task", "id": task_id},
-                           "effects": {"completion": {"disposition": "accepted"}}, "value": None})
+                           "effects": {"completion": {"disposition": "accepted",
+                               "logical_request_key": "journey:perch-stage2-review-" + alias + ":finish",
+                               "manager": "perch-stage2-manager", "generation": 1,
+                               "candidate_ref": candidate, "gate_refs": [gate], "evidence_refs": [candidate],
+                               "assessment_gate_check": {"evidence_verification": "verified",
+                                   "blockers": [], "accepted_decision_refs": [gate]}}}, "value": None})
     events.append({"task_id": "task-C", "alias": "C", "assignment_id": None,
                    "event_type": "work.revised", "stream": "work:task-C",
                    "recorded_at": "2026-10-17T10:00:06.700000Z",
@@ -239,6 +249,26 @@ def clean_stage2_raw(root):
     extra = {
         "stage2-store-events.json": {"error": None, "tasks": {"task-" + a: a for a in tasks},
             "assignments": {"assignment-" + a: "task-" + a for a in tasks},
+            "manager_turns": [{"recipient": "perch-stage2-manager", "generation": 1,
+                               "schedule_id": "manager-A", "native_turn_started": True,
+                               "recorded_at": "2026-10-17T10:00:01Z"},
+                              {"recipient": "perch-stage2-manager", "generation": 1,
+                               "schedule_id": "manager-B", "native_turn_started": True,
+                               "recorded_at": "2026-10-17T10:00:04Z"}],
+            "decisions": {"decision-" + a: {"ref": {"authority": "owner", "kind": "assessment.decision",
+                        "id": "decision-" + a, "revision": "rev-1"},
+                        "payload": {"disposition": "accept",
+                                    "candidate_ref": {"authority": "owner", "kind": "wrk.result",
+                                                      "id": "result-" + a, "revision": "rev-1"},
+                                    "evidence_refs": [{"authority": "owner", "kind": "wrk.result",
+                                                       "id": "result-" + a, "revision": "rev-1"}]}}
+                          for a in ("A", "B")},
+            "worker_recovery": {"schedule_id": "worker-C", "stop_state": "stopped",
+                "completion_state": "failed", "in_flight_request": None,
+                "marker": {"schema": "otto.worker-gone-failed-disposition.v1",
+                           "request_key": "perch-stage2-recover-C",
+                           "disposition_ref": {"authority": "owner", "kind": "wrk.report",
+                                               "id": "recovery-C", "revision": "rev-1"}}},
             "revisions": {"task-A": [{"revision": "rev-admitted-A", "admitted_revision": "rev-A"}],
                           "task-B": [{"revision": "rev-admitted-B", "admitted_revision": "rev-B"}],
                           "task-C": [
@@ -251,6 +281,7 @@ def clean_stage2_raw(root):
             {"id": "A", "lifecycle": "completed", "dispatch": {"state": "landed"}},
             {"id": "B", "lifecycle": "completed", "dispatch": {"state": "landed"}},
             {"id": "C", "lifecycle": "pending", "dispatch": {"state": "unknown"}}]},
+        "stage2-owner-status.json": {"native_capacity": {"holds": []}},
         "stage2-instruction-edit-C.input.json": {"tasks": [{"id": "C", "instructions":
             "Canary dispatch C (post-admission edit)"}]},
         "stage2-instruction-edit-C.json": {"outcome": "saved", "project_ref": {"id": "project-canary"}, "task_refs": {
@@ -1030,6 +1061,35 @@ class AssertionKindTests(unittest.TestCase):
         self.assertTrue(any("final product status snapshot missing" in detail
                             and "A, B" in detail for detail in failures), failures)
         self.assertFalse(any("has no landed and completed product status" in detail for detail in failures), failures)
+
+    def test_stage_two_completion_requires_manager_turn_accepted_citations_and_resolved_holds(self):
+        cases = (
+            ("missing-manager", "stage2-store-events.json",
+             lambda value: value.update(manager_turns=[])),
+            ("direct-completion", "stage2-store-events.json",
+             lambda value: next(row for row in value["events"] if row["alias"] == "A" and
+                 (row.get("effects") or {}).get("completion"))["effects"]["completion"].update(
+                     logical_request_key="perch-stage2-complete-A")),
+            ("wrong-citation", "stage2-store-events.json",
+             lambda value: next(row for row in value["events"] if row["alias"] == "B" and
+                 (row.get("effects") or {}).get("completion"))["effects"]["completion"].update(evidence_refs=[])),
+            ("unresolved-hold", "stage2-owner-status.json",
+             lambda value: value["native_capacity"].update(holds=[{"schedule_id": "held-C"}])),
+        )
+        for label, file, mutate in cases:
+            with self.subTest(label=label):
+                raw = clean_stage2_raw(self.tmp / label)
+                self.assertEqual(statuses(raw)["timeline-events"], "pass")
+                patch(raw, file, mutate)
+                self.assertEqual(statuses(raw)["timeline-events"], "fail")
+
+    def test_stage_two_killed_worker_requires_retained_manager_disposition(self):
+        raw = clean_stage2_raw(self.tmp / "missing-C-recovery")
+        self.assertEqual(statuses(raw)["worker-kill-recovery"], "pass")
+        patch(raw, "stage2-store-events.json", lambda value: value.update(worker_recovery=None))
+        self.assertEqual(statuses(raw)["worker-kill-recovery"], "fail")
+        shell = PERCH.read_text(encoding="utf-8")
+        self.assertIn('stage2-boundary-closed --status "$RAW/stage2-recovery-owner.json"', shell)
         patch(raw, "stage2-store-events.json", lambda value: value.update(events=[
             row for row in value["events"] if not (row.get("alias") == "A"
                                                     and row.get("event_type") == "work.result.appended")]))
@@ -1840,134 +1900,6 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertIn('cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"',
                       shell)
 
-    def test_fake_manager_completes_only_landed_canary_with_stored_acceptance(self):
-        calls = []
-
-        class Ref:
-            def __init__(self, authority, kind, ident, revision=None):
-                self.authority, self.kind, self.id, self.revision = authority, kind, ident, revision
-
-            @classmethod
-            def from_dict(cls, value):
-                return cls(value["authority"], value["kind"], value["id"], value.get("revision"))
-
-            def to_dict(self):
-                return dict(authority=self.authority, kind=self.kind, id=self.id, revision=self.revision)
-
-        candidate = Ref("owner", "wrk.result", "candidate-A", "rev-1")
-        evidence = Ref("owner", "dat.content.document", "runner-receipt-A", "rev-evidence")
-        evidence_digest = "d" * 64
-        with mock_patch.object(sys, "path", [str(ROOT / "src"), *sys.path]):
-            from herzchen.domains.assessment.model import AssessmentResult, Invocation, Verdict
-
-        assessed_result = AssessmentResult(
-            ref=Ref("owner", "assessment.result", "result-A", "rev-1"),
-            scope_ref=Ref("owner", "assessment.scope", "scope-A", "rev-1"),
-            parent_obligation_ref=Ref("owner", "work.obligation", "obligation-A", "rev-1"),
-            criterion_ref=Ref("owner", "assessment.criterion", "criterion-A", "rev-1"),
-            candidate_ref=candidate,
-            input_packet_ref=Ref("owner", "assessment.input", "input-A", "rev-1"),
-            verdict=Verdict.PASS,
-            guidance={},
-            protocol_result={},
-            invocation=Invocation(
-                ref=Ref("owner", "assessment.invocation", "invocation-A", "rev-1"),
-                operation_ref=Ref("owner", "assessment.operation", "operation-A", "rev-1"),
-                reservation_ref=Ref("owner", "resource.reservation", "reservation-A", "rev-1"),
-                route="test", role="fleet-check", state="completed", declared_units=1,
-                actual_units=1, result={}, version=1, payload={}),
-            findings=(),
-            correction_refs=(),
-            version=1,
-            payload={"evidence_refs": [evidence.to_dict()]},
-        )
-        self.assertIsInstance(assessed_result, AssessmentResult)
-        self.assertFalse(hasattr(assessed_result, "evidence_refs"))
-        task_ref = Ref("owner", "work.task", "task-A", "rev-admitted")
-        project_ref = Ref("owner", "work.project", "project", "rev-4")
-        manager_ref = Ref("owner", "wrk.assignment", "manager", "rev-2")
-
-        class Graph:
-            def __init__(self):
-                self.reader = self
-
-            def get_identity(self, ref):
-                if ref.kind == "wrk.result":
-                    return SimpleNamespace(ref=candidate, payload={"value": {"sealed_run": "run-A"}})
-                return self.current(ref)
-
-            def current(self, ref):
-                return SimpleNamespace(ref=task_ref if ref.kind == "work.task" else project_ref)
-
-        class Assessment:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def get_result(self, ref):
-                self_ref = ref.to_dict()
-                if self_ref["kind"] != "assessment.result":
-                    raise ValueError("wrong result")
-                return assessed_result
-
-            def get_decision(self, ref):
-                if ref.kind != "assessment.decision":
-                    raise ValueError("wrong decision")
-                return SimpleNamespace(evidence_refs=(evidence,), payload={"evidence_digests": (
-                    {"ref": evidence.to_dict(), "digest": evidence_digest},)})
-
-        class Portfolio:
-            outcome = "completed"
-
-            def complete_task(self, project, task, manager, **kwargs):
-                calls.append((project, task, manager, kwargs))
-                return {"outcome": self.outcome, "task_ref": task}
-
-        portfolio = Portfolio()
-        owner = SimpleNamespace(graph=Graph(), owner_actor=object(), evidence_payload_resolver=SimpleNamespace(),
-                                binding=SimpleNamespace(authenticated_actor=lambda actor: ("authenticated", actor)),
-                                assignments=SimpleNamespace(get=lambda ref: SimpleNamespace(ref=manager_ref)))
-        server = SimpleNamespace(run_id="perch-stage2", owner=owner, store=object(), portfolio=portfolio,
-                                 state={"assignment_ref": manager_ref.to_dict(), "manager": "perch-stage2-manager",
-                                        "manager_generation": 1})
-        view = SimpleNamespace(server=server, _refresh_refs=lambda: calls.append("refresh"))
-        context = {"view": view, "task": SimpleNamespace(ref=task_ref, payload={"alias": "A"}),
-                   "project_ref": project_ref.to_dict()}
-        landing = {"landed": True,
-                   "assessment_results": [Ref("owner", "assessment.result", "result-A", "rev-1").to_dict()],
-                   "acceptances": [Ref("owner", "assessment.decision", "decision-A", "rev-1").to_dict()]}
-        modules = {"herzchen": ModuleType("herzchen"), "herzchen.contracts": ModuleType("herzchen.contracts"),
-                   "herzchen.domains": ModuleType("herzchen.domains"),
-                   "herzchen.domains.assessment": ModuleType("herzchen.domains.assessment")}
-        modules["herzchen.contracts"].ResourceRef = Ref
-        modules["herzchen.domains.assessment"].AssessmentModule = Assessment
-        with mock_patch.dict(sys.modules, modules):
-            result = self.launcher.complete_landed_canary(context, landing)
-            self.assertEqual(result["outcome"], "completed")
-            self.assertEqual(calls[0][3]["gate_refs"], landing["acceptances"])
-            self.assertEqual(calls[0][3]["candidate_ref"], candidate.to_dict())
-            self.assertEqual(calls[0][3]["evidence_refs"], [evidence.to_dict()])
-            self.assertEqual(calls[0][3]["evidence_hashes"], {
-                "dat.content.document:runner-receipt-A:rev-evidence": evidence_digest})
-            self.assertEqual(calls[0][3]["actor"], "perch-stage2-manager")
-            self.assertEqual(calls[1], "refresh")
-            context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "B"})
-            completed_b = self.launcher.complete_landed_canary(context, landing)
-            self.assertEqual(completed_b["outcome"], "completed")
-            # Seed a refused owner completion. The fake manager must turn red.
-            portfolio.outcome = "held"
-            with self.assertRaisesRegex(RuntimeError, "manager completion refused"):
-                context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "B"})
-                self.launcher.complete_landed_canary(context, landing)
-            self.assertEqual(len(calls), 5)
-            portfolio.outcome = "completed"
-            context["task"] = SimpleNamespace(ref=task_ref, payload={"alias": "C"})
-            completed_c = self.launcher.complete_landed_canary(context, landing)
-            self.assertEqual(completed_c["outcome"], "completed")
-            self.assertEqual(len(calls), 7)
-            self.assertEqual([calls[index][3]["request_id"] for index in (0, 2, 5)],
-                             ["perch-stage2-complete-A", "perch-stage2-complete-B",
-                              "perch-stage2-complete-C"])
-
     def test_task_lifecycle_wait_is_red_until_owner_completes(self):
         status = {"tasks": [{"id": "A", "lifecycle": "completed"}]}
         owner = {"native_capacity": {"active_or_uncertain": 0}}
@@ -1980,34 +1912,112 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertFalse(perch_report.stage2_task_complete(status, owner, "A"))
         self.assertFalse(perch_report.stage2_task_landed(status, "A"))
 
-    def test_fake_completion_hook_runs_after_real_landing_and_preserves_refusal(self):
-        order = []
-        context = {"task": SimpleNamespace(payload={"alias": "A"})}
+    def test_stage_two_manager_uses_installed_review_and_recovery_commands(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        fake = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fake)
+        calls = []
+        ref = {"authority": "owner", "kind": "wrk.result", "id": "result-A", "revision": "rev-1"}
+        criterion = {"authority": "owner", "kind": "assessment.criterion", "id": "criterion-A", "revision": "rev-1"}
+        pins = {"expected_due_sha256": "a" * 64, "expected_result_sha256": "b" * 64}
 
-        class Port:
-            def __init__(self):
-                self.inner = SimpleNamespace(_assignment_context=lambda assignment: context)
-                self.executor = lambda: lambda operation: operation()
+        def client(*words):
+            calls.append(words)
+            if words[:2] == ("review-input", "--task"):
+                return ({"outcome": "read", "candidate_ref": ref, "source_refs": [ref],
+                         "evidence_refs": [ref], "criterion_aliases": {"C-A": criterion},
+                         "worker_result_sha256": "c" * 64, "task_outcome": "Canary dispatch A",
+                         "observed_turn_id": "turn-A"} if words[2] == "A" else
+                        {"outcome": "pending"})
+            if words[0] == "review-task":
+                return {"outcome": "accepted", "gate_refs": [{**criterion, "kind": "assessment.decision"}],
+                        "completion": {"outcome": "pending", "completion_intent": "perch-A"}}
+            if words[0] == "status":
+                return {"outcome": "ok", "workers": {"C": {"schedule_id": "held-C"}}}
+            if words[:2] == ("execution-control", "--operation") and words[2] == "read":
+                return {"outcome": "read", "recovery": {"state": "held_failed",
+                    "manager_gone_group_recovery": pins}}
+            if words[:2] == ("execution-control", "--operation") and words[2] == "recover":
+                return {"outcome": "settled", "manager_recovery": True,
+                        "historical_result_preserved": True, "provider_called": False}
+            self.fail("unexpected installed client command: " + repr(words))
 
-            def call(self, operation, assignment, args, *, feedback):
-                order.append("landing")
-                return {"landed": args["landed"]}
+        fake.scripted_manager_turn("A", client=client)
+        self.assertEqual(calls[0], ("review-input", "--task", "A"))
+        review = next(words for words in calls if words[0] == "review-task")
+        self.assertEqual(json.loads(review[review.index("--candidate-ref") + 1]), ref)
+        judgment = json.loads(review[review.index("--judgments") + 1])["C-A"]
+        self.assertEqual(judgment["evidence_refs"], [ref])
+        self.assertEqual(judgment["verdict"], "PASS")
+        self.assertNotIn("complete-task", [words[0] for words in calls])
 
-        module = ModuleType("otto.hostctl.product_service")
-        module._OwnerExecutorPort = Port
-        modules = {"otto": ModuleType("otto"), "otto.hostctl": ModuleType("otto.hostctl"),
-                   "otto.hostctl.product_service": module}
-        with mock_patch.dict(sys.modules, modules), mock_patch.object(
-                self.launcher, "complete_landed_canary", side_effect=lambda ctx, landing:
-                order.append("completion") or {"outcome": "completed"}):
-            self.launcher.install_fake_completion()
-            port = Port()
-            landed = port.call("worker-done", "assignment", {"landed": True}, feedback=False)
-            self.assertEqual(landed["bootstrap_completion"]["outcome"], "completed")
-            self.assertEqual(order, ["landing", "completion"])
-            refused = port.call("worker-done", "assignment", {"landed": False}, feedback=False)
-            self.assertEqual(refused, {"landed": False})
-            self.assertEqual(order, ["landing", "completion", "landing"])
+        calls.clear()
+        fake.scripted_manager_turn("C", client=client)
+        recovery = next(words for words in calls if words[0] == "execution-control" and
+                        words[words.index("--operation") + 1] == "recover")
+        self.assertIn(("--schedule-id", "held-C"), list(zip(recovery, recovery[1:])))
+        self.assertIn(("--expected-due-sha256", "a" * 64), list(zip(recovery, recovery[1:])))
+        self.assertIn(("--expected-result-sha256", "b" * 64), list(zip(recovery, recovery[1:])))
+        first = True
+
+        def delayed_group(*words):
+            nonlocal first
+            if words[0] == "execution-control" and words[words.index("--operation") + 1] == "recover" and first:
+                first = False
+                return {"outcome": "refused", "cause": "process_group_alive", "provider_called": False}
+            return client(*words)
+
+        self.assertEqual(fake.scripted_manager_turn("C", client=delayed_group), "pending")
+        self.assertEqual(fake.scripted_manager_turn("C", client=delayed_group), "recovered")
+
+    def test_fake_manager_uses_owner_introduced_installed_client(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        fake = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fake)
+        temporary = short_temp_root()
+        self.addCleanup(shutil.rmtree, temporary, True)
+        entrypoint = temporary / "ottoctl"
+        entrypoint.write_text("#!/bin/sh\n", encoding="utf-8")
+        brief = {"operating_core": {"role": "manager",
+                  "introduction": {"tool_entrypoint": str(entrypoint)}}}
+        prompt = ('<otto-resource-brief sha256="' + "0" * 64 + '">\n'
+                  + json.dumps(brief) + '\n</otto-resource-brief>')
+        self.assertEqual(fake.manager_entrypoint(prompt), str(entrypoint))
+        with mock_patch.object(fake.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout='{"outcome":"ok"}', stderr="")) as invoke:
+            self.assertEqual(fake.installed_client(str(entrypoint), "status"), {"outcome": "ok"})
+        self.assertEqual(invoke.call_args.args[0], [str(entrypoint), "manager", "status"])
+        with self.assertRaisesRegex(ValueError, "installed client"):
+            fake.manager_entrypoint(prompt.replace(str(entrypoint), str(temporary / "other")))
+
+    def test_fake_manager_turns_wait_for_landing_then_yield_for_owner_settlement(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        fake = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fake)
+        observed = {"A": 0, "B": 0, "C": 0}
+
+        def turn(alias, *, client):
+            observed[alias] += 1
+            return {"A": ("pending", "reviewed", "completed"),
+                    "B": ("pending", "reviewed", "completed"),
+                    "C": ("pending", "recovered")}[alias][min(observed[alias] - 1,
+                                                               2 if alias != "C" else 1)]
+
+        with mock_patch.object(fake, "manager_entrypoint", return_value="/installed/ottoctl"), \
+                mock_patch.object(fake, "scripted_manager_turn", side_effect=turn), \
+                mock_patch.object(fake.time, "sleep", return_value=None):
+            self.assertEqual(fake.manager_journey("owner brief"), "reviewed")
+            self.assertEqual(observed, {"A": 2, "B": 0, "C": 0})
+            self.assertEqual(fake.manager_journey("owner brief"), "reviewed")
+            self.assertEqual(observed, {"A": 3, "B": 2, "C": 0})
+            self.assertEqual(fake.manager_journey("owner brief"), "recovered")
+            self.assertEqual(observed, {"A": 4, "B": 3, "C": 2})
+
+    def test_stage_two_owner_does_not_install_completion_port_hook(self):
+        source = (BOOTSTRAP / "perch_stage2_owner.py").read_text(encoding="utf-8")
+        self.assertNotIn("install_fake_completion", source)
+        self.assertNotIn("_OwnerExecutorPort.call", source)
+        self.assertNotIn("complete_task(", source)
 
 
 class RenderTests(unittest.TestCase):

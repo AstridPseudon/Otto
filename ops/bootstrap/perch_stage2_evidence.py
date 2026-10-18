@@ -56,9 +56,36 @@ def capture(src, store_path, authority):
                     "reviewed_digest": reviewed_content_digest(record.payload),
                     "admitted_revision": admitted_revision(record.payload)})
             revisions[row.ref.id] = history
+        decision_page = reader.read_identity_page(kind="assessment.decision", limit=100)
+        if decision_page["next_cursor"] is not None or decision_page["held"]:
+            raise ValueError("accepted decision page is incomplete")
+        decisions = {row.ref.id: {"ref": plain(row.ref), "payload": plain(row.payload)}
+                     for row in decision_page["records"]}
         result = {"error": None, "tasks": tasks, "assignments": assignments,
-                  "revisions": revisions, "events": []}
+                  "revisions": revisions, "decisions": decisions, "manager_turns": [],
+                  "worker_recovery": None, "events": []}
         for event in store.list_events():
+            if event.event_type == "otto.due-record.changed":
+                record = (event.effects or {}).get("record") or {}
+                attempt = ((record.get("host_evidence") or {}).get("gateway_attempt") or {})
+                admission = attempt.get("delivery_admission") or {}
+                if (record.get("role") == "manager" and admission.get("native_turn_started") is True
+                        and not any(turn["schedule_id"] == record.get("schedule_id")
+                                    for turn in result["manager_turns"])):
+                    result["manager_turns"].append({"schedule_id": record.get("schedule_id"),
+                        "recipient": record.get("recipient"), "assignment_ref": record.get("assignment_ref"),
+                        "generation": record.get("generation"), "recorded_at": event.recorded_at,
+                        "native_turn_started": True})
+                target = record.get("target") or {}
+                if (record.get("role") == "worker" and
+                        (target.get("task_ref") or {}).get("id") in
+                        {task_id for task_id, alias in tasks.items() if alias == "C"}):
+                    evidence = record.get("host_evidence") or {}
+                    marker = evidence.get("gone_failed_worker_disposition") or evidence.get("gone_unknown_worker_disposition")
+                    result["worker_recovery"] = {"schedule_id": record.get("schedule_id"),
+                        "stop_state": record.get("stop_state"), "completion_state": record.get("completion_state"),
+                        "in_flight_request": record.get("in_flight_request"), "marker": plain(marker)}
+                continue
             if event.event_type not in {"work.assignment.dispatched", "work.result.appended",
                                         "work.revised", "work.project-sheet.applied"}:
                 continue
@@ -79,14 +106,14 @@ def capture(src, store_path, authority):
                     continue
                 result["events"].append({"task_id": None, "alias": None, "assignment_id": None,
                     "event_type": event.event_type, "stream": event.stream,
-                    "recorded_at": event.recorded_at, "subject": plain(event.subject),
+                    "recorded_at": event.recorded_at, "actor": plain(event.actor), "subject": plain(event.subject),
                     "effects": effects, "value": None})
                 continue
             if task_id not in tasks:
                 continue
             result["events"].append({"task_id": task_id, "alias": tasks[task_id],
                 "assignment_id": assignment_id, "event_type": event.event_type,
-                "stream": event.stream, "recorded_at": event.recorded_at,
+                "stream": event.stream, "recorded_at": event.recorded_at, "actor": plain(event.actor),
                 "subject": plain(event.subject), "effects": plain(event.effects),
                 "value": plain(value)})
         return result
@@ -104,7 +131,8 @@ def main():
     try:
         result = capture(args.src, args.store, args.authority)
     except Exception as exc:
-        result = {"error": str(exc), "tasks": {}, "assignments": {}, "events": []}
+        result = {"error": str(exc), "tasks": {}, "assignments": {}, "decisions": {},
+                  "manager_turns": [], "worker_recovery": None, "events": []}
     Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 1 if result["error"] else 0
 
