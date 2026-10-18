@@ -140,7 +140,7 @@ if not Path(sys.argv[4]).exists():raise RuntimeError("manager release deadline e
         self.assertEqual([r["outcome"] for r in child], ["committed", "committed", "read"])
         self.assertEqual(child[0]["lifecycle"], "active")
         self.assertFalse(response.exists())
-        pending = self.wait_file(self.directory / "pending-abc123.json")
+        pending = json.loads((self.directory / "pending-abc123.json").read_text())
         self.assertIs(pending["dispatch_claimed"], True)
         self.assertEqual(pending["request_state"], "processing")
         self.assertIs(pending["terminal"], False)
