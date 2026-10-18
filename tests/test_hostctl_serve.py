@@ -250,6 +250,7 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
         registry.records = {"assignment-a": record}
         registry.dispatcher = SimpleNamespace()
         registry._due_keys, registry._due_bindings = {}, {}
+        registry._active_due = {}
         registry._lock = threading.RLock()
         registry.facade_server = object()
         registry.facade_socket = "/tmp/otto-worker.sock"
@@ -324,6 +325,7 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
         registry, due = self._fleet_registry_for_due()
         grant = registry.grant_for_due(due)
         self.assertEqual(grant.token, registry.records["assignment-a"].token)
+        self.assertEqual(registry._active_due, {"assignment-a": "worker-run"})
         for key, value in (("generation", 1), ("recipient", "other")):
             registry, forged = self._fleet_registry_for_due()
             forged[key] = value

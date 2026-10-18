@@ -252,6 +252,16 @@ class _DirectRunnerClient:
         return {"ok": False, "error": "unknown_op"}
 
 
+class _InactiveDispatch(LookupError):
+    """A fixed public refusal for a token with no live owner dispatch."""
+
+    code = "owner_unavailable"
+    message = "LookupError: assignment has no active dispatch record"
+
+    def __init__(self) -> None:
+        super().__init__("assignment has no active dispatch record")
+
+
 class OwnerFleetRegistry:
     """Owner-custodied fleet pieces, indexed by the task's admitted repo and branch.
 
@@ -494,7 +504,7 @@ class OwnerFleetRegistry:
     def _record_for_assignment(self, assignment_id: str) -> Any:
         record = self.records.get(assignment_id)
         if record is None or record.state not in {"admitted", "launched", "unknown"}:
-            raise LookupError("assignment has no active dispatch record")
+            raise _InactiveDispatch()
         return record
 
     def assignment_context(self, assignment_id: str, token: Any = None) -> dict[str, Any]:
