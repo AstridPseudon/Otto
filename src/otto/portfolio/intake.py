@@ -1372,11 +1372,186 @@ class OttoPortfolio:
             "session_id": _text(session_id, "session_id")}, request_id=request_id, actor=actor)
 
     def export_project(self, project_ref: Any, *, document_refs: Sequence[Any] = (),
-                       association_refs: Sequence[Any] = (), actor: str, request_id: str) -> dict[str, Any]:
+                       association_refs: Sequence[Any] = (), task_refs: Optional[Sequence[Any]] = None,
+                       actor: str, request_id: str) -> dict[str, Any]:
         """Export selected canonical records for a distinct owner transfer."""
-        return self._execute("work.project.export", {"project_ref": _ref(project_ref),
+        payload = {"project_ref": _ref(project_ref),
             "document_refs": [_ref(ref) for ref in document_refs],
-            "association_refs": [_ref(ref) for ref in association_refs]}, request_id=request_id, actor=actor)
+            "association_refs": [_ref(ref) for ref in association_refs]}
+        if task_refs is not None:
+            payload["task_refs"] = [_ref(ref) for ref in task_refs]
+        return self._execute("work.project.export", payload, request_id=request_id, actor=actor)
+
+    def capture_transfer(self, selection: Sequence[Mapping[str, Any]], *, actor: str,
+                         request_id: str, page_limit: int = 100) -> dict[str, Any]:
+        """Capture an explicit set of projects after traversing the full owner inventory.
+
+        Each selection row contains ``project_ref`` and the exact ``document_refs``
+        and ``association_refs`` to preserve. Inventory pages are only an
+        admission check; project selection is never inferred from the inventory.
+        """
+        import hashlib
+        import json
+        from .project_folder import validate_transfer
+
+        if not isinstance(selection, (list, tuple)) or not selection:
+            raise PortfolioError("transfer selection must be a non-empty explicit list")
+        if isinstance(page_limit, bool) or not isinstance(page_limit, int) or not 1 <= page_limit <= 1000:
+            raise PortfolioError("page_limit must be between 1 and 1000")
+        selected: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+        def current_identity(value):
+            ref = _ref(value)
+            ref.pop("revision", None)
+            return ref
+        for row in selection:
+            if not isinstance(row, Mapping) or set(row) - {"project_ref", "document_refs", "association_refs", "task_refs"} or not {"project_ref", "document_refs", "association_refs"}.issubset(row):
+                raise PortfolioError("each transfer selection row requires project_ref, document_refs, and association_refs")
+            ref = _ref(row["project_ref"])
+            identity = (str(ref["authority"]), str(ref["kind"]), str(ref["id"]))
+            if identity in selected:
+                raise PortfolioError("transfer selection contains a duplicate project")
+            selected[identity] = row
+        inventory: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+        cursor = None
+        seen_cursors = set()
+        while True:
+            page = self.list_projects(actor=actor, cursor=cursor, limit=page_limit)
+            if page.get("outcome") != "listed" or page.get("read_only") is not True:
+                raise PortfolioError("owner project inventory is incomplete")
+            for item in page.get("projects", ()):
+                ref = item.get("project_ref") if isinstance(item, Mapping) else None
+                if not isinstance(ref, Mapping):
+                    raise PortfolioError("owner project inventory contains a malformed identity")
+                identity = (str(ref.get("authority")), str(ref.get("kind")), str(ref.get("id")))
+                if identity in inventory:
+                    raise PortfolioError("owner project inventory repeated an identity")
+                inventory[identity] = item
+            cursor = page.get("next_cursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or cursor in seen_cursors:
+                raise PortfolioError("owner project inventory cursor traversal is incomplete")
+            seen_cursors.add(cursor)
+        missing = set(selected) - set(inventory)
+        if missing:
+            raise PortfolioError("selected projects are not all visible in the complete owner inventory")
+        projects = []
+        for index, (identity, row) in enumerate(selected.items()):
+            result = self.export_project(current_identity(row["project_ref"]),
+                document_refs=[current_identity(value) for value in row["document_refs"]],
+                association_refs=[current_identity(value) for value in row["association_refs"]],
+                task_refs=None if row.get("task_refs") is None else [current_identity(value) for value in row["task_refs"]], actor=actor,
+                request_id=f"{request_id}:project:{index}")
+            if result.get("outcome") != "exported" or not isinstance(result.get("snapshot"), Mapping):
+                raise PortfolioError("selected project export is incomplete")
+            snapshot = result["snapshot"]
+            validate_transfer(snapshot)
+            projects.append({"source_identity": list(identity), "snapshot": snapshot})
+        manifest = {"schema": "otto.transfer-manifest.v1", "selection": [
+            {"project_ref": current_identity(row["project_ref"]),
+             "document_refs": [current_identity(value) for value in row["document_refs"]],
+             "association_refs": [current_identity(value) for value in row["association_refs"]],
+             **({"task_refs": [current_identity(value) for value in row["task_refs"]]} if row.get("task_refs") is not None else {})}
+            for row in selected.values()], "projects": projects,
+            "inventory_count": len(inventory), "inventory_complete": True}
+        manifest["manifest_digest"] = hashlib.sha256(json.dumps(
+            manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return {"outcome": "captured", "manifest": manifest, "manifest_digest": manifest["manifest_digest"],
+                "read_only": True, "writes": 0}
+
+    def verify_transfer_source(self, manifest: Mapping[str, Any], *, actor: str,
+                               request_id: str) -> dict[str, Any]:
+        """Re-export every captured source selection and refuse stale snapshots."""
+        import hashlib
+        import json
+        if not isinstance(manifest, Mapping) or manifest.get("schema") != "otto.transfer-manifest.v1":
+            raise PortfolioError("source verification requires a transfer manifest")
+        unsigned = dict(manifest)
+        digest = unsigned.pop("manifest_digest", None)
+        actual = hashlib.sha256(json.dumps(unsigned, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        if digest != actual or manifest.get("inventory_complete") is not True:
+            raise PortfolioError("transfer manifest is incomplete or its digest is invalid")
+        selections, snapshots = manifest.get("selection"), manifest.get("projects")
+        if not isinstance(selections, list) or not isinstance(snapshots, list) or len(selections) != len(snapshots):
+            raise PortfolioError("transfer manifest project selection is incomplete")
+        current = self.capture_transfer(selections, actor=actor, request_id=request_id)
+        for captured, observed_row in zip(snapshots, current["manifest"]["projects"]):
+            expected = captured.get("snapshot") if isinstance(captured, Mapping) else None
+            observed = observed_row.get("snapshot") if isinstance(observed_row, Mapping) else None
+            if not isinstance(expected, Mapping) or not isinstance(observed, Mapping) or expected.get("snapshot_digest") != observed.get("snapshot_digest"):
+                return {"outcome": "refused", "reason": "source_revision_advanced_or_export_incomplete",
+                        "project_ref": None if not isinstance(captured, Mapping) else captured.get("snapshot", {}).get("source_ref"),
+                        "read_only": True, "writes": 0}
+        return {"outcome": "verified", "projects": len(snapshots), "manifest_digest": digest,
+                "read_only": True, "writes": 0}
+
+    def verify_transfer_target(self, manifest: Mapping[str, Any], selection: Sequence[Mapping[str, Any]], *,
+                               actor: str, request_id: str, page_limit: int = 100) -> dict[str, Any]:
+        """Independently read the destination and compare preserved project data."""
+        import hashlib
+        import json
+        if not isinstance(manifest, Mapping) or manifest.get("schema") != "otto.transfer-manifest.v1":
+            raise PortfolioError("target verification requires a transfer manifest")
+        unsigned = dict(manifest)
+        supplied_digest = unsigned.pop("manifest_digest", None)
+        computed_digest = hashlib.sha256(json.dumps(unsigned, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        if supplied_digest != computed_digest or manifest.get("inventory_complete") is not True:
+            raise PortfolioError("target verification requires a complete, digest-consistent manifest")
+        projects = manifest.get("projects")
+        if not isinstance(projects, list) or len(projects) != len(selection):
+            raise PortfolioError("target selection must map every captured project")
+
+        def projection(snapshot: Mapping[str, Any]) -> str:
+            project_record = snapshot.get("project", {})
+            project_payload = dict(project_record.get("payload", {}))
+            project_payload.pop("tasks", None)  # identities are compared through task payloads below
+            metadata = dict(project_payload.get("metadata", {})) if isinstance(project_payload.get("metadata"), Mapping) else {}
+            metadata.pop("otto_transfer", None)
+            metadata.pop("otto_transfer_result", None)
+            metadata.pop("otto_request", None)
+            project_payload["metadata"] = metadata
+            task_values = []
+            for item in snapshot.get("tasks", ()):
+                payload = dict(item.get("payload", {}))
+                # These owner-local links are expected to map to destination
+                # identities; the task's authored fields and dependency IDs
+                # remain in the comparison.
+                payload.pop("parent", None)
+                payload.pop("project_ref", None)
+                task_values.append(payload)
+            task_values.sort(key=lambda value: str(value.get("id", "")))
+            linked = {}
+            doc_by_id = {}
+            for item in snapshot.get("documents", ()):
+                payload = item.get("payload", {})
+                document = payload.get("document", {})
+                current = payload.get("current_revision_record", {}).get("payload", {})
+                doc_by_id[document.get("ref", {}).get("id")] = {
+                    "role": document.get("role"), "visibility": document.get("visibility"),
+                    "access_mode": document.get("access_mode"), "content": current.get("content")}
+            for item in snapshot.get("document_links", ()):
+                association = item.get("payload", {}).get("association", {})
+                document = association.get("document", {}).get("ref", {})
+                key = (association.get("namespace"), association.get("key"), association.get("access_mode"))
+                linked[str(key)] = doc_by_id.get(document.get("id"))
+            value = {"project": project_payload, "tasks": task_values, "linked_documents": linked}
+            return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()
+
+        # capture_transfer performs complete finite cursor traversal and rejects
+        # partial page sets before any comparison is reported as verified.
+        target = self.capture_transfer(selection, actor=actor, request_id=request_id, page_limit=page_limit)
+        for expected, observed in zip(projects, target["manifest"]["projects"]):
+            if projection(expected["snapshot"]) != projection(observed["snapshot"]):
+                return {"outcome": "refused", "reason": "target_readback_mismatch",
+                        "source_ref": expected.get("snapshot", {}).get("source_ref"),
+                        "target_ref": observed.get("snapshot", {}).get("source_ref"),
+                        "read_only": True, "writes": 0}
+        return {"outcome": "verified", "projects": len(projects),
+                "source_manifest_digest": manifest.get("manifest_digest"),
+                "target_manifest_digest": target["manifest_digest"], "read_only": True, "writes": 0}
 
     def import_project(self, snapshot: Mapping[str, Any], *, actor: str, request_id: str) -> dict[str, Any]:
         """Import a trusted source-owner export; raw files use import_folder."""

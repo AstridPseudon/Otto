@@ -501,6 +501,35 @@ def validate_transfer(snapshot):
     if (source.kind != 'work.project' or source.revision is None
             or project.get('project_ref') != source.to_dict()):
         raise ValueError('transfer project/source revision refs are inconsistent')
+    project_payload = project.get('payload')
+    if not isinstance(project_payload, Mapping):
+        raise ValueError('transfer project payload is missing')
+    task_refs = snapshot.get('task_refs', project_payload.get('tasks', ()))
+    tasks = snapshot.get('tasks')
+    if not isinstance(task_refs, (list, tuple)) or not isinstance(tasks, list):
+        raise ValueError('transfer task selection is incomplete')
+    def task_identity(value):
+        if not isinstance(value, Mapping):
+            raise ValueError('transfer task record is malformed')
+        ref = value.get('project_ref')
+        if not isinstance(ref, Mapping):
+            raise ValueError('transfer task record has no identity')
+        identity = (ref.get('authority'), ref.get('kind'), ref.get('id'))
+        payload = value.get('payload')
+        parent = payload.get('parent') if isinstance(payload, Mapping) else None
+        if (identity[0] != source.authority or identity[1] != 'work.task'
+                or not isinstance(parent, Mapping)
+                or (parent.get('authority'), parent.get('kind'), parent.get('id'))
+                != (source.authority, source.kind, source.id)):
+            raise ValueError('transfer task is outside the selected project')
+        return identity
+    expected_tasks = []
+    for value in task_refs:
+        ref = ResourceRef.from_dict(value)
+        expected_tasks.append((ref.authority, ref.kind, ref.id))
+    observed_tasks = [task_identity(value) for value in tasks]
+    if len(set(expected_tasks)) != len(expected_tasks) or set(observed_tasks) != set(expected_tasks) or len(observed_tasks) != len(expected_tasks):
+        raise ValueError('transfer task records do not exactly cover the project task references')
     docs, links = snapshot.get('documents', []), snapshot.get('document_links', [])
     if (not isinstance(docs, list) or not isinstance(links, list) or len(docs) > MAX_OPERATION_FILES
             or len(links) > 4 * MAX_OPERATION_FILES):
@@ -528,7 +557,9 @@ def validate_transfer(snapshot):
         association = DocumentAssociation.from_dict(item['payload']['association'])
         if (association.subject.authority != source.authority
                 or association.document.ref.authority != source.authority
-                or association.document.ref.id not in selected):
+                or association.document.ref.id not in selected
+                or (association.subject.authority, association.subject.kind, association.subject.id)
+                != (source.authority, source.kind, source.id)):
             raise ValueError('transfer membership lacks its selected source document')
         if association.namespace == PROJECT_FILES_NAMESPACE:
             if _identity(association.subject) != _identity(source):
@@ -536,4 +567,17 @@ def validate_transfer(snapshot):
             if association.key in paths:
                 raise ValueError('duplicate transfer document path')
             paths[association.key] = ''
+    task_ids = set()
+    for item in tasks:
+        task_payload = item.get('payload')
+        if not isinstance(task_payload, Mapping) or not isinstance(task_payload.get('id'), str):
+            raise ValueError('transfer task payload is incomplete')
+        if task_payload['id'] in task_ids:
+            raise ValueError('duplicate transfer task identifier')
+        task_ids.add(task_payload['id'])
+    for item in tasks:
+        for dependency in item['payload'].get('dependencies', ()):
+            dependency_id = dependency.get('id') if isinstance(dependency, Mapping) else dependency
+            if dependency_id is None or str(dependency_id) not in task_ids:
+                raise ValueError('transfer dependency is not represented by a selected task')
     validate_files(paths)

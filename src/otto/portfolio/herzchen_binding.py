@@ -905,25 +905,37 @@ class FiniteWorkOperations:
         source = _record_dict(record)
         raw_payload = dict(source.get("payload", {}))
         tasks = []
-        for raw_ref in raw_payload.get("tasks", ()):
+        task_refs = payload.get("task_refs", raw_payload.get("tasks", ()))
+        if not isinstance(task_refs, (list, tuple)):
+            return {"outcome": "error", "error": {"code": "invalid_task_refs", "message": "project task references are malformed", "operation": "work.project.export"}, "event_ids": []}
+        for raw_ref in task_refs:
             try:
-                task = self._owner_reader.get_record(self._record_ref(raw_ref))
-            except Exception:
-                task = None
-            if task is not None:
-                tasks.append(_record_dict(task))
+                task_ref = self._record_ref(raw_ref)
+                task = self._owner_reader.get_record(task_ref)
+            except Exception as exc:
+                return {"outcome": "error", "error": {"code": "task_export_incomplete", "message": str(exc), "operation": "work.project.export"}, "event_ids": []}
+            observed_task_ref = getattr(task, "ref", None)
+            if task is None or observed_task_ref is None or (observed_task_ref.authority, observed_task_ref.kind, observed_task_ref.id) != (task_ref.authority, task_ref.kind, task_ref.id):
+                return {"outcome": "error", "error": {"code": "task_export_incomplete", "message": "a referenced task is unavailable or has a mismatched identity", "operation": "work.project.export", "task_ref": _json_value(task_ref)}, "event_ids": []}
+            tasks.append(_record_dict(task))
         documents = []
         requested_documents = payload.get("document_refs", raw_payload.get("documents", ()))
         if not isinstance(requested_documents, (list, tuple)):
             return {"outcome": "error", "error": {"code": "invalid_document_refs", "message": "document_refs must be an array", "operation": "work.project.export"}, "event_ids": []}
         for raw_ref in requested_documents:
             try:
-                document = self._owner_reader.get_record(self._record_ref(raw_ref))
-            except Exception:
-                document = None
+                document_ref = self._record_ref(raw_ref)
+                document = self._owner_reader.get_record(document_ref)
+            except Exception as exc:
+                return {"outcome": "error", "error": {"code": "document_export_incomplete", "message": str(exc), "operation": "work.project.export"}, "event_ids": []}
+            observed_document_ref = getattr(document, "ref", None)
+            if document is None or observed_document_ref is None or (observed_document_ref.authority, observed_document_ref.kind, observed_document_ref.id) != (document_ref.authority, document_ref.kind, document_ref.id):
+                return {"outcome": "error", "error": {"code": "document_export_incomplete", "message": "a selected document is unavailable or has a mismatched identity", "operation": "work.project.export", "document_ref": _json_value(document_ref)}, "event_ids": []}
             if document is not None:
                 document_value = _record_dict(document)
                 current_revision = document_value.get("payload", {}).get("current_revision")
+                if current_revision is None:
+                    return {"outcome": "error", "error": {"code": "document_revision_missing", "message": "selected document has no current revision", "operation": "work.project.export", "document_ref": _json_value(document_ref)}, "event_ids": []}
                 if current_revision is not None:
                     try:
                         current_ref = self._record_ref(current_revision)
@@ -942,7 +954,9 @@ class FiniteWorkOperations:
                                 "revision": revision_payload.get("revision"),
                             }
                     except Exception as exc:
-                        document_value["_revision_read_error"] = type(exc).__name__ + ": " + str(exc)
+                        return {"outcome": "error", "error": {"code": "document_revision_unavailable", "message": str(exc), "operation": "work.project.export", "document_ref": _json_value(document_ref)}, "event_ids": []}
+                    if "current_revision_record" not in document_value:
+                        return {"outcome": "error", "error": {"code": "document_revision_unavailable", "message": "current revision read did not return a complete revision", "operation": "work.project.export", "document_ref": _json_value(document_ref)}, "event_ids": []}
                 documents.append(document_value)
         links = []
         requested_links = payload.get("association_refs", ())
@@ -950,15 +964,19 @@ class FiniteWorkOperations:
             return {"outcome": "error", "error": {"code": "invalid_association_refs", "message": "association_refs must be an array", "operation": "work.project.export"}, "event_ids": []}
         for raw_ref in requested_links:
             try:
-                association = self._owner_reader.get_record(self._record_ref(raw_ref))
-            except Exception:
-                association = None
-            if association is not None:
-                links.append(_record_dict(association))
+                association_ref = self._record_ref(raw_ref)
+                association = self._owner_reader.get_record(association_ref)
+            except Exception as exc:
+                return {"outcome": "error", "error": {"code": "association_export_incomplete", "message": str(exc), "operation": "work.project.export"}, "event_ids": []}
+            observed_association_ref = getattr(association, "ref", None)
+            if association is None or observed_association_ref is None or (observed_association_ref.authority, observed_association_ref.kind, observed_association_ref.id) != (association_ref.authority, association_ref.kind, association_ref.id):
+                return {"outcome": "error", "error": {"code": "association_export_incomplete", "message": "a selected association is unavailable or has a mismatched identity", "operation": "work.project.export", "association_ref": _json_value(association_ref)}, "event_ids": []}
+            links.append(_record_dict(association))
         snapshot = {
             "schema": "otto.project-transfer.v1",
             "source_ref": _json_value(record.ref),
             "project": source,
+            "task_refs": [_json_value(self._record_ref(value)) for value in task_refs],
             "tasks": tasks,
             "documents": documents,
             "document_links": links,
@@ -1131,7 +1149,7 @@ class FiniteWorkOperations:
         for item in raw_tasks:
             value = item.get("payload") if isinstance(item, Mapping) and isinstance(item.get("payload"), Mapping) else item
             if not isinstance(value, Mapping):
-                continue
+                return {"outcome": "rejected", "error": {"code": "invalid_transfer_task", "message": "transfer task record is incomplete"}, "event_ids": []}
             task = dict(value)
             dependencies = []
             for dependency in task.get("dependencies", ()):
@@ -1181,12 +1199,12 @@ class FiniteWorkOperations:
         document_map: dict[tuple[str, str, str], Any] = {}
         for index, item in enumerate(snapshot.get("documents", ())):
             if not isinstance(item, Mapping):
-                continue
+                return {"outcome": "rejected", "error": {"code": "invalid_transfer_document", "message": "transfer document record is incomplete"}, "event_ids": []}
             record_payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
             document_value = record_payload.get("document") if isinstance(record_payload.get("document"), Mapping) else {}
             source_ref_value = document_value.get("ref") if isinstance(document_value.get("ref"), Mapping) else item.get("project_ref")
             if not isinstance(source_ref_value, Mapping):
-                continue
+                return {"outcome": "rejected", "error": {"code": "invalid_transfer_document", "message": "transfer document identity is incomplete"}, "event_ids": []}
             source_ref = self._record_ref(source_ref_value)
             source_key = (source_ref.authority, source_ref.kind, source_ref.id)
             revision_record = item.get("current_revision_record") if isinstance(item.get("current_revision_record"), Mapping) else {}
@@ -1243,17 +1261,17 @@ class FiniteWorkOperations:
         restored_links: list[dict[str, Any]] = []
         for index, item in enumerate(snapshot.get("document_links", ())):
             if not isinstance(item, Mapping):
-                continue
+                return {"outcome": "rejected", "error": {"code": "invalid_transfer_link", "message": "transfer association record is incomplete"}, "event_ids": []}
             link_payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
             association = link_payload.get("association") if isinstance(link_payload.get("association"), Mapping) else {}
             source_document = association.get("document") if isinstance(association.get("document"), Mapping) else {}
             source_document_ref = source_document.get("ref") if isinstance(source_document.get("ref"), Mapping) else None
             if not isinstance(source_document_ref, Mapping):
-                continue
+                return {"outcome": "rejected", "error": {"code": "invalid_transfer_link", "message": "transfer association document identity is incomplete"}, "event_ids": []}
             source_key = (str(source_document_ref.get("authority")), str(source_document_ref.get("kind")), str(source_document_ref.get("id")))
             target_document_ref = document_map.get(source_key)
             if target_document_ref is None:
-                continue
+                return {"outcome": "rejected", "error": {"code": "invalid_transfer_link", "message": "transfer association has no selected document"}, "event_ids": []}
             restored_link = self._link_document(
                 {
                     "project_ref": _json_value(target_ref),

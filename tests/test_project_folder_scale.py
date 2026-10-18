@@ -6,11 +6,14 @@ capped at 50 files and 1 MiB in total at checkout, check-in, import and
 transfer, so this project could not even be checked out.
 """
 import unittest
+from copy import deepcopy
+from unittest.mock import patch
 
 from otto.portfolio.document_navigation import (MAX_BUNDLE_DOCUMENTS, MAX_SEARCH_DOCUMENTS,
                                                 ProjectDocumentOperations, export_bundle_pages)
 from otto.portfolio.fixtures.project_folder import ProjectFolderProof
 from otto.portfolio.project_folder import MAX_OPERATION_FILES, validate_files
+from otto.portfolio.project_folder import validate_transfer
 
 
 def _files(count=200, size=25 * 1024):
@@ -80,6 +83,78 @@ class ProjectFolderScaleTests(ProjectFolderProof):
         result = self.portfolio.import_folder(actor="owner", request_id="too-much-at-once",
             project_json={"title": "Files"}, files=_files(count=MAX_OPERATION_FILES + 1, size=64))
         self.assertEqual(result["outcome"], "rejected", result)
+
+    def test_transfer_capture_is_explicit_and_source_revision_advance_is_refused(self):
+        ref = self.import_files("transfer-capture")['project_ref']
+        initial = self.open(ref, key="transfer-capture-open")
+        ref = self.checkin(initial, [{"operation": "edit", "path": "README.md", "content": "first revision"}],
+            key="transfer-capture-first-edit")["project_ref"]
+        rows = self.reader().list_documents(ref, actor=self.owner.owner_actor)['documents']
+        selection = [{"project_ref": ref,
+            "document_refs": [row["document_ref"] for row in rows],
+            "association_refs": [member["association_ref"] for row in rows for member in row["memberships"]]}]
+        def page(**kwargs):
+            return {"outcome": "listed", "read_only": True,
+                "projects": [{"project_ref": ref}] if kwargs.get("cursor") is None else [],
+                "next_cursor": "second-page" if kwargs.get("cursor") is None else None}
+        with patch.object(self.portfolio, "list_projects", side_effect=page):
+            captured = self.portfolio.capture_transfer(selection, actor="owner", request_id="capture",
+                page_limit=1)
+        self.assertEqual(captured["outcome"], "captured", captured)
+        self.assertEqual(captured["manifest"]["inventory_complete"], True)
+        revisions = {row["payload"]["current_revision"]["revision"]
+            for row in captured["manifest"]["projects"][0]["snapshot"]["documents"]}
+        self.assertGreater(len(revisions), 1)
+        with patch.object(self.portfolio, "list_projects", side_effect=page):
+            self.assertEqual(self.portfolio.verify_transfer_source(captured["manifest"], actor="owner",
+                request_id="source-check")["outcome"], "verified")
+        opened = self.open(ref)
+        self.checkin(opened, [{"operation": "edit", "path": "README.md", "content": "changed"}],
+            key="advance-source")
+        with patch.object(self.portfolio, "list_projects", side_effect=page):
+            verified = self.portfolio.verify_transfer_source(captured["manifest"], actor="owner",
+                request_id="source-check-after-edit")
+        self.assertEqual(verified["outcome"], "refused", verified)
+
+    def test_transfer_export_refuses_a_missing_selected_document(self):
+        ref = self.import_files("transfer-missing")['project_ref']
+        missing = {"authority": "d01-fixture", "kind": "dat.content.document", "id": "not-present"}
+        result = self.portfolio.export_project(ref, document_refs=[missing], actor="owner",
+            request_id="missing-document")
+        self.assertNotEqual(result["outcome"], "exported", result)
+
+    def test_transfer_covers_all_tasks_above_one_hundred(self):
+        ref = self.import_files("many-task-transfer")['project_ref']
+        for index in range(105):
+            self.owner.graph.create_task(ref, title=f"Task {index:03d}",
+                logical_request_key=f"many-task-transfer:{index}")
+        task_refs = [task.ref.to_dict() for task in self.owner.graph.list(project=ref, kind="task")]
+        result = self.portfolio.export_project(ref, task_refs=task_refs, actor="owner", request_id="many-task-export")
+        self.assertEqual(result["outcome"], "exported", result)
+        self.assertEqual(len(result["snapshot"]["tasks"]), 105)
+        validate_transfer(result["snapshot"])
+        missing = deepcopy(result["snapshot"])
+        missing["tasks"].pop()
+        with self.assertRaises(ValueError):
+            validate_transfer(missing)
+        changed_dependency = deepcopy(result["snapshot"])
+        changed_dependency["tasks"][0]["payload"]["dependencies"] = ["omitted-task"]
+        with self.assertRaises(ValueError):
+            validate_transfer(changed_dependency)
+
+    def test_transfer_validation_detects_document_body_change(self):
+        from copy import deepcopy
+        ref = self.import_files("changed-body-transfer")['project_ref']
+        rows = self.reader().list_documents(ref, actor=self.owner.owner_actor)['documents']
+        result = self.portfolio.export_project(ref,
+            document_refs=[row["document_ref"] for row in rows],
+            association_refs=[member["association_ref"] for row in rows for member in row["memberships"]],
+            actor="owner", request_id="changed-body-export")
+        snapshot = deepcopy(result["snapshot"])
+        revision = snapshot["documents"][0]["current_revision_record"]["payload"]
+        revision["content"] = "changed after export"
+        with self.assertRaises(ValueError):
+            validate_transfer(snapshot)
 
 
 def load_tests(loader, tests, pattern):
