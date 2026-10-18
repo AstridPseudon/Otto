@@ -192,11 +192,18 @@ class Runner:
         records, invalid = self._store.all_records()
         self.invalid = invalid
         running = {record["run_id"] for record in records if record["state"] == "running"}
+        by_id = {record["run_id"]: record for record in records}
+        unresolved: list[dict[str, Any]] = []
         for record in records:
             if record["state"] == "running":
                 disposition = custody.resume_cleanup(self._latch_path(record["run_id"]), self._grace, self._census_fn)
                 self._put_record(record, state="unknown", outcome="lost_in_restart", exit_code=None,
                                  custody=_custody_state(disposition), settled_at=self._clock())
+                if not disposition.gone:
+                    unresolved.append(record)
+            elif record["state"] == "unknown" and record.get("custody") == "uncertain":
+                # Unknown is terminal evidence, but an uncertain custody result still holds capacity.
+                unresolved.append(record)
         for record in records:
             if record["state"] != "queued":
                 continue
@@ -215,6 +222,65 @@ class Runner:
         heavy = self._pool.snapshot()["heavy"]
         for ticket in heavy["leases"] + heavy["waiting"]:
             self._pool.release_heavy(ticket)
+        self._restore_nested_holds(unresolved, by_id)
+
+    def _restore_nested_holds(self, children: list[dict[str, Any]],
+                              records: Mapping[str, dict[str, Any]]) -> None:
+        """Recreate capacity claims for nested trees whose custody remains uncertain."""
+        roots: dict[str, dict[str, Any]] = {}
+        fallbacks: dict[str, dict[str, Any]] = {}
+        for record in children:
+            root = self._verified_scope_root(record, records)
+            if root is not None:
+                roots[root["run_id"]] = root
+            else:
+                # Without a complete, verified ancestry chain, retain this run's own claim.
+                fallbacks[record["run_id"]] = record
+        for root_id, root in roots.items():
+            units = min(max(1, int(root.get("units", 1))), self._capacity)
+            self._install_recovery_holder(root_id, root, units, "parent")
+        for run_id, record in fallbacks.items():
+            requested = record.get("weight_requested", 1)
+            units = min(max(1, requested if type(requested) is int else 1), self._capacity)
+            self._install_recovery_holder(run_id, record, units, "child")
+
+    @staticmethod
+    def _verified_scope_root(record: dict[str, Any],
+                             records: Mapping[str, dict[str, Any]]) -> dict[str, Any] | None:
+        """Return the top verified ancestor of a recovery scope, rejecting gaps and cycles."""
+        current = record
+        seen: set[str] = set()
+        while True:
+            run_id = current.get("run_id")
+            if not isinstance(run_id, str) or run_id in seen:
+                return None
+            seen.add(run_id)
+            parent_id = current.get("nested_in")
+            if parent_id is None:
+                units = current.get("units")
+                return current if type(units) is int and units > 0 else None
+            if not isinstance(parent_id, str):
+                return None
+            parent = records.get(parent_id)
+            if parent is None:
+                return None
+            current = parent
+
+    def _install_recovery_holder(self, run_id: str, record: dict[str, Any], units: int,
+                                 kind: str) -> None:
+        holder = Lease(run_id, None, units, False, record)
+        holder.ticket = self._claim_recovery("runner:recovery-%s:%s" % (kind, run_id), units)
+        holder.done = holder.closed = True
+        self._leases[run_id] = holder
+
+    def _claim_recovery(self, owner: str, units: int) -> str:
+        ticket = self._pool.queue_heavy(owner, units, pid=None)
+        if not self._pool.claim_heavy(ticket):
+            self._pool.release_heavy(ticket)
+            # A valid custody claim must remain visible even if other adopted work fills the pool.
+            # The runner pool is the accounting authority, so fail closed on an impossible overcommit.
+            raise RuntimeError("could not restore unresolved runner capacity")
+        return ticket
 
     def start(self) -> None:
         """Begin admitting queued runs, and keep pumping while any wait."""

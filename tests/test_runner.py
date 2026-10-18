@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
+from herzchen.fleet import custody as custody_module
 from herzchen.fleet.custody import Custody
 from herzchen.fleet.runner import (
     EXIT_UNKNOWN,
@@ -572,6 +573,115 @@ def test_restart_lost_running_and_queued_rules(harness):
     assert again.await_run("q-ok", timeout=10)["exit_code"] == 0
     assert lines(queued_counter) == 1
     harness.retire(again)
+
+
+@pytest.mark.parametrize("parent_record", ["missing", "unverifiable", "verified"])
+def test_restart_keeps_capacity_reserved_for_unresolved_nested_child(harness, monkeypatch, parent_record):
+    """An uncertain surviving nested child keeps its requested capacity reserved across restart."""
+    pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
+    store = harness.store
+    child_argv = [PY, "-c", "import time; time.sleep(60)"]
+    parent = harness.record(store, "recover-parent", QUICK, "c1", "running",
+                            units=3, weight_requested=3, started_at=time.time())
+    children = [harness.record(store, "recover-child-%s" % index, child_argv, "c1", "running",
+                               units=0, weight_requested=1, nested_in="recover-parent",
+                               started_at=time.time()) for index in (1, 2)]
+    if parent_record == "verified":
+        store.put(parent)
+    elif parent_record == "unverifiable":
+        bad_parent = dict(parent)
+        bad_parent["task"] = "tampered"
+        harness.write_raw(bad_parent)
+    for child in children:
+        store.put(child)
+
+    def cleanup(path, grace, census_fn):
+        run_id = Path(path).stem
+        return custody_module.Disposition("uncertain" if run_id.startswith("recover-child-") else "gone")
+
+    monkeypatch.setattr(custody_module, "resume_cleanup", cleanup)
+
+    runner = harness.runner(pool=pool, store=harness.new_store())
+    for child in children:
+        assert runner.await_run(child["run_id"], timeout=10)["done"]
+        assert store.get(child["run_id"])["custody"] == "uncertain"
+    reserved = 3 if parent_record == "verified" else 2
+    expected_holders = ({("recover-parent", 3)} if parent_record == "verified" else
+                        {("recover-child-1", 1), ("recover-child-2", 1)})
+
+    def assert_recovery_holds(current):
+        status = current.status()
+        assert status["used"] == reserved
+        assert status["pool"]["pool"]["held_units"] == reserved
+        assert {(holder["run_id"], holder["units"]) for holder in status["holders"]} == expected_holders
+
+    assert_recovery_holds(runner)
+
+    unrelated = harness.submit(runner, QUICK, weight=2, request_id="recovery-unrelated")
+    assert store.get(unrelated)["state"] == "queued"
+    assert store.get(unrelated)["started_at"] is None
+    harness.retire(runner)
+
+    # An uncertain child that remains unresolved through another process restart keeps its reservation.
+    again = harness.runner(pool=CapacityPool(CapacityPolicy(heavy_headroom=3)), store=harness.new_store())
+    assert_recovery_holds(again)
+    harness.retire(again)
+
+
+def test_restart_nested_uncertain_grandchild_uses_verified_root_reservation(harness, monkeypatch):
+    pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
+    store = harness.store
+    root = harness.record(store, "tree-root", QUICK, "c1", "running", units=3,
+                          weight_requested=3, started_at=time.time())
+    child = harness.record(store, "tree-child", QUICK, "c1", "running", units=0,
+                           weight_requested=1, nested_in="tree-root", started_at=time.time())
+    grandchild = harness.record(store, "tree-grandchild", QUICK, "c1", "running", units=0,
+                                weight_requested=1, nested_in="tree-child", started_at=time.time())
+    for record in (root, child, grandchild):
+        store.put(record)
+
+    def cleanup(path, grace, census_fn):
+        disposition = "uncertain" if Path(path).stem == "tree-grandchild" else "gone"
+        return custody_module.Disposition(disposition)
+
+    monkeypatch.setattr(custody_module, "resume_cleanup", cleanup)
+    runner = harness.runner(pool=pool, store=harness.new_store())
+
+    assert runner.await_run("tree-grandchild", timeout=10)["done"]
+    status = runner.status()
+    assert status["used"] == 3
+    assert status["pool"]["pool"]["held_units"] == 3
+    assert [(holder["run_id"], holder["units"]) for holder in status["holders"]] == [("tree-root", 3)]
+
+    unrelated = harness.submit(runner, QUICK, weight=1, request_id="tree-unrelated")
+    assert store.get(unrelated)["state"] == "queued"
+    assert store.get(unrelated)["started_at"] is None
+    harness.retire(runner)
+
+
+def test_restart_keeps_capacity_for_uncertain_top_level_run(harness, monkeypatch):
+    pool = CapacityPool(CapacityPolicy(heavy_headroom=3))
+    store = harness.store
+    root = harness.record(store, "uncertain-root", QUICK, "c1", "running", units=2,
+                          weight_requested=2, started_at=time.time())
+    store.put(root)
+
+    def cleanup(path, grace, census_fn):
+        return custody_module.Disposition("uncertain" if Path(path).stem == "uncertain-root" else "gone")
+
+    monkeypatch.setattr(custody_module, "resume_cleanup", cleanup)
+    runner = harness.runner(pool=pool, store=harness.new_store())
+
+    assert runner.await_run("uncertain-root", timeout=10)["done"]
+    status = runner.status()
+    assert status["used"] == 2
+    assert status["pool"]["pool"]["held_units"] == 2
+    assert [(holder["run_id"], holder["units"]) for holder in status["holders"]] == [("uncertain-root", 2)]
+
+    unrelated = harness.submit(runner, QUICK, weight=2, request_id="uncertain-unrelated")
+    assert store.get(unrelated)["state"] == "queued"
+    assert store.get(unrelated)["started_at"] is None
+    harness.retire(runner)
 
 
 def test_restart_kills_orphaned_tree_by_latch(harness):
