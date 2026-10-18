@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from herzchen.contracts import ResourceRef
+from tests.execution_helpers import start_worker
 
 
 def _landing_api():
@@ -629,7 +630,7 @@ emit({'type':'result','subtype':'success','is_error':False,'session_id':session,
         request['instruction_contract']['authority']['workspace_roots'] = [workspace]
         request['instruction_contract']['read_targets'] = [workspace]
 
-        result = app.assign_and_start(**request)
+        result = start_worker(app, request)
 
         assert result['outcome'] == 'succeeded', result.get('result', {}).get('error')
         due = f.port.read_due(result['schedule_id'])
