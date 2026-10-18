@@ -11,6 +11,7 @@ onboarding wrapper's own start (it is untouched and retires at CUTOVER).
 """
 import json
 import os
+import plistlib
 import queue
 import shutil
 import stat
@@ -120,6 +121,36 @@ class ProductFixture(HostctlFixture):
 
 
 class ProductStartTests(ProductFixture):
+    def test_launchd_recovers_after_unsuccessful_owner_exit_and_explicit_stop_stays_stopped(self):
+        self._prepared()
+        launch_path = Path(self.home) / "launchd" / "org.otto.owner.plist"
+        definition = plistlib.loads(launch_path.read_bytes())
+        installed = host_config.load(Path(self.home))
+        self.assertEqual(definition["ProgramArguments"][:2], [installed["python"], "-c"])
+        self.assertEqual(definition["ProgramArguments"][2], ENTRY)
+        self.assertEqual(definition["ProgramArguments"][-2:], ["service", "run"])
+        self.assertNotIn("shared-project-services", definition["ProgramArguments"])
+        self.assertEqual(definition["KeepAlive"], {"SuccessfulExit": False})
+
+        first = SpawnedProduct.from_definition(self.home, definition)
+        self.addCleanup(first.kill)
+        first_ready = first.wait_for("ready")
+        self.assertIsNone(first.process.poll(), "owner must still be running before the simulated crash")
+        first.kill()
+        self.assertNotEqual(first.process.returncode, 0, "simulated crash must produce an unsuccessful owner exit")
+
+        process = SpawnedProduct.from_definition(self.home, definition)
+        self.addCleanup(process.kill)
+        second_ready = process.wait_for("ready")
+        self.assertEqual(second_ready["startup"]["outcome"], "reconciled", second_ready)
+        self.assertGreater(second_ready["generation"], first_ready["generation"])
+        self.assertEqual(second_ready["attached_projects"], ["demo-run"])
+
+        code, result = self._ottoctl("service", "stop")
+        self.assertEqual((code, result["outcome"]), (0, "stop_requested"), result)
+        self.assertEqual(process.process.wait(timeout=60), 0)
+        self.assertEqual(definition["KeepAlive"], {"SuccessfulExit": False})
+
     def test_service_run_attaches_registered_project(self):
         self._prepared()
         events, thread = self._product()
@@ -176,13 +207,26 @@ class SpawnedProduct:
     count = 0
 
     def __init__(self, home, *flags):
+        self._start(home, [PY, "-c", ENTRY, "--home", home, "service", "run", *flags], cwd=ROOT,
+                    env={**{key: value for key, value in os.environ.items() if not key.startswith("OTTO_")},
+                         "PYTHONPATH": str(ROOT / "src")})
+
+    @classmethod
+    def from_definition(cls, home, definition):
+        """Start exactly the generated launchd command, environment, and working directory."""
+        instance = cls.__new__(cls)
+        env = {key: value for key, value in os.environ.items() if not key.startswith("OTTO_")}
+        env.update(definition["EnvironmentVariables"])
+        instance._start(home, definition["ProgramArguments"],
+                        cwd=definition["WorkingDirectory"], env=env)
+        return instance
+
+    def _start(self, home, argv, *, cwd, env):
         SpawnedProduct.count += 1
         suffix = str(SpawnedProduct.count)
         self.out, self.err = Path(home).parent / ("spawn%s.out" % suffix), Path(home).parent / ("spawn%s.err" % suffix)
-        env = {key: value for key, value in os.environ.items() if not key.startswith("OTTO_")}
-        env["PYTHONPATH"] = str(ROOT / "src")
-        self.process = subprocess.Popen([PY, "-c", ENTRY, "--home", home, "service", "run", *flags],
-                                        stdout=self.out.open("ab"), stderr=self.err.open("ab"), env=env, cwd=ROOT)
+        self.process = subprocess.Popen(argv, stdout=self.out.open("ab"), stderr=self.err.open("ab"),
+                                        env=env, cwd=cwd)
 
     def documents(self):
         return documents(self.out.read_text()) if self.out.exists() else []

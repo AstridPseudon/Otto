@@ -215,6 +215,8 @@ def _host_opt(args: argparse.Namespace, config: Mapping[str, Any]) -> Optional[M
 
 def cmd_install(args: argparse.Namespace) -> Any:
     from .owner import attach_store, create_store
+    from .owner import _private_dir
+    from .supervision import write_launchd_definition
     home = _home(args)
     if host_config.config_path(home).exists():
         raise host_config.HostConfigError("Otto is already installed at " + str(home))
@@ -222,10 +224,14 @@ def cmd_install(args: argparse.Namespace) -> Any:
         owner_actor=args.owner, credential_ref=args.credential_ref, python=str(Path(sys.executable).absolute()),
         operator_actor=args.operator)
     config = create_store(config) if args.create else attach_store(config)
+    for directory in (home / "logs", home / "launchd"):
+        _private_dir(directory)
+    launchd_path = write_launchd_definition(config, label="org.otto.owner",
+                                            path=home / "launchd" / "org.otto.owner.plist")
     host_config.write(home, config)
     _receipt(home, "install", {"installation": config})
     return {"outcome": "created" if args.create else "attached", "home": str(home), "store": config["store"],
-            "owner": config["owner"], "provider_called": False}
+            "owner": config["owner"], "launchd_definition": str(launchd_path), "provider_called": False}
 
 
 def cmd_repo_map(args: argparse.Namespace) -> Any:

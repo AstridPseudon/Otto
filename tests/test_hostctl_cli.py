@@ -311,6 +311,29 @@ class HostctlCliTest(HostctlFixture):
         out = self._init()
         self.assertEqual(out["outcome"], "created")
         self.assertFalse(out["provider_called"])
+        import plistlib
+        from otto.hostctl.supervision import product_argv
+
+        config = host_config.load(Path(self.home))
+        selected = config["owner_composition"]
+        source = Path(host_config.__file__).resolve().parents[2]
+        self.assertEqual(selected["kind"], "product-service")
+        self.assertEqual(selected["src"], str(source))
+        self.assertEqual(selected["cwd"], str(source.parent))
+        self.assertEqual(config["python"], str(Path(sys.executable).absolute()))
+        self.assertEqual(selected["stdout"], str(Path(self.home) / "logs" / "owner.stdout.log"))
+        self.assertEqual(selected["stderr"], str(Path(self.home) / "logs" / "owner.stderr.log"))
+        self.assertTrue((Path(self.home) / "logs").is_dir())
+        launch_path = Path(self.home) / "launchd" / "org.otto.owner.plist"
+        self.assertEqual(out["launchd_definition"], str(launch_path))
+        self.assertTrue(launch_path.is_file())
+        definition = plistlib.loads(launch_path.read_bytes())
+        self.assertEqual(definition["ProgramArguments"], product_argv(config))
+        self.assertEqual(definition["WorkingDirectory"], str(source.parent))
+        self.assertEqual(definition["EnvironmentVariables"]["PYTHONPATH"], str(source))
+        self.assertEqual(definition["StandardOutPath"], selected["stdout"])
+        self.assertEqual(definition["StandardErrorPath"], selected["stderr"])
+        self.assertEqual(definition["KeepAlive"], {"SuccessfulExit": False})
         config_path = os.path.join(self.home, "installation.json")
         self.assertEqual(os.stat(config_path).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(self.home).st_mode & 0o777, 0o700)

@@ -300,18 +300,18 @@ def product_argv(config: Mapping[str, Any], *, hold_dispatch: bool = False) -> l
 
 def _product_launchd(config: Mapping[str, Any], label: str) -> bytes:
     selected = config['owner_composition']
-    src = selected.get('src')
-    if not isinstance(src, str) or not Path(src).is_absolute() or not all(
-            isinstance(selected.get(key), str) for key in ('cwd', 'stdout', 'stderr')):
+    paths = {key: selected.get(key) for key in ('src', 'cwd', 'stdout', 'stderr')}
+    if not all(isinstance(value, str) and value and '\x00' not in value and Path(value).is_absolute()
+               for value in paths.values()):
         raise ValueError('product composition needs its absolute source tree, working directory and log paths')
     # A start that fails restarts after the throttle and reconciles before it admits anything; an
     # orderly stop and an explicit pause exit 0 and stay down.
     return plistlib.dumps({'Label': label, 'ProgramArguments': product_argv(config,
             hold_dispatch=bool(selected.get('hold_dispatch'))),
-        'WorkingDirectory': selected['cwd'], 'ProcessType': 'Interactive', 'RunAtLoad': True,
+        'WorkingDirectory': paths['cwd'], 'ProcessType': 'Interactive', 'RunAtLoad': True,
         'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 60,
-        'StandardOutPath': selected['stdout'], 'StandardErrorPath': selected['stderr'],
-        'EnvironmentVariables': {'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONPATH': src}}, sort_keys=True)
+        'StandardOutPath': paths['stdout'], 'StandardErrorPath': paths['stderr'],
+        'EnvironmentVariables': {'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONPATH': paths['src']}}, sort_keys=True)
 
 
 def launchd_definition(config: Mapping[str, Any], *, label: str) -> bytes:

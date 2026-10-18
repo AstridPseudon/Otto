@@ -83,6 +83,12 @@ def new_installation(home: Path, *, store_path: str, authority: str, owner_actor
             raise HostConfigError("repository path for " + repr(name) + " must be nonblank path text")
         repo_paths[name] = str(Path(os.path.expanduser(str(local_path))).absolute())
     account = pwd.getpwuid(os.geteuid())
+    # The installed owner starts this checkout's product service directly.
+    # Resolve from the module that was actually imported so editable/source
+    # installs keep their precise code tree, interpreter, and home.
+    from .supervision import PRODUCT_COMPOSITION
+    source = Path(__file__).resolve().parents[2]
+    logs = home / "logs"
     return {
         "schema": SCHEMA,
         "home": str(home),
@@ -97,6 +103,13 @@ def new_installation(home: Path, *, store_path: str, authority: str, owner_actor
         # empty map admits no repository for fleet assignment work.
         "repositories": repo_paths,
         "python": python,
+        "owner_composition": {
+            "kind": PRODUCT_COMPOSITION,
+            "src": str(source),
+            "cwd": str(source.parent),
+            "stdout": str(logs / "owner.stdout.log"),
+            "stderr": str(logs / "owner.stderr.log"),
+        },
     }
 
 
