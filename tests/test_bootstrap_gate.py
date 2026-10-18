@@ -206,6 +206,18 @@ class LandGate(Scratch):
         finally:
             owner.terminate()
 
+    def test_temporary_command_directory_orphan_is_named(self):
+        self.lab("T31", {"note.txt": "x\n"})
+        marker = self.tmp / "landing-tmpdir"
+        check = ("%s -c \"from pathlib import Path; import os; root=Path(os.environ['TMPDIR']); "
+                 "(root/'herzchen-command-leak').mkdir(); Path('%s').write_text(str(root))\" && "
+                 "%s -m pytest -q tests/test_herzchen_boundary.py") % (sys.executable, marker, sys.executable)
+        r = self.land("T31", "--check", check)
+        self.assertRefused(r, "T31", "orphan herzchen-command directory")
+        diagnostic = self.log("T31") + r.stdout + r.stderr
+        landing_tmpdir = Path(marker.read_text())
+        self.assertIn(str(landing_tmpdir / "herzchen-command-leak"), diagnostic)
+
     def test_a_landing_stopped_by_a_signal_never_reports_landed(self):
         started = self.tmp / "check-started"
         check = "%s -c \"open('%s','w').close(); import time; time.sleep(600)\"" % (sys.executable, started)
