@@ -356,10 +356,45 @@ stage2_owner_alive() {
 }
 
 stage2_wait_marker() {  # NAME
-  local marker=""
+  local marker="" host request_id client_rc state reported_no_response=0
+  host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  request_id="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(v.get("request_id", "") if v.get("outcome") == "pending" else "")' \
+    "$RAW/stage2-manager-start.json" 2>/dev/null || true)"
+  if [ -f "$RAW/stage2-manager-start.json" ] && [ -z "$request_id" ]; then
+    if ! "$PY" -I "$REPORT_PY" stage2-manager-start-failed --status "$RAW/stage2-manager-start.json" \
+        >> "$RAW/stage2-setup-errors.txt" 2>&1; then
+      echo "manager start reached a terminal failure before the $1 PID marker appeared" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
+  fi
   while :; do
     marker="$(find "$CANARY_DIR" -name ".perch-$1.pid" -print -quit 2>/dev/null || true)"
     [ -z "$marker" ] || { printf '%s\n' "$marker"; return 0; }
+    if [ -n "$request_id" ]; then
+      : > "$RAW/stage2-manager-start-owner-status.json"
+      client_rc=0
+      stage2_host_client --host "$host" request-status --request-id "$request_id" \
+        > "$RAW/stage2-manager-start-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || client_rc=$?
+      if [ -s "$RAW/stage2-manager-start-owner-status.json" ]; then
+        reported_no_response=0
+        if ! state="$("$PY" -I "$REPORT_PY" stage2-manager-start-state \
+            --status "$RAW/stage2-manager-start-owner-status.json" --expected-request-id "$request_id" \
+            2>> "$RAW/stage2-setup-errors.txt")"; then
+          echo "owner request-status returned invalid or mismatched retained manager data (client exit $client_rc)" >> "$RAW/stage2-setup-errors.txt"
+          return 1
+        fi
+        if [ "$state" = failure ]; then
+          echo "manager start reached a retained terminal failure before the $1 PID marker appeared" >> "$RAW/stage2-setup-errors.txt"
+          return 1
+        fi
+        if [ "$state" = terminal ]; then request_id=""; fi
+      else
+        if [ "$reported_no_response" = 0 ]; then
+          echo "owner request-status returned no retained response (client exit $client_rc); continuing the live-owner wait" >> "$RAW/stage2-setup-errors.txt"
+          reported_no_response=1
+        fi
+      fi
+    fi
     if ! stage2_owner_alive; then
       echo "owner exited before the $1 PID marker appeared" >> "$RAW/stage2-setup-errors.txt"
       return 1

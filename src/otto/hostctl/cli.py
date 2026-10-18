@@ -218,14 +218,57 @@ def cmd_install(args: argparse.Namespace) -> Any:
     home = _home(args)
     if host_config.config_path(home).exists():
         raise host_config.HostConfigError("Otto is already installed at " + str(home))
+    entrypoint = _client_entrypoint(home)
+    if os.path.lexists(entrypoint):
+        raise host_config.HostConfigError("refusing to replace an existing Otto client entrypoint: " + str(entrypoint))
     config = host_config.new_installation(home, store_path=args.store, authority=args.authority,
         owner_actor=args.owner, credential_ref=args.credential_ref, python=str(Path(sys.executable).absolute()),
         operator_actor=args.operator)
-    config = create_store(config) if args.create else attach_store(config)
-    host_config.write(home, config)
-    _receipt(home, "install", {"installation": config})
+    _stage_client_entrypoint(entrypoint)
+    try:
+        config = create_store(config) if args.create else attach_store(config)
+        host_config.write(home, config)
+        _receipt(home, "install", {"installation": config})
+    except Exception:
+        entrypoint.unlink(missing_ok=True)
+        raise
     return {"outcome": "created" if args.create else "attached", "home": str(home), "store": config["store"],
-            "owner": config["owner"], "provider_called": False}
+            "owner": config["owner"], "tool_entrypoint": str(entrypoint), "provider_called": False}
+
+
+def _client_entrypoint(home: Path) -> Path:
+    return home / "bin" / "ottoctl"
+
+
+def _stage_client_entrypoint(path: Path) -> None:
+    """Install a runnable client shim alongside this active Otto package."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.path.lexists(path):
+        raise host_config.HostConfigError("refusing to replace an existing Otto client entrypoint: " + str(path))
+    path.write_text(_client_entrypoint_source(), encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _client_entrypoint_source() -> str:
+    source_root = Path(__file__).resolve().parents[2]
+    return ("#!" + str(Path(sys.executable).absolute()) + "\n"
+            "import sys\n"
+            "sys.path.insert(0, " + repr(str(source_root)) + ")\n"
+            "from otto.hostctl.cli import main\n"
+            "raise SystemExit(main())\n")
+
+
+def _require_client_entrypoint(home: Path) -> Path:
+    path = _client_entrypoint(home)
+    try:
+        valid = (not path.is_symlink() and path.is_file() and os.access(path, os.X_OK)
+                 and path.read_text(encoding="utf-8") == _client_entrypoint_source())
+    except OSError:
+        valid = False
+    if not valid:
+        raise host_config.HostConfigError("Otto client entrypoint is missing, changed, or not executable: " + str(path)
+                                          + "; reinstall Otto before registering a project")
+    return path
 
 
 def cmd_repo_map(args: argparse.Namespace) -> Any:
@@ -400,6 +443,7 @@ def cmd_register(args: argparse.Namespace) -> Any:
     from otto.agents.host_profiles import profile as model_profile
     from .register import plan, register
     home = _home(args)
+    _require_client_entrypoint(home)
     config = host_config.load(home)
     bundle = _client_bundle(args)
     run = bundle["run"]

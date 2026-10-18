@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import subprocess
 import sys
 import tempfile
 import threading
@@ -311,6 +312,15 @@ class HostctlCliTest(HostctlFixture):
         out = self._init()
         self.assertEqual(out["outcome"], "created")
         self.assertFalse(out["provider_called"])
+        entrypoint = Path(self.home, "bin", "ottoctl")
+        self.assertTrue(entrypoint.is_file())
+        self.assertTrue(os.access(entrypoint, os.X_OK))
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        delivered = subprocess.run([str(entrypoint), "--home", self.home, "--help"], cwd="/", env=env,
+                                   capture_output=True, text=True, check=False)
+        self.assertEqual(delivered.returncode, 0, delivered.stderr)
+        self.assertIn("ottoctl", delivered.stdout)
         config_path = os.path.join(self.home, "installation.json")
         self.assertEqual(os.stat(config_path).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(self.home).st_mode & 0o777, 0o700)
@@ -634,6 +644,15 @@ class OwnerServiceClientTests(HostctlFixture):
                                        "--launcher", self.launcher)
         self.assertEqual((code, admitted["outcome"]), (0, "admitted"), admitted)
         self.assertFalse(os.path.exists(os.path.join(client, "installation.json")))
+        client_entrypoint = Path(client, "bin", "ottoctl")
+        self.assertTrue(client_entrypoint.is_file())
+        self.assertTrue(os.access(client_entrypoint, os.X_OK))
+        clean_env = os.environ.copy()
+        clean_env.pop("PYTHONPATH", None)
+        delivered = subprocess.run([str(client_entrypoint), "--home", client, "whoami"], cwd="/",
+                                   env=clean_env, capture_output=True, text=True, check=False)
+        self.assertEqual(delivered.returncode, 0, delivered.stderr)
+        self.assertEqual(json.loads(delivered.stdout)["principal"], "claude-code-orchestrator")
         with open(os.path.join(client, "client.json")) as stream:
             text = stream.read()
         self.assertNotIn("owner.sqlite", text, "a client home must not name the Store")
@@ -659,6 +678,19 @@ class OwnerServiceClientTests(HostctlFixture):
         self.assertEqual((code, down["error"]["code"]), (3, "owner_service_not_running"), down)
         code, status = self._client(client, "service", "status")
         self.assertEqual(status["outcome"], "closed", status)
+
+    def test_register_refuses_when_advertised_client_entrypoint_is_missing(self):
+        self._init()
+        Path(self.home, "bin", "ottoctl").unlink()
+
+        code, refused = self._ottoctl("project", "register", "--bundle", self.bundle,
+                                      "--worktree", self.worktree)
+
+        self.assertEqual(code, 1, refused)
+        self.assertEqual(refused["error"]["code"], "HostConfigError")
+        self.assertIn("entrypoint is missing", refused["error"]["message"])
+        code, projects = self._ottoctl("projects")
+        self.assertEqual((code, projects["projects"]), (0, []), projects)
 
     def test_a_closed_run_is_kept_as_withdrawn_history_with_its_whole_run_dir(self):
         self._init()

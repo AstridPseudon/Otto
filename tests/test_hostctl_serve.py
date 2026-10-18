@@ -51,6 +51,8 @@ def finish(text):
           "uuid": "r-" + uuid.uuid4().hex[:8], "result": text, "usage": {{"input_tokens": 3, "output_tokens": 2}}}})
     sys.exit(0)
 def bash(name, command):
+    with open(os.path.join(os.getcwd(), "delivered-client-calls.txt"), "a") as stream:
+        stream.write(" ".join(command) + "\n")
     emit({{"type": "assistant", "uuid": "a-" + name, "session_id": session, "message": {{"role": "assistant",
           "model": model, "content": [{{"type": "tool_use", "id": name, "name": "Bash",
           "input": {{"command": " ".join(command)}}}}]}}}})
@@ -73,8 +75,7 @@ if "Bash" not in tools:
     emit({{"type": "user", "uuid": "t-w", "session_id": session, "message": {{"role": "user", "content": [
           {{"type": "tool_result", "tool_use_id": "write-1", "is_error": False, "content": "written"}}]}}}})
     finish("Worker delivered answer.txt for T1.")
-ottoctl = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, {src!r}); "
-           "from otto.hostctl.cli import main; sys.exit(main(sys.argv[1:]))", "--home", {home!r}, "manager"]
+ottoctl = [{home!r} + "/bin/ottoctl", "--home", {home!r}, "manager"]
 # The first work turn also resumes the initializer's session; count work
 # turns per session to tell the first turn from owner continuations.
 marker = os.path.join(cwd, ".turns-" + session)
@@ -597,9 +598,18 @@ class ServeTests(HostctlFixture):
         code, applied = self._ottoctl("operating-setup", "--project", "demo-run", "--operation", "apply")
         self.assertEqual((code, applied["outcome"], applied["started"]), (0, "replayed", False), applied)
         schedule = applied["setup"]["roles"]["manager"]
-        started = self.orchestrator("start-manager", "--schedule-id", schedule)
+        # The manager and its scripted Bash calls run in this test process tree;
+        # skip only the OS sandbox probe, which this managed test environment denies.
+        with patch("otto.agents.claude_cli.MacWriteScope.preflight",
+                   lambda scope: {**scope.pin, "verified": True}), \
+             patch("otto.agents.claude_cli.MacWriteScope.wrap", lambda _scope, command, **_kwargs: command):
+            started = self.orchestrator("start-manager", "--schedule-id", schedule)
         self.assertEqual(started.get("outcome"), "succeeded", started)
         root = Path(self.worktree)
+        delivered_calls = (root / "delivered-client-calls.txt").read_text().splitlines()
+        self.assertTrue(delivered_calls)
+        self.assertTrue(all(call.startswith(str(Path(self.home, "bin", "ottoctl")) + " ")
+                            for call in delivered_calls), delivered_calls)
         whoami = json.loads((root / "whoami.json").read_text())
         self.assertEqual(whoami["outcome"], "read", whoami)
         context = whoami["caller_context"]
@@ -770,6 +780,16 @@ class ManagerLoopTests(ServeTests):
 
         self._start_service = start_service_with_fixture_repository
         super().setUp()
+        # Keep fake manager continuations runnable in this restricted test
+        # environment; the separately tested Mac scope owns the OS fence.
+        scope_preflight = patch("otto.agents.claude_cli.MacWriteScope.preflight",
+                                lambda scope: {**scope.pin, "verified": True})
+        scope_wrap = patch("otto.agents.claude_cli.MacWriteScope.wrap",
+                           lambda _scope, command, **_kwargs: command)
+        scope_preflight.start()
+        scope_wrap.start()
+        self.addCleanup(scope_wrap.stop)
+        self.addCleanup(scope_preflight.stop)
 
     def test_service_starts_no_due_relays_status_and_denies_a_foreign_socket_caller(self):
         self.skipTest("covered by ServeTests")
@@ -840,6 +860,10 @@ class ManagerLoopTests(ServeTests):
         self.assertEqual(first["caller_context"]["role"], "manager")
         status = self.orchestrator("status")
         self.assertEqual(status["outcome"], "ok", status)
+        delivered_calls = (root / "delivered-client-calls.txt").read_text().splitlines()
+        self.assertTrue(delivered_calls)
+        self.assertTrue(all(call.startswith(str(Path(self.home, "bin", "ottoctl")) + " ")
+                            for call in delivered_calls), delivered_calls)
         lab_root = self.worker_repo.parent / (self.worker_repo.name + ".otto-labs")
         task_ids = {alias: ref["id"] for alias, ref in status["task_refs"].items()}
         self.assertEqual(len(list(lab_root.glob("**/" + task_ids["T1"] + "/answer-claude-haiku-5-5.txt"))), 1,
@@ -848,6 +872,18 @@ class ManagerLoopTests(ServeTests):
                         "xhard-route worker did not write its assignment lab")
         self.assertFalse((root / "answer-claude-haiku-5-5.txt").exists(),
                          "normal-route worker wrote the manager workspace")
+
+        # Read through the owner service's already-open Store, preserving its
+        # single-writer custody while inspecting retained append order.
+        events = self.owner_service.store.list_events()
+        t1_finished = next(event for event in events
+                           if event.subject.kind == "work.task" and event.subject.id == task_ids["T1"]
+                           and event.effects.get("completion"))
+        t2_dispatched = next(event for event in events
+                             if event.event_type == "work.assignment.dispatched"
+                             and (event.effects.get("admitted_task") or {}).get("id") == task_ids["T2"])
+        self.assertLess(t1_finished.recorded_at, t2_dispatched.recorded_at,
+                        "retained T1 completion must precede the T2 dispatch event")
         self.assertFalse((root / "answer-claude-sonnet-5-5.txt").exists(),
                          "xhard-route worker wrote the manager workspace")
         # Each worker result was delivered back by resuming the same manager session.

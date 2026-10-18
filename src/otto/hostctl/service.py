@@ -633,6 +633,12 @@ class OwnerService:
         self.config = config
         lanes.private_dir(client_home)
         lanes.private_dir(Path(entry["lane"]))
+        client_entrypoint = client_home / "bin" / "ottoctl"
+        if not client_entrypoint.exists():
+            from .cli import _stage_client_entrypoint
+            _stage_client_entrypoint(client_entrypoint)
+        from .cli import _require_client_entrypoint
+        _require_client_entrypoint(client_home)
         host_config.write_client(client_home, kind, {"principal": entry["principal"], "lane": entry["lane"],
                                                      "owner_actor": self.config["owner"]["actor"],
                                                      "status": str(Path(entry["lane"]) / lanes.STATUS_FILE)})

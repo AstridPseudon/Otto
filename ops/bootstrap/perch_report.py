@@ -355,6 +355,40 @@ def cmd_stage2_dispatch_no_failure(args):
     stage2_dispatch_no_failure(read_json(args.status, {}) or {}, args.task)
 
 
+def stage2_manager_start_failed(status):
+    """Recognize a terminal failure retained for the stage-2 manager start."""
+    if status.get("outcome") == "pending" or status.get("terminal") is False:
+        return False
+    failure_outcomes = {"error", "failed", "refused", "unavailable", "supervisor-failed"}
+    if status.get("outcome") in failure_outcomes:
+        return True
+    for key in ("result", "summary"):
+        result = status.get(key)
+        if isinstance(result, dict) and result.get("outcome") in failure_outcomes:
+            return True
+    return False
+
+
+def stage2_manager_start_state(status, expected_request_id):
+    """Classify a retained manager start reply, bound to its original handle."""
+    if not isinstance(status, dict):
+        raise ValueError("retained manager start status is not an object")
+    if status.get("request_id") != expected_request_id:
+        raise ValueError("retained manager start status changed its request id")
+    if status.get("outcome") == "pending" and status.get("terminal") is not True:
+        return "pending"
+    return "failure" if stage2_manager_start_failed(status) else "terminal"
+
+
+def cmd_stage2_manager_start_failed(args):
+    if stage2_manager_start_failed(read_json(args.status, {}) or {}):
+        raise ValueError("retained manager start reached a terminal failure")
+
+
+def cmd_stage2_manager_start_state(args):
+    print(stage2_manager_start_state(read_json(args.status, {}) or {}, args.expected_request_id))
+
+
 def stage2_task_complete(project_status, owner_status, alias):
     tasks = {row.get("id"): row for row in project_status.get("tasks") or []}
     held = (owner_status.get("native_capacity") or {}).get("active_or_uncertain")
@@ -2275,6 +2309,11 @@ def build_parser():
     p = sub.add_parser("stage2-dispatch-no-failure")
     p.add_argument("--status", required=True); p.add_argument("--task", required=True)
     p.set_defaults(fn=cmd_stage2_dispatch_no_failure)
+    p = sub.add_parser("stage2-manager-start-failed")
+    p.add_argument("--status", required=True); p.set_defaults(fn=cmd_stage2_manager_start_failed)
+    p = sub.add_parser("stage2-manager-start-state")
+    p.add_argument("--status", required=True); p.add_argument("--expected-request-id", required=True)
+    p.set_defaults(fn=cmd_stage2_manager_start_state)
     p = sub.add_parser("stage2-task-complete")
     p.add_argument("--project-status", required=True); p.add_argument("--owner-status", required=True)
     p.add_argument("--task", required=True); p.set_defaults(fn=cmd_stage2_task_complete)

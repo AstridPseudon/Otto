@@ -1536,6 +1536,123 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks the product task dispatch state"):
             perch_report.stage2_dispatch_no_failure(private_only, "A")
 
+    def test_stage_two_marker_wait_reads_retained_manager_start_receipt(self):
+        import re
+
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        wait = re.search(r"(?ms)^stage2_wait_marker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(wait)
+        self.assertIn("request-status --request-id", wait.group())
+        self.assertIn("stage2-manager-start-failed", wait.group())
+        self.assertIn("while :; do", wait.group())
+        self.assertNotIn("deadline", wait.group())
+
+        for status in (
+            {"outcome": "failed", "terminal": True},
+            {"outcome": "succeeded", "terminal": True, "summary": {"outcome": "error"}},
+        ):
+            with self.subTest(status=status):
+                self.assertTrue(perch_report.stage2_manager_start_failed(status))
+        for status in (
+            {"outcome": "pending", "terminal": False},
+            {"outcome": "succeeded", "terminal": True, "summary": {"outcome": "committed"}},
+        ):
+            with self.subTest(status=status):
+                self.assertFalse(perch_report.stage2_manager_start_failed(status))
+        self.assertEqual(perch_report.stage2_manager_start_state(
+            {"outcome": "failed", "terminal": True, "request_id": "a" * 32}, "a" * 32), "failure")
+        self.assertEqual(perch_report.stage2_manager_start_state(
+            {"outcome": "pending", "terminal": False, "service_state": "relayed",
+             "request_id": "a" * 32}, "a" * 32), "pending")
+        with self.assertRaisesRegex(ValueError, "changed its request id"):
+            perch_report.stage2_manager_start_state(
+                {"outcome": "failed", "terminal": True, "request_id": "b" * 32}, "a" * 32)
+
+    def test_stage_two_marker_wait_exits_on_retained_manager_failure_with_live_owner(self):
+        import shlex
+        import re
+
+        root = short_temp_root()
+        self.addCleanup(shutil.rmtree, root, True)
+        raw = root / "raw"
+        raw.mkdir()
+        canary = root / "canary"
+        canary.mkdir()
+        (canary / "project.json").write_text(json.dumps({"stages": {"2": {"host": "claude-code"}}}),
+                                             encoding="utf-8")
+        (raw / "stage2-manager-start.json").write_text(json.dumps({
+            "outcome": "pending", "request_id": "a" * 32, "terminal": False,
+        }), encoding="utf-8")
+        (raw / "owner-status.json").write_text(json.dumps({
+            "outcome": "error", "error": {"code": "ManagerTurnFailed"},
+            "request_id": "a" * 32,
+            "relayed": {"manager_request_id": "b" * 32}, "terminal": True,
+        }), encoding="utf-8")
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        wait = re.search(r"(?ms)^stage2_wait_marker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(wait)
+        script = "\n".join((
+            "set -euo pipefail",
+            "RAW=" + shlex.quote(str(raw)),
+            "CANARY_DIR=" + shlex.quote(str(canary)),
+            "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
+            "STAGE_ROOT=" + shlex.quote(str(root / "staging")),
+            "PY=" + shlex.quote(sys.executable),
+            "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+            'stage2_host_client() { case "$*" in',
+            '  *"request-status --request-id "*"' + "a" * 32 + '"*) cat "$RAW/owner-status.json"; return 1 ;;',
+            '  *) echo "unexpected owner client request: $*" >&2; return 90 ;; esac; }',
+            'stage2_owner_alive() { : > "$RAW/owner-was-live"; return 0; }',
+            'sleep() { echo "unexpected sleep with terminal manager failure" >&2; return 91; }',
+            wait.group(),
+            'stage2_owner_alive',
+            'stage2_wait_marker worker-A',
+        ))
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("unexpected sleep", result.stderr)
+        self.assertTrue((raw / "owner-was-live").exists())
+        errors = (raw / "stage2-setup-errors.txt").read_text(encoding="utf-8")
+        self.assertIn("retained terminal failure", errors)
+
+    def test_stage_two_marker_wait_keeps_waiting_after_retained_manager_success(self):
+        import shlex
+        import re
+
+        root = short_temp_root()
+        self.addCleanup(shutil.rmtree, root, True)
+        raw = root / "raw"
+        raw.mkdir()
+        canary = root / "canary"
+        canary.mkdir()
+        (canary / "project.json").write_text(json.dumps({"stages": {"2": {"host": "claude-code"}}}),
+                                             encoding="utf-8")
+        (raw / "stage2-manager-start.json").write_text(json.dumps({
+            "outcome": "pending", "request_id": "c" * 32, "terminal": False,
+        }), encoding="utf-8")
+        (raw / "owner-status.json").write_text(json.dumps({
+            "outcome": "succeeded", "terminal": True, "request_id": "c" * 32,
+        }),
+                                               encoding="utf-8")
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        wait = re.search(r"(?ms)^stage2_wait_marker\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(wait)
+        script = "\n".join((
+            "set -euo pipefail",
+            "RAW=" + shlex.quote(str(raw)),
+            "CANARY_DIR=" + shlex.quote(str(canary)),
+            "CANARY=" + shlex.quote(str(BOOTSTRAP / "canary")),
+            "PY=" + shlex.quote(sys.executable),
+            "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
+            'stage2_host_client() { case "$*" in *"request-status --request-id "*"' + "c" * 32 + '"*) cat "$RAW/owner-status.json" ;; *) return 90 ;; esac; }',
+            'stage2_owner_alive() { return 0; }',
+            'sleep() { : > "$CANARY_DIR/.perch-worker-B.pid"; }',
+            wait.group(),
+            'stage2_wait_marker worker-B',
+        ))
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_c_dispatch_kills_held_c_before_waiting_for_empty_capacity(self):
         import re
         import shlex
@@ -2302,6 +2419,37 @@ class FakeRunTests(unittest.TestCase):
         got = results_of(report_dir)
         self.assertEqual({name for name, status in got.items() if status == "fail"},
                          {"landing-conflict-refused"}, got)
+
+
+@unittest.skipUnless(os.environ.get("PERCH_STAGE2_OUTSIDE_SANDBOX") == "1",
+                     "stage 2 owner run is reserved for the outside-sandbox check after commit")
+class Stage2FreshInstallRunTests(unittest.TestCase):
+    def test_fresh_delivered_client_settles_a_and_b_before_c_dispatch(self):
+        root = short_temp_root()
+        self.addCleanup(shutil.rmtree, root, True)
+        sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+                             capture_output=True, check=True).stdout.strip()
+
+        code, log, report_dir = run_perch(root, sha, stage="2")
+
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(report_dir, log)
+        self.assertTrue((root / "_staging" / "home" / "bin" / "ottoctl").is_file(),
+                        "fresh staging install did not deliver the advertised manager client")
+        events = json.loads((report_dir / "raw" / "stage2-store-events.json").read_text())["events"]
+
+        def at(alias, event_type, *, completion=False):
+            matching = [row for row in events if row.get("alias") == alias
+                        and row.get("event_type") == event_type
+                        and (not completion or (row.get("effects") or {}).get("completion"))]
+            self.assertEqual(len(matching), 1, (alias, event_type, matching))
+            return perch_report.stage2_event_time(matching[0])
+
+        a_done = at("A", "work.revised", completion=True)
+        b_done = at("B", "work.revised", completion=True)
+        c_dispatched = at("C", "work.assignment.dispatched")
+        self.assertTrue(a_done < b_done < c_dispatched,
+                        "owner-started A and B must settle before C dispatch")
 
 
 # The assertions each seeded fault turns red in a real run. A lab left behind also leaves its lab-deleted
