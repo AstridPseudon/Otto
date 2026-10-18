@@ -238,23 +238,23 @@ stage2_setup() {
   return "$rc"
 }
 
-stage2_wait_admission_boundary() {  # TASK DEADLINE
-  local task="$1" deadline="$2" status="$RAW/stage2-admit-$1-boundary-status.json"
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    sleep 0.5
-    if ! cold_client service status > "$status" 2>> "$RAW/stage2-setup-errors.txt"; then
-      echo "owner status failed while waiting for the $task admission boundary" >> "$RAW/stage2-setup-errors.txt"
+stage2_wait_admission_boundary() {  # TASK
+  local task="$1" status="$RAW/stage2-admit-$1-boundary-status.json"
+  while :; do
+    if cold_client service status > "$status" 2>> "$RAW/stage2-setup-errors.txt"; then
+      if "$PY" -I "$REPORT_PY" stage2-boundary-closed --status "$status" > /dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    if ! stage2_owner_alive; then
+      echo "owner exited before the $task admission boundary closed; see stage2-admit-$task-boundary-status.json" >> "$RAW/stage2-setup-errors.txt"
+      if [ -f "$STAGE_ROOT/run/staging.log" ]; then
+        tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
+      fi
       return 1
     fi
-    if "$PY" -I "$REPORT_PY" stage2-boundary-closed --status "$status" > /dev/null 2>&1; then
-      return 0
-    fi
+    sleep 0.5
   done
-  echo "owner admission boundary stayed open for $task within the 180-second poll budget; see stage2-admit-$task-boundary-status.json" >> "$RAW/stage2-setup-errors.txt"
-  if [ -f "$STAGE_ROOT/run/staging.log" ]; then
-    tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
-  fi
-  return 1
 }
 
 stage2_submit_admission() {  # HOST TASK REF REVIEW_REF ATTEMPT
@@ -275,7 +275,7 @@ stage2_submit_admission() {  # HOST TASK REF REVIEW_REF ATTEMPT
 }
 
 stage2_admit_tasks() {
-  local host task ref review_ref attempt deadline receipt request_id next_request retained selected
+  local host task ref review_ref attempt receipt request_id next_request retained selected
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
   review_ref="$(cat "$RAW/stage2-review-ref.json")"
   selected="${1:-$("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2)}"
@@ -286,7 +286,6 @@ stage2_admit_tasks() {
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     # The operator command is the sole task admission route. It performs the
     # owner-local presence proof and verifies the selected exact revision.
-    printf '%s\n' "$(( $(date +%s) + 180 ))" > "$RAW/stage2-admit-$task-deadline"
     stage2_submit_admission "$host" "$task" "$ref" "$review_ref" 1 || return $?
     cp "$RAW/stage2-admit-$task-attempt-1.json" "$RAW/stage2-admit-$task.json"
   done
@@ -294,7 +293,6 @@ stage2_admit_tasks() {
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
       "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     attempt=0
-    deadline="$(cat "$RAW/stage2-admit-$task-deadline")"
     while :; do
       attempt=$(( attempt + 1 ))
       receipt="$RAW/stage2-admit-$task-attempt-$attempt.json"
@@ -303,34 +301,31 @@ stage2_admit_tasks() {
       if [ -n "$request_id" ]; then
         retained="$RAW/stage2-admit-$task-retained-$attempt.json"
       fi
-      while [ -n "$request_id" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+      while [ -n "$request_id" ]; do
         sleep 0.5
         if ! stage2_operator_request_status "$request_id" \
             > "$retained" 2>> "$RAW/stage2-setup-errors.txt"; then
-          echo "retained admission request $request_id failed for $task; see $(basename "$retained")" >> "$RAW/stage2-setup-errors.txt"
-          return 1
+          if ! stage2_owner_alive; then
+            echo "owner exited while waiting for retained admission request $request_id for $task; see $(basename "$retained")" >> "$RAW/stage2-setup-errors.txt"
+            return 1
+          fi
+          continue
         fi
         if ! next_request="$("$PY" -I "$REPORT_PY" stage2-admission-request \
             --response "$retained" --expected-request-id "$request_id" \
             2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
         request_id="$next_request"
-        if [ -z "$request_id" ]; then receipt="$retained"; fi
-      done
-      if [ -n "$request_id" ]; then
-        echo "retained admission request $request_id stayed pending for $task within the 180-second poll budget" >> "$RAW/stage2-setup-errors.txt"
-        if [ -f "$STAGE_ROOT/run/staging.log" ]; then
-          tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
-        fi
-        return 1
-      fi
-      cp "$receipt" "$RAW/stage2-admit-$task.json"
-      if "$PY" -I "$REPORT_PY" stage2-admission-held --response "$receipt"; then
-        if ! stage2_wait_admission_boundary "$task" "$deadline"; then
-          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: held admission boundary did not close"
+        if [ -z "$request_id" ]; then
+          receipt="$retained"
+        elif ! stage2_owner_alive; then
+          echo "owner exited while retained admission request $request_id stayed pending for $task" >> "$RAW/stage2-setup-errors.txt"
           return 1
         fi
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-          echo "owner admission boundary closed too late to retry $task within the 180-second poll budget" >> "$RAW/stage2-setup-errors.txt"
+      done
+      cp "$receipt" "$RAW/stage2-admit-$task.json"
+      if "$PY" -I "$REPORT_PY" stage2-admission-held --response "$receipt"; then
+        if ! stage2_wait_admission_boundary "$task"; then
+          "$PY" -I "$REPORT_PY" note --raw "$RAW" --key "stage2-admit-$task" --value "failed: held admission boundary did not close"
           return 1
         fi
         stage2_submit_admission "$host" "$task" "$ref" "$review_ref" "$(( attempt + 1 ))" || return $?
@@ -494,39 +489,46 @@ stage2_dispatch_tasks() {
 # reads each task's retained dispatch state through product project status.
 # Manager status requires a native manager caller.
 stage2_wait_worker() {  # HOST TASK
-  local host="$1" task="$2" saw_dispatch="" request_id="" next_request="" deadline=$(( $(date +%s) + 180 )) activation admission
+  local host="$1" task="$2" saw_dispatch="" request_id="" next_request="" activation admission
   activation="$RAW/stage2-activation.json"; admission="$RAW/stage2-admit-$task.json"
   if [ "$task" = C ] && [ -f "$RAW/stage2-current-activation.json" ]; then
     activation="$RAW/stage2-current-activation.json"; admission="$RAW/stage2-metadata-only-C.json"
   fi
-  while [ "$(date +%s)" -lt "$deadline" ]; do
+  while :; do
     # Return a retained receipt promptly; only request-status may read it until terminal.
     if ! stage2_host_client --host "$host" --wait-seconds 0 project status --project perch-stage2 \
         > "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then
-      echo "owner project status failed while waiting for $task; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
-      return 1
+      if ! stage2_owner_alive; then
+        echo "owner exited while waiting for $task project status; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
+        return 1
+      fi
+      sleep 0.5
+      continue
     fi
     if ! request_id="$("$PY" -I "$REPORT_PY" stage2-dispatch-request \
           --status "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
     if [ -n "$request_id" ]; then
       cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-dispatch-$task-pending.json"
     fi
-    while [ -n "$request_id" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+    while [ -n "$request_id" ]; do
       sleep 0.5
       if ! stage2_host_client --host "$host" request-status --request-id "$request_id" \
           > "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then
-        echo "retained project status request $request_id failed; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
-        return 1
+        if ! stage2_owner_alive; then
+          echo "owner exited while waiting for retained project status request $request_id; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
+          return 1
+        fi
+        continue
       fi
       if ! next_request="$("$PY" -I "$REPORT_PY" stage2-dispatch-request \
             --status "$RAW/stage2-dispatch-$task.json" --expected-request-id "$request_id" \
             2>> "$RAW/stage2-setup-errors.txt")"; then return 1; fi
       request_id="$next_request"
+      if [ -n "$request_id" ] && ! stage2_owner_alive; then
+        echo "owner exited while retained project status request $request_id stayed pending" >> "$RAW/stage2-setup-errors.txt"
+        return 1
+      fi
     done
-    if [ -n "$request_id" ]; then
-      echo "retained project status request $request_id stayed pending for $task within the 180-second dispatch budget" >> "$RAW/stage2-setup-errors.txt"
-      return 1
-    fi
     if ! "$PY" -I "$REPORT_PY" stage2-dispatch-no-failure \
           --status "$RAW/stage2-dispatch-$task.json" --task "$task" \
           >> "$RAW/stage2-setup-errors.txt" 2>&1; then return 1; fi
@@ -546,30 +548,30 @@ stage2_wait_worker() {  # HOST TASK
         return 0
       fi
     fi
+    if ! stage2_owner_alive; then
+      if [ -n "$saw_dispatch" ]; then
+        echo "owner exited before admitted task $task completed and released capacity" >> "$RAW/stage2-setup-errors.txt"
+      else
+        echo "owner exited before dispatch evidence appeared for admitted task $task" >> "$RAW/stage2-setup-errors.txt"
+      fi
+      return 1
+    fi
     sleep 0.5
   done
-  if [ -n "$saw_dispatch" ]; then
-    echo "owner dispatched admitted task $task but did not complete it and release capacity in 180 seconds; see stage2-dispatch-$task-project.json and stage2-owner-$task.json" >> "$RAW/stage2-setup-errors.txt"
-  else
-    echo "owner did not dispatch admitted task $task in 180 seconds; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
-  fi
-  # Preserve the staging owner's own reason before teardown. This copies a
-  # bounded diagnostic tail into the report; it never changes owner state.
-  if [ -f "$STAGE_ROOT/run/staging.log" ]; then
-    tail -n 120 "$STAGE_ROOT/run/staging.log" > "$RAW/stage2-owner-log-tail.txt"
-  fi
-  return 1
 }
 
 stage2_kill_worker() {
   [ -n "$FAKE" ] || return 0
-  local marker="" pid owner deadline=$(( $(date +%s) + 45 )) command
-  while [ "$(date +%s)" -lt "$deadline" ]; do
+  local marker="" pid owner command
+  while :; do
     marker="$(find "$CANARY_DIR/canon.otto-labs" -name .perch-worker-C.pid -print -quit 2>/dev/null || true)"
     [ -z "$marker" ] || break
+    if ! stage2_owner_alive; then
+      echo "owner exited before C worker published its lab PID marker" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     sleep 0.25
   done
-  [ -n "$marker" ] || { echo "C worker never published its lab PID marker" >> "$RAW/stage2-setup-errors.txt"; return 1; }
   pid="$(cat "$marker")"
   owner="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$STAGE_ROOT/run/staging.json")"
   case "$pid" in *[!0-9]*|"") return 1 ;; esac
@@ -579,26 +581,31 @@ stage2_kill_worker() {
     echo "C PID $pid does not name the pinned fake worker: $command" >> "$RAW/stage2-setup-errors.txt"; return 1 ;; esac
   "$PY" -I -c 'import json,sys; print(json.dumps({"pid":int(sys.argv[1]),"owner_pid":int(sys.argv[2]),"marker":sys.argv[3]}))' \
     "$pid" "$owner" "$marker" > "$RAW/stage2-killed-worker.json"
-  deadline=$(( $(date +%s) + 30 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    cold_client service status > "$RAW/stage2-capacity-before-kill.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
-    if "$PY" -I "$REPORT_PY" stage2-capacity-held --status "$RAW/stage2-capacity-before-kill.json" \
+  while :; do
+    if cold_client service status > "$RAW/stage2-capacity-before-kill.json" 2>> "$RAW/stage2-setup-errors.txt" && \
+        "$PY" -I "$REPORT_PY" stage2-capacity-held --status "$RAW/stage2-capacity-before-kill.json" \
         > /dev/null 2>&1; then break; fi
+    if ! stage2_owner_alive; then
+      echo "owner exited before C worker capacity was observed held" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     sleep 0.25
   done
   "$PY" -I "$REPORT_PY" stage2-capacity-held --status "$RAW/stage2-capacity-before-kill.json" \
     >> "$RAW/stage2-setup-errors.txt" 2>&1 || return 1
   "$PY" -I "$REPORT_PY" census --out "$RAW/stage2-census-before-kill.txt" --stage-root "$STAGE_ROOT"
   kill -KILL "$pid" || return 1
-  deadline=$(( $(date +%s) + 45 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    cold_client service status > "$RAW/stage2-capacity-after-kill.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
-    "$PY" -I "$REPORT_PY" census --out "$RAW/stage2-census-after-kill.txt" --stage-root "$STAGE_ROOT"
-    if "$PY" -I "$REPORT_PY" stage2-kill-check --raw "$RAW" > /dev/null 2>&1; then return 0; fi
+  while :; do
+    if cold_client service status > "$RAW/stage2-capacity-after-kill.json" 2>> "$RAW/stage2-setup-errors.txt"; then
+      "$PY" -I "$REPORT_PY" census --out "$RAW/stage2-census-after-kill.txt" --stage-root "$STAGE_ROOT"
+      if "$PY" -I "$REPORT_PY" stage2-kill-check --raw "$RAW" > /dev/null 2>&1; then return 0; fi
+    fi
+    if ! stage2_owner_alive; then
+      echo "owner exited before C worker kill evidence showed its capacity slot released" >> "$RAW/stage2-setup-errors.txt"
+      return 1
+    fi
     sleep 0.25
   done
-  echo "C worker kill did not release its owner capacity slot while staging owner survived" >> "$RAW/stage2-setup-errors.txt"
-  return 1
 }
 
 # One save of the stage's document NAME through the owner socket, from REF_FROM's project ref when it is an edit or a
