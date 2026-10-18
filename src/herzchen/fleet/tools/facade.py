@@ -40,8 +40,11 @@ class SettlingOwnerPort:
     """Run a facade operation on the owner lane and settle landed work before it returns."""
 
     def __init__(self, inner: OwnerPort, executor: Callable[[], Any],
-                 settle: Callable[[str], None], *, done_operation: str = "worker-done") -> None:
+                 settle: Callable[[str], None],
+                 retain_refusal: Callable[[str, Any], None] | None = None,
+                 *, done_operation: str = "worker-done") -> None:
         self.inner, self.executor, self.settle = inner, executor, settle
+        self.retain_refusal = retain_refusal
         self.done_operation = done_operation
 
     def call(self, operation: str, assignment: str, args: Mapping, *, feedback: bool) -> Mapping:
@@ -50,7 +53,19 @@ class SettlingOwnerPort:
             raise PermissionError("owner command executor is unavailable")
 
         def owned_call() -> Mapping:
-            result = self.inner.call(operation, assignment, args, feedback=feedback)
+            try:
+                result = self.inner.call(operation, assignment, args, feedback=feedback)
+            except Exception as exc:
+                from herzchen.fleet.landing import LandingError
+                if (operation == self.done_operation and isinstance(exc, LandingError)
+                        and self.retain_refusal is not None):
+                    try:
+                        self.retain_refusal(assignment, exc)
+                    except Exception:
+                        # A failed owner CAS leaves continuation unknown. Keep
+                        # the original refusal visible to the worker.
+                        pass
+                raise
             if (operation == self.done_operation and isinstance(result, Mapping)
                     and result.get("landed") is True):
                 self.settle(assignment)
@@ -239,15 +254,14 @@ class ToolFacade:
                 "result": result,
             }
         except Exception as exc:
-            # A domain error's own code is a stable answer; anything else stays owner_unavailable, with the
-            # exception named in the detail so a failure is diagnosable (the bare type hid a landing refusal).
+            # Only classified domain errors may expose their message. Generic
+            # owner exceptions can contain credentials or private state.
             code = getattr(exc, "code", None)
             message = getattr(exc, "message", None)
+            if not (isinstance(code, str) and code):
+                return _refusal("owner_unavailable", type(exc).__name__)
             if not isinstance(message, str) or not message:
                 message = str(exc)
-            if not (isinstance(code, str) and code):
-                code = "owner_unavailable"
-                message = type(exc).__name__ + (": " + message if message else "")
             if isinstance(message, str) and message:
                 return {"ok": False, "error": code, "detail": message}
             return {"ok": False, "error": "owner_unavailable", "detail": type(exc).__name__}

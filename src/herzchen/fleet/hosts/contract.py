@@ -368,7 +368,8 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
 
 def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationRequest, *,
                      authorize: Any, fence: Optional[WriteFence] = None,
-                     process_factory: Any = subprocess.Popen, timeout: float = 120.0) -> TurnResult:
+                     process_factory: Any = subprocess.Popen, timeout: float = 120.0,
+                     launch: Any = None) -> Any:
     """Run one exact-session continuation; the owner rechecks the receipt and retry bound in ``authorize``."""
     if not isinstance(request, ContinuationRequest):
         raise HostContractError("request must be a ContinuationRequest")
@@ -386,6 +387,12 @@ def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationReques
         raise HostContractError("host continuation must preserve session and parked workspace for a work turn")
     if not callable(authorize) or authorize(request) is not True:
         raise HostContractError("continuation was not authorized")
+    if launch is not None:
+        if not callable(launch):
+            raise HostContractError("continuation launch must be callable")
+        # Installed transports already own process custody and call this host's
+        # launch plan. Do not create a second process through run_turn.
+        return launch(resumed)
     return run_turn(host, resumed, fence=fence, process_factory=process_factory, timeout=timeout)
 
 

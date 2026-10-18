@@ -1127,14 +1127,46 @@ class ManagerJourneyService:
                 result = (app.start(schedule_id=worker["schedule_id"])
                           if command == "start-retained-worker" else
                           app.recover(schedule_id=worker["schedule_id"], execute=False))
-            def complete(result):
-                due = self.server.due_port.read_due(worker["schedule_id"])
+            def complete(result, schedule_id=worker["schedule_id"], *, reworked=False):
+                due = self.server.due_port.read_due(schedule_id)
+                refusal = ((due or {}).get("host_evidence") or {}).get("landing_refusal") or {}
+                if (not reworked and result.get("outcome") in {"succeeded", "replayed"}
+                        and refusal.get("schema") == "otto.worker-landing-refusal.v1"
+                        and refusal.get("settled") is True
+                        and not ((due or {}).get("target") or {}).get("worker_rework")):
+                    # Preparation checks captured native evidence and the
+                    # current assignment. A new app resolves this Due's same
+                    # lab and refreshes the active facade schedule before work.
+                    prepared = app.rework_worker(schedule_id=schedule_id, execute=False)
+                    next_id = prepared["schedule_id"]
+                    current_worker = (self.server.state.get("workers") or {}).get(request["task"])
+                    if (not isinstance(current_worker, Mapping)
+                            or current_worker.get("schedule_id") not in {schedule_id, next_id}):
+                        raise PermissionError("worker rework no longer owns the current task slot")
+                    next_app = self._execution(principal=worker["principal"], model=worker["model"],
+                        reasoning=worker["reasoning"], evidence_id=next_id,
+                        selection=((self.server.due_port.read_due(next_id) or {}).get("target", {}).get("launch_request") or {}).get("selection"))
+                    next_due = self.server.due_port.read_due(next_id)
+                    if (refusal.get("outcome") == "conflict"
+                            and not ((next_due.get("host_evidence") or {}).get("gateway_attempt"))):
+                        context = self.server.worker_context_provider(next_due)
+                        context["landing"].prepare_rework(context["lab_name"])
+                    if current_worker.get("schedule_id") != next_id:
+                        history = self.server.state.setdefault("worker_history", {}).setdefault(request["task"], [])
+                        if not any(item.get("schedule_id") == schedule_id for item in history):
+                            history.append(dict(current_worker))
+                        self.server.state["workers"][request["task"]] = {
+                            **current_worker, "schedule_id": next_id,
+                            "rework_origin_schedule_id": schedule_id}
+                        self.server._save_state()
+                    continued = next_app.start(schedule_id=next_id)
+                    return after_owner(continued, lambda final: complete(final, next_id, reworked=True))
                 external_parent = (((due or {}).get("target", {}).get("launch_request") or {}).get("external_parent"))
                 runtime_preparation_failure = (
                     command == "start-retained-worker" and automatic
                     and isinstance(result, Mapping) and result.get("outcome") == "partial"
                     and result.get("stage") == "runtime"
-                    and result.get("schedule_id") == worker["schedule_id"]
+                    and result.get("schedule_id") == schedule_id
                     and isinstance(due, Mapping)
                     and json_value(result.get("assignment_ref")) == due.get("assignment_ref")
                     and result.get("generation") == due.get("generation")
@@ -1156,7 +1188,7 @@ class ManagerJourneyService:
                     if callable(settle_failure):
                         result = {**result, "automatic_failure_settlement": settle_failure(
                             self.server.state["project_ref"]["id"], request["task"],
-                            worker["schedule_id"], result)}
+                            schedule_id, result)}
                 if result.get("outcome") in {"succeeded", "replayed"} and external_parent is None:
                     result = self._settle_shared_completion(result, review_task=request["task"])
                     if result["completion_intents"] and not automatic:
@@ -1170,7 +1202,7 @@ class ManagerJourneyService:
                                 "reason": "owner is draining; preserve worker result and prepare its manager continuation after restart"}
                         else:
                             retained = self.host.submit({"command": "manager-worker-result", "task": request["task"],
-                                "principal": worker["principal"], "schedule_id": worker["schedule_id"]})
+                                "principal": worker["principal"], "schedule_id": schedule_id})
                         result = {**result, "manager_result_notification": retained}
                 return result
             return after_owner(result, complete)

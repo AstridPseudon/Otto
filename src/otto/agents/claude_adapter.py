@@ -83,17 +83,41 @@ def _worker_checkpoint(workspace: str) -> tuple[str, str] | None:
     if inside.returncode:
         return None
     entries = _git_output(workspace, 'reflog', '--format=%H%x09%gs', 'HEAD').splitlines()
-    if entries and entries[0].partition('\t')[2].startswith('rebase (finish):'):
-        # The entry immediately older than rebase start is the HEAD that
-        # Landing checkpointed. ORIG_HEAD can be stale across earlier rebases.
-        start_index = next((i for i in range(len(entries))
-                            if entries[i].partition('\t')[2].startswith('rebase (start):')), None)
-        if start_index is None or start_index + 1 >= len(entries):
-            raise ClaudeBindingError('worker rebase checkpoint cannot be identified')
-        selected = entries[start_index + 1]
-        if not selected.partition('\t')[2].startswith('commit: land '):
+    rework_base = None
+    if entries and entries[0].partition('\t')[2].startswith('rebase (abort):'):
+        # A settled conflict returns HEAD to the checkpoint. Accept only the
+        # immediately preceding rebase start and its land commit, so an older
+        # checkpoint cannot authorize capture for an unrelated failed rebase.
+        if (len(entries) < 3
+                or not entries[1].partition('\t')[2].startswith('rebase (start):')
+                or not entries[2].partition('\t')[2].startswith('commit: land ')
+                or entries[2].partition('\t')[0] != _git_output(workspace, 'rev-parse', 'HEAD')):
             raise ClaudeBindingError('worker land checkpoint reflog entry is missing')
-        commit = selected.partition('\t')[0]
+        commit = entries[2].partition('\t')[0]
+    elif entries and entries[0].partition('\t')[2].startswith('rebase (finish):'):
+        if (len(entries) >= 6
+                and entries[1].partition('\t')[2].startswith('rebase (continue): land ')
+                and entries[1].partition('\t')[0] == entries[0].partition('\t')[0]
+                and entries[2].partition('\t')[2].startswith('rebase (start):')
+                and entries[3].partition('\t')[2].startswith('rebase (abort):')
+                and entries[4].partition('\t')[2].startswith('rebase (start):')
+                and entries[5].partition('\t')[2].startswith('commit: land ')
+                and entries[3].partition('\t')[0] == entries[5].partition('\t')[0]):
+            # The worker repaired the owner-reopened conflict. Its Write now
+            # describes the resolved commit, rather than the first checkpoint.
+            commit = entries[0].partition('\t')[0]
+            rework_base = entries[2].partition('\t')[0]
+        else:
+            # The entry immediately older than rebase start is the HEAD that
+            # Landing checkpointed. ORIG_HEAD can be stale across earlier rebases.
+            start_index = next((i for i in range(len(entries))
+                                if entries[i].partition('\t')[2].startswith('rebase (start):')), None)
+            if start_index is None or start_index + 1 >= len(entries):
+                raise ClaudeBindingError('worker rebase checkpoint cannot be identified')
+            selected = entries[start_index + 1]
+            if not selected.partition('\t')[2].startswith('commit: land '):
+                raise ClaudeBindingError('worker land checkpoint reflog entry is missing')
+            commit = selected.partition('\t')[0]
     else:
         commit = _git_output(workspace, 'rev-parse', 'HEAD')
         if (not entries or entries[0].partition('\t')[0] != commit or
@@ -124,6 +148,8 @@ def _worker_checkpoint(workspace: str) -> tuple[str, str] | None:
     if not subject.startswith('land '):
         raise ClaudeBindingError('worker land checkpoint cannot be identified')
     parent = _git_output(workspace, 'rev-parse', commit + '^')
+    if rework_base is not None and parent != rework_base:
+        raise ClaudeBindingError('worker rework commit is not based on the reopened line')
     return commit, parent
 
 
@@ -477,10 +503,7 @@ class ClaudeWorkerAdapter:
                 'snapshot_follow': cap('supported', 'existing retained owner snapshot reads'),
                 'native_streaming': cap('unsupported', 'no partial-token stream advertised'),
                 'attach': cap('unsupported', 'no native attach binding'),
-                'resume': (cap('unverified', 'declared manager continuation of the exact owner-bound session '
-                               '(--resume); synthetic conformance only')
-                           if 'manager' in self.roles else
-                           cap('unsupported', 'exact initializer-to-work continuation is internal; no later resume qualification')),
+                'resume': cap('unverified', 'owner-bound exact-session continuation (--resume); synthetic conformance only'),
                 'cancel': cap('degraded', 'transport unwinding reaps its owned process group; owner stop is only a fence'),
                 'steering': cap('unsupported', 'stdin sealed for bounded leaf'),
                 'native_children': cap('unsupported', 'Agent/Bash/MCP/customizations disabled; child frames rejected'),
@@ -518,12 +541,7 @@ class ClaudeWorkerAdapter:
         return self._owner_turn(request, operation='invoke')
 
     def resume(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Continue the exact owner-bound manager session (`--resume`), no initializer.
-
-        Only the declared manager role continues a session: the owner's
-        continuation (after a worker result, a report or help) authorizes the
-        same native session again before the new turn's input is delivered.
-        """
+        """Continue an exact owner-bound session with no initializer."""
         return self._owner_turn(request, operation='resume')
 
     def _owner_turn(self, request: Mapping[str, Any], *, operation: str) -> Mapping[str, Any]:
@@ -535,8 +553,20 @@ class ClaudeWorkerAdapter:
         profile = ROLE_PROFILES[role]
         transport = self._transport_for(role)
         existing = request.get('physical_session_id')
-        if operation == 'resume' and (role != 'manager' or not isinstance(existing, str) or not existing.strip()):
-            raise ClaudeBindingError('only the declared manager role continues an exact existing session')
+        rework = request.get('worker_rework') if role == 'worker' and operation == 'resume' else None
+        if operation == 'resume' and (not isinstance(existing, str) or not existing.strip()
+                or role == 'worker' and (not isinstance(rework, Mapping)
+                    or rework.get('schema') != 'otto.worker-rework.v1'
+                    or rework.get('session_id') != existing
+                    or rework.get('workspace') != self.worktree
+                    or rework.get('settled') is not True
+                    or rework.get('landing_outcome') not in {'failed', 'conflict'}
+                    or not isinstance(rework.get('landing_log'), str)
+                    or not rework['landing_log']
+                    or rework.get('attempt_id') != rework.get('prior_schedule_id')
+                    or rework.get('prior_schedule_id') ==
+                       ((request.get('launch_context') or {}).get('occurrence_ref') or {}).get('schedule_id'))):
+            raise ClaudeBindingError('worker resume requires an exact settled owner rework receipt')
         if (self._used or not callable(self._authorizer) or not callable(self._verifier)
                 or not callable(self._thread_started_callback)
                 or not callable(self._turn_started_callback)
@@ -599,8 +629,27 @@ class ClaudeWorkerAdapter:
                 # socket can authenticate its descendants (kernel peer PID).
                 observer = ExecutionHost.owner_callback(self.native_process_observer)
             on_process = _compose_on_process(observer, authorization, self.process_pin)
-            work = ExecutionHost.external_call(lambda: transport.run(prompt, session=session,
-                on_input=input_started, on_process=on_process, **usage_options))
+            if rework is not None:
+                from herzchen.fleet.hosts.claude import ClaudeHost
+                from herzchen.fleet.hosts.contract import ContinuationRequest, TurnSpec, run_continuation
+                continuation = ContinuationRequest(session_id=session, workspace=self.worktree,
+                    attempt_id=rework['attempt_id'], landing_log=rework['landing_log'],
+                    settled=True, landing_outcome=rework['landing_outcome'])
+                spec = TurnSpec(executable=self.launcher, workspace=self.worktree, prompt=prompt,
+                    model=self.requested_model, reasoning=self.requested_reasoning,
+                    profile='workspace-write', session=session,
+                    options={'tools': WORKER_TOOLS, 'allowed_tools': MANAGER_TOOLS})
+                def launch_continuation(resumed):
+                    nonlocal prompt
+                    prompt = resumed.prompt
+                    return ExecutionHost.external_call(lambda: transport.run(prompt, session=session,
+                        on_input=input_started, on_process=on_process, **usage_options))
+                work = run_continuation(ClaudeHost(), spec, continuation,
+                    authorize=lambda _receipt: verify(session, brief_digest, dict(authorization)) == authorization,
+                    launch=launch_continuation)
+            else:
+                work = ExecutionHost.external_call(lambda: transport.run(prompt, session=session,
+                    on_input=input_started, on_process=on_process, **usage_options))
             if work['outcome'] == 'failed':
                 return {'outcome': 'failed', 'physical_session_id': session, 'observed_turn_id': work['turn_id'],
                         'delivery_state': 'failed', 'native_failure': work['result'], 'usage': work['usage'],

@@ -945,6 +945,7 @@ class CanonicalRoleRuntime:
             capture.source_result_validator = getattr(adapter, "verify_source_result", None)
             owner_timeout = due.get("timeout_seconds")
             request = {**request, "owner_timeout_seconds": owner_timeout,
+                       "worker_rework": target.get("worker_rework") if role == "worker" else None,
                        "launch_context": {"informational": True, "credential": False,
                            "principal": principal, "role": role,
                            "responsibility_ref": assignment.get("payload", {}).get("responsibility_ref"),
