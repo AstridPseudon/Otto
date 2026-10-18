@@ -3,7 +3,8 @@
 A caller that launches a command through ``Custody.launch`` owns the whole tree the command grows, not
 just the direct process. The rules that keep "no process leaked, none wrongly killed" true:
 
-* Identity is ``(pid, birth)``, never a bare pid. ``birth`` is the process start time from the census.
+* Identity is ``(pid, birth)``, never a bare pid. ``birth`` is the kernel process start identity,
+  never the second-precision start time printed by ``ps``.
 * A group id is signalled only while it is provably ours: our unreaped leader still holds it, or a
   tracked member whose birth still matches is alive in it. A group id is reusable only once its group is
   empty, so a live proven member means nobody else can hold it. A reaped leader is never enough.
@@ -18,10 +19,12 @@ just the direct process. The rules that keep "no process leaked, none wrongly ki
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
@@ -30,6 +33,7 @@ _REAL_POPEN = subprocess.Popen     # the census must keep working when a caller 
 
 GONE = "gone"
 UNCERTAIN = "uncertain"
+IDENTITY_FORMAT = "kernel-start-v1"
 
 
 @dataclass(frozen=True)
@@ -37,7 +41,7 @@ class Proc:
     pid: int
     ppid: int
     pgid: int
-    birth: str
+    birth: Optional[str]
     zombie: bool = False
 
 
@@ -54,14 +58,48 @@ class Disposition:
         return self.state == GONE
 
 
+class _BSDInfo(ctypes.Structure):
+    # proc_bsdinfo from the macOS SDK's sys/proc_info.h.
+    _fields_ = [(name, ctypes.c_uint32) for name in
+                ("flags", "status", "xstatus", "pid", "ppid", "uid", "gid",
+                 "ruid", "rgid", "svuid", "svgid", "reserved")]
+    _fields_ += [("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32)]
+    _fields_ += [(name, ctypes.c_uint32) for name in
+                 ("nfiles", "pgid", "jobc", "tdev", "tpgid")]
+    _fields_ += [("nice", ctypes.c_int32), ("seconds", ctypes.c_uint64),
+                 ("micros", ctypes.c_uint64)]
+
+
+def _kernel_proc(pid: int) -> Optional[Proc]:
+    """Read one process lifetime and its relationships from the kernel, or leave it unverified."""
+    if sys.platform == "darwin":
+        try:
+            info = _BSDInfo()
+            library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                             ctypes.c_void_p, ctypes.c_int]
+            library.proc_pidinfo.restype = ctypes.c_int
+            size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+            if size != ctypes.sizeof(info) or info.pid != pid or not info.seconds:
+                return None
+            return Proc(pid, info.ppid, info.pgid, "darwin:%d:%d" % (info.seconds, info.micros),
+                        info.status == 5 or bool(info.flags & 4))
+        except (OSError, AttributeError):
+            return None
+    # Linux /proc stat starttime is rounded to clock ticks. It cannot certify two lifetimes
+    # when a PID is recycled within one tick, so it is deliberately not a birth identity.
+    return None
+
+
 def census() -> Optional[dict]:
     """``pid -> Proc`` for every process, or ``None`` when the census cannot be trusted.
 
     A census that is empty, or that does not list this process, is a broken census, not an empty machine.
+    A listed PID with no exact kernel birth has ``Proc.birth is None`` and cannot prove custody.
     """
     ps = next((p for p in ("/bin/ps", "/usr/bin/ps") if os.path.isfile(p)), "ps")
     try:
-        with _REAL_POPEN([ps, "-axo", "pid=,ppid=,pgid=,stat=,lstart="], stdout=subprocess.PIPE,
+        with _REAL_POPEN([ps, "-axo", "pid=,ppid=,pgid=,stat="], stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, text=True) as proc:
             try:
                 out, _ = proc.communicate(timeout=2.0)
@@ -76,14 +114,15 @@ def census() -> Optional[dict]:
         return None
     table: dict = {}
     for line in out.splitlines():
-        fields = line.strip().split(None, 4)
-        if len(fields) != 5:
+        fields = line.strip().split()
+        if len(fields) != 4:
             continue
         try:
             pid, ppid, pgid = (int(value) for value in fields[:3])
         except ValueError:
             continue
-        table[pid] = Proc(pid, ppid, pgid, fields[4], fields[3].startswith("Z"))
+        # ps is an enumeration hint only: its display-time birth is not a process identity.
+        table[pid] = _kernel_proc(pid) or Proc(pid, ppid, pgid, None, fields[3].startswith("Z"))
     if not table or os.getpid() not in table:
         return None
     return table
@@ -130,7 +169,7 @@ class Custody:
         custody = cls(process, process.pid, None, {}, latch_path, census_fn)
         snap = custody._census()
         leader = snap.get(process.pid) if snap else None
-        if leader is None or leader.pgid != process.pid:
+        if leader is None or leader.pgid != process.pid or leader.birth is None:
             custody.doubt = "leader identity not captured at birth"
         else:
             custody.leader_birth = leader.birth
@@ -144,8 +183,13 @@ class Custody:
         try:
             with open(latch_path, encoding="utf-8") as handle:
                 record = json.load(handle)
+            pgid = int(record["pgid"])
+            if record.get("identity_format") != IDENTITY_FORMAT:
+                return cls(None, pgid, None, {}, latch_path, census_fn,
+                           doubt="latch has no kernel-exact birth identity")
             members = {int(pid): str(birth) for pid, birth in record["members"].items()}
-            return cls(None, int(record["pgid"]), record.get("leader_birth"), members, latch_path, census_fn)
+            return cls(None, pgid, record.get("leader_birth"), members, latch_path, census_fn,
+                       doubt=record.get("doubt"))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             return cls(None, -1, None, {}, latch_path, census_fn, doubt="latch unreadable: %s" % type(exc).__name__)
 
@@ -154,6 +198,7 @@ class Custody:
             return
         try:
             _write_latch(self.latch_path, {"pgid": self.pgid, "leader_birth": self.leader_birth, "state": state,
+                                           "identity_format": IDENTITY_FORMAT, "doubt": self.doubt,
                                            "members": {str(pid): birth for pid, birth in self.known.items()}})
         except OSError:
             self.doubt = self.doubt or "cleanup latch could not be written"
@@ -161,7 +206,8 @@ class Custody:
     # -- census ------------------------------------------------------------------------------
     def _live(self, snap: Mapping[int, Proc], pid: int) -> bool:
         info = snap.get(pid)
-        return info is not None and not info.zombie and info.birth == self.known.get(pid)
+        birth = self.known.get(pid)
+        return info is not None and not info.zombie and birth is not None and info.birth == birth
 
     def _group_state(self, snap: Mapping[int, Proc]) -> str:
         """``ours`` (provably), ``reused`` (the old group is provably gone), ``empty`` or ``unproven``."""
@@ -173,6 +219,12 @@ class Custody:
         if any(self._live(snap, i.pid) for i in members):
             return "ours"
         leader = snap.get(self.pgid)
+        if leader is not None and self.leader_birth is not None and leader.birth is None:
+            # A zombie still holds its PID, so it cannot be a recycled live leader. Once the
+            # group has no live members, its unreadable birth does not block proving it empty.
+            if leader.zombie and not members:
+                return "empty"
+            return "unproven"
         if leader is not None and self.leader_birth is not None and leader.birth != self.leader_birth:
             return "reused"                    # the leader pid was recycled: the old group was empty
         return "unproven" if members else "empty"
@@ -186,12 +238,24 @@ class Custody:
         if snap is None:
             if any(True for _ in self.known) and self.doubt is None:
                 self.doubt = "census unavailable while tracked processes were live"
+                self._persist("running")
             return None
         before = len(self.known)
-        if self._group_state(snap) == "ours":
+        prior_doubt = self.doubt
+        if any(info is not None and not info.zombie and info.birth is None
+               for info in (snap.get(pid) for pid in self.known)):
+            self.doubt = self.doubt or "tracked process identity unavailable"
+        group_state = self._group_state(snap)
+        if group_state == "unproven" and any(info.pgid == self.pgid and not info.zombie
+                                              for info in snap.values()):
+            self.doubt = self.doubt or "group members could not be verified"
+        if group_state == "ours":
             for info in snap.values():
                 if info.pgid == self.pgid and not info.zombie and info.pid not in self.known:
-                    self.known[info.pid] = info.birth
+                    if info.birth is None:
+                        self.doubt = self.doubt or "group member identity unavailable"
+                    else:
+                        self.known[info.pid] = info.birth
         children: dict = {}
         for info in snap.values():
             children.setdefault(info.ppid, []).append(info)
@@ -200,13 +264,16 @@ class Custody:
             parent = pending.pop()
             for info in children.get(parent, ()):      # a recycled parent pid never passes _live
                 if info.pid not in self.known and not info.zombie:
-                    self.known[info.pid] = info.birth
-                    pending.append(info.pid)
+                    if info.birth is None:
+                        self.doubt = self.doubt or "child identity unavailable"
+                    else:
+                        self.known[info.pid] = info.birth
+                        pending.append(info.pid)
         for pid in self.known:
             if not self._live(snap, pid) and any(c.pid not in self.known and not c.zombie
                                                  for c in children.get(pid, ())):
                 self.doubt = self.doubt or "unverified child of a missing tracked parent"
-        if len(self.known) != before:
+        if len(self.known) != before or self.doubt != prior_doubt:
             self._persist("running")
         return {pid: birth for pid, birth in self.known.items() if self._live(snap, pid)}
 

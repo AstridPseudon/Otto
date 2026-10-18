@@ -163,6 +163,7 @@ def _dead_pids(pids, seconds=2.0):
 def _write_latch(path, pgid, leader_birth, members):
     """Hand-write a latch record in the format the owner persists."""
     record = {"pgid": pgid, "leader_birth": leader_birth, "state": "running",
+              "identity_format": custody.IDENTITY_FORMAT,
               "members": {str(pid): birth for pid, birth in members.items()}}
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(record, handle, sort_keys=True)
@@ -1247,6 +1248,24 @@ def test_empty_census_is_uncertain():
         _reap_tree(owner.process if owner is not None else None)
 
 
+def test_census_uses_kernel_birth_and_marks_unreadable_pid_unknown():
+    self_pid, other_pid = os.getpid(), 987659
+    output = "%d 1 %d S\n%d 1 %d S\n" % (self_pid, self_pid, other_pid, other_pid)
+    ps = mock.MagicMock()
+    ps.__enter__.return_value = ps
+    ps.communicate.return_value = (output, None)
+    ps.returncode = 0
+    exact = custody.Proc(self_pid, 1, self_pid, "darwin:1792350000:123456")
+
+    with mock.patch.object(custody, "_REAL_POPEN", return_value=ps) as popen, \
+            mock.patch.object(custody, "_kernel_proc", side_effect=lambda pid: exact if pid == self_pid else None):
+        snap = custody.census()
+
+    assert snap[self_pid].birth == exact.birth
+    assert snap[other_pid].birth is None
+    assert "lstart" not in popen.call_args.args[0][-1]
+
+
 def test_cleanup_latch_resumes_after_crash(tmp_path):
     latch = str(tmp_path / "latch.json")
     leaders = []
@@ -1325,6 +1344,139 @@ def test_reused_pgid_never_signalled(tmp_path):
             assert touched() == [], "no signal reached the bystander"
     finally:
         _reap_tree(bystander)
+
+
+def test_same_second_pid_reuse_never_matches_or_receives_a_signal(tmp_path):
+    pid = 987654
+    original = "darwin:1792350000:100"
+    reused = "darwin:1792350000:900"
+    snap = {pid: custody.Proc(pid, 1, pid, reused)}
+    latch = _write_latch(tmp_path / "same-second.json", pid, original, {pid: original})
+
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        unit = custody.Custody.from_latch(latch, census_fn=lambda: snap)
+        assert unit.observe() == {}, "the reused pid cannot pass the live member check"
+        assert unit.signal_group(signal.SIGTERM) is False
+        disposition = unit.terminate(0)
+
+    assert disposition.state == "gone", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == []
+    assert not os.path.exists(latch)
+
+
+def test_missing_kernel_birth_keeps_custody_uncertain_and_unsignalled(tmp_path):
+    pid = 987655
+    original = "darwin:1792350000:100"
+    snap = {pid: custody.Proc(pid, 1, pid, None)}
+    latch = _write_latch(tmp_path / "missing-birth.json", pid, original, {pid: original})
+
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        unit = custody.Custody.from_latch(latch, census_fn=lambda: snap)
+        assert unit.observe() == {}
+        assert unit.signal_group(signal.SIGTERM) is False
+        disposition = unit.terminate(0)
+
+    assert disposition.state == "uncertain", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == []
+    assert os.path.exists(latch)
+    assert custody.Custody.from_latch(latch, census_fn=lambda: {}).doubt == "tracked process identity unavailable"
+
+
+def test_unreadable_zombie_leader_does_not_keep_an_empty_group_uncertain(tmp_path):
+    pid = 987662
+    birth = "darwin:1792350000:100"
+    latch = _write_latch(tmp_path / "zombie.json", pid, birth, {pid: birth})
+    snap = {pid: custody.Proc(pid, 1, pid, None, zombie=True)}
+
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        disposition = custody.resume_cleanup(latch, 0, census_fn=lambda: snap)
+
+    assert disposition.state == "gone", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == []
+    assert not os.path.exists(latch)
+
+
+def test_latch_cleanup_settles_after_signalled_members_become_zombies(tmp_path):
+    leader, child = 987663, 987664
+    leader_birth = "darwin:1792350000:100"
+    child_birth = "darwin:1792350000:200"
+    latch = _write_latch(tmp_path / "zombie-after-term.json", leader, leader_birth,
+                         {leader: leader_birth, child: child_birth})
+    snap = {leader: custody.Proc(leader, 1, leader, leader_birth),
+            child: custody.Proc(child, leader, leader, child_birth)}
+
+    def finish_group(pgid, sig):
+        assert (pgid, sig) == (leader, signal.SIGTERM)
+        snap[leader] = custody.Proc(leader, 1, leader, None, zombie=True)
+        snap[child] = custody.Proc(child, leader, leader, None, zombie=True)
+
+    with mock.patch.object(custody.os, "kill") as kill, \
+            mock.patch.object(custody.os, "killpg", side_effect=finish_group) as killpg:
+        disposition = custody.resume_cleanup(latch, 0, census_fn=lambda: snap)
+
+    assert disposition.state == "gone", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == [mock.call(leader, signal.SIGTERM)]
+    assert not os.path.exists(latch)
+
+
+def test_display_time_latch_cannot_claim_a_kernel_identity(tmp_path):
+    pid = 987658
+    latch = tmp_path / "old-latch.json"
+    display_birth = "Sun Oct 18 12:00:00 2026"
+    latch.write_text(json.dumps({"pgid": pid, "leader_birth": display_birth, "state": "running",
+                                 "members": {str(pid): display_birth}}), encoding="utf-8")
+    snap = {pid: custody.Proc(pid, 1, pid, "darwin:1792350000:100")}
+
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        disposition = custody.resume_cleanup(str(latch), 0, census_fn=lambda: snap)
+
+    assert disposition.state == "uncertain", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == []
+    assert latch.exists()
+    unrelated = {42: custody.Proc(42, 1, 42, "darwin:1792350001:1")}
+    assert custody.resume_cleanup(str(latch), 0, census_fn=lambda: unrelated).state == "uncertain"
+
+
+def test_unverified_escapee_latches_doubt_after_parent_disappears():
+    leader, escapee = 987656, 987657
+    birth = "darwin:1792350000:100"
+    snap = {leader: custody.Proc(leader, 1, leader, birth),
+            escapee: custody.Proc(escapee, leader, escapee, None)}
+    unit = custody.Custody(None, leader, birth, {leader: birth}, census_fn=lambda: snap)
+
+    assert unit.observe() == {leader: birth}
+    assert unit.doubt == "child identity unavailable"
+    snap = {42: custody.Proc(42, 1, 42, "darwin:1792350001:1")}
+    assert unit.status().state == "uncertain"
+
+
+def test_exact_escapee_birth_controls_individual_signalling():
+    leader, escapee = 987660, 987661
+    leader_birth = "darwin:1792350000:100"
+    escapee_birth = "darwin:1792350000:200"
+    snap = {leader: custody.Proc(leader, 1, leader, leader_birth),
+            escapee: custody.Proc(escapee, leader, escapee, escapee_birth)}
+    unit = custody.Custody(None, leader, leader_birth, {leader: leader_birth}, census_fn=lambda: snap)
+
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        assert unit.observe() == {leader: leader_birth, escapee: escapee_birth}
+        unit._send(signal.SIGTERM)
+        assert kill.call_args_list == [mock.call(escapee, signal.SIGTERM)]
+        assert killpg.call_args_list == [mock.call(leader, signal.SIGTERM)]
+
+        # The escaped pid is recycled within the same second. It must lose custody.
+        snap = {leader: snap[leader],
+                escapee: custody.Proc(escapee, 1, escapee, "darwin:1792350000:900")}
+        kill.reset_mock()
+        killpg.reset_mock()
+        unit._send(signal.SIGTERM)
+        assert kill.call_args_list == []
+        assert killpg.call_args_list == [mock.call(leader, signal.SIGTERM)]
 
 
 def test_group_kill_takes_grandchildren_and_setsid_escapees(tmp_path):
