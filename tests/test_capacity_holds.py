@@ -110,6 +110,8 @@ class CapacityHoldTests(unittest.TestCase):
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
                 return
+            except PermissionError:
+                pass
             time.sleep(0.01)
 
     def test_dead_pgid_frees_capacity_keeps_fence(self):
