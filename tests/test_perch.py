@@ -1416,6 +1416,30 @@ class AssertionKindTests(unittest.TestCase):
         self.assertTrue((raw / "stage2-disturb-refused-landing-after-next-project.json").is_file())
         self.assertTrue((raw / "stage2-disturb-operator-denial-admission.jsonl").is_file())
 
+    def test_restart_reconciles_held_due_from_owner_evidence_without_worker_marker(self):
+        import re
+        import shlex
+
+        raw = clean_stage2_disturbance_evidence(self.tmp / "restart-due-reconcile")
+        shell = PERCH.read_text(encoding="utf-8")
+        reconcile = re.search(r"(?ms)^stage2_restart_due_reconciled\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(reconcile)
+
+        def run_predicate():
+            script = "\n".join(("set -euo pipefail", "RAW=" + shlex.quote(str(raw)),
+                                  "PY=" + shlex.quote(sys.executable), reconcile.group(),
+                                  "stage2_restart_due_reconciled"))
+            return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+
+        # No worker marker is seeded and the extracted function has no access to a marker helper.
+        self.assertEqual(run_predicate().returncode, 0)
+        patch(raw, "stage2-disturb-restart-after-dues.json",
+              lambda value: value["schedules"][0].update(host_evidence={}))
+        self.assertNotEqual(run_predicate().returncode, 0)
+        got = statuses(raw)
+        self.assertEqual({name for name in DISTURBANCE_INVARIANTS if got.get(name) == "fail"},
+                         {"disturbance-owner-custody"}, got)
+
     def test_each_stage_two_disturbance_has_six_named_invariant_regressions(self):
         """A doctored product observation in each step turns one named invariant red."""
         cases = {
@@ -2781,9 +2805,38 @@ def run_perch(tmp, sha, fault="", stage="0"):
             r = subprocess.run(["bash", str(PERCH), stage, "--fake"], env=env, stdin=subprocess.DEVNULL, stdout=out,
                                stderr=subprocess.STDOUT, timeout=600)
         except subprocess.TimeoutExpired:
-            return None, log.read_text(encoding="utf-8")[-4000:], None
+            return None, _perch_timeout_diagnostics(tmp, stage, log), None
     reports = list((tmp / "perch" / stage).glob("*/report.md"))
     return r.returncode, log.read_text(encoding="utf-8"), reports[0].parent if reports else None
+
+
+def _perch_timeout_diagnostics(tmp, stage, log):
+    """Preserve useful raw progress evidence in a timeout assertion without inspecting owner processes."""
+    lines = ["perch.sh exceeded its 600 s limit", "log tail:\n" + log.read_text(encoding="utf-8")[-4000:]]
+    stage_root = Path(tmp) / "perch" / str(stage)
+    runs = sorted((p for p in stage_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime) \
+        if stage_root.is_dir() else []
+    if not runs:
+        lines.append("no run directory under " + str(stage_root))
+        return "\n".join(lines)
+    run = runs[-1]
+    raw = run / "raw"
+    if not raw.is_dir():
+        lines.append("latest run has no raw directory: " + str(run))
+        return "\n".join(lines)
+    files = sorted((p for p in raw.rglob("*") if p.is_file()), key=lambda p: str(p.relative_to(raw)))
+    lines.append("latest raw artifact inventory (%s files):" % len(files))
+    lines.extend("  %s (%s bytes)" % (p.relative_to(raw), p.stat().st_size) for p in files[-100:])
+    # These are durable progress/error observations; intentionally omit pidfiles, process listings,
+    # and staging owner logs so a timeout report cannot preserve owner state.
+    for name in ("perch.log", "stage2-setup-errors.txt", "durations.tsv", "events.tsv",
+                 "stage2-disturb-restart-action.json", "stage2-disturb-restart-reconcile-project.json",
+                 "stage2-disturb-restart-before-owner.json", "stage2-disturb-restart-after-owner.json",
+                 "stage2-disturb-restart-after-dues.json", "stage2-disturb-restart-after-project.json"):
+        path = raw / name
+        if path.is_file():
+            lines.append("%s tail:\n%s" % (name, path.read_text(encoding="utf-8", errors="replace")[-3000:]))
+    return "\n".join(lines)
 
 
 def results_of(report_dir):

@@ -49,6 +49,9 @@ trap 'rc=$?; stop_background; if [ "$rc" = 0 ] && [ -z "$PERCH_FINISHED" ]; then
 
 # One line of the observation record: time, task, event, detail. The worker's own events are in worker-TASK.jsonl.
 event() { printf '%s\t%s\t%s\t%s\n' "$(now)" "$2" "$1" "$3" >> "$RAW/events.tsv"; }
+# A flushed human-readable progress line lets the outer staging timeout say
+# which product operation was in flight when it expired.
+checkpoint() { printf '%s\t%s\n' "$(now)" "$1" >> "$RAW/perch.log"; }
 # A duration: phase, task, start epoch. The seconds are measured now; the start is written as a UTC time.
 phase() {
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(date -u -r "$3" +%Y-%m-%dT%H:%M:%SZ)" "$(( $(date +%s) - $3 ))" >> "$RAW/durations.tsv"
@@ -205,6 +208,7 @@ PY
 # Keep the owner's refusal response and surrounding product projections.
 stage2_disturb_operator_denial() {  # HOST TASK
   local host="$1" task_id="$2" ref revision task_ref_id request_id response="$RAW/stage2-disturb-operator-denial-response.json"
+  checkpoint "stage2 operator denial: before"
   ref="$("$PY" -I -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
     "$RAW/stage2-disturb-activation.json" "$task_id")" || return 1
   revision="$("$PY" -I -c 'import json,sys; print(json.loads(sys.argv[1])["revision"])' "$ref")" || return 1
@@ -266,6 +270,7 @@ Path(action).write_text(json.dumps({"command":"service admit (operator presence 
     "response":response,"stdout":raw},sort_keys=True,indent=2)+"\n")
 PYDENY2
   stage2_disturb_capture operator-denial after "$host" perch-disturb
+  checkpoint "stage2 operator denial: after"
 }
 
 stage2_disturb_arm() {  # STEP TASK MODE
@@ -328,6 +333,7 @@ stage2_disturb_start_manager() {  # HOST
 
 stage2_disturb_refused_landing() {  # HOST PROJECT
   local host="$1" project="$2" marker
+  checkpoint "stage2 refused landing: before"
   stage2_disturb_seed_conflict || return 1
   stage2_disturb_capture refused-landing before "$host" "$project"
   stage2_disturb_arm refused-landing E conflict
@@ -349,21 +355,25 @@ stage2_disturb_refused_landing() {  # HOST PROJECT
   stage2_admit_tasks F "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
   stage2_wait_worker "$host" F "$project" "$RAW/stage2-disturb-activation.json" || return 1
   cp "$RAW/stage2-dispatch-F-project.json" "$RAW/stage2-disturb-refused-landing-after-next-project.json"
+  checkpoint "stage2 refused landing: after"
 }
 
 stage2_disturb_queued_landings() {  # HOST PROJECT
   local host="$1" project="$2"
+  checkpoint "stage2 queued landings: before"
   stage2_disturb_capture queued-landings before "$host" "$project"
   stage2_disturb_arm queued-landings G double-done
   stage2_admit_tasks G "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
   stage2_wait_worker "$host" G "$project" "$RAW/stage2-disturb-activation.json" || return 1
-  stage2_disturb_finish queued-landings "$host" "$project" G
+  stage2_disturb_finish queued-landings "$host" "$project" G || return 1
+  checkpoint "stage2 queued landings: after"
 }
 
 # These steps need an independent admitted project/task so their evidence can
 # coexist with the stage-2 A/B/C completion and C kill assertions. The trigger
 # is still the normal host product command, and its refusal is recorded raw.
 stage2_disturb_restart() {  # HOST PROJECT
+  checkpoint "stage2 restart disturbance: capture before"
   stage2_disturb_capture restart before "$1" "$2"
   stage2_host_client --host "$1" schedules --project "$2" \
       > "$RAW/stage2-disturb-restart-before-dues.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
@@ -383,9 +393,11 @@ PY
   stage2_disturb_capture restart after "$1" "$2"
   stage2_host_client --host "$1" schedules --project "$2" \
       > "$RAW/stage2-disturb-restart-after-dues.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  checkpoint "stage2 restart disturbance: product readback captured"
 }
 
 stage2_disturb_overlapping_activation() {  # HOST PROJECT SECOND_PROJECT
+  checkpoint "stage2 overlapping activation: before"
   stage2_disturb_capture overlapping-activation before "$1" "$2"
   local rc=0
   if stage2_activate_disturb_project "$1"; then :; else rc=$?; fi
@@ -404,10 +416,12 @@ Path(action).write_text(json.dumps({"command":"project activate","rc":int(rc),"r
  "stdout":raw,"stderr":Path(stderr).read_text(errors="replace")},sort_keys=True,indent=2)+"\n")
 PY
   stage2_disturb_capture overlapping-activation after "$1" "$2"
+  checkpoint "stage2 overlapping activation: after"
 }
 
 stage2_disturb_failed_launch() {  # HOST PROJECT TASK
   local host="$1" project="$2" task="${3:-H}"
+  checkpoint "stage2 failed launch: before"
   stage2_disturb_capture failed-launch before "$host" "$project"
   stage2_disturb_arm failed-launch "$task" failed-launch
   stage2_admit_tasks "$task" "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
@@ -420,6 +434,7 @@ stage2_disturb_failed_launch() {  # HOST PROJECT TASK
       > "$RAW/stage2-disturb-failed-launch-after-dues.json" \
       2>> "$RAW/stage2-setup-errors.txt" || return 1
   cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-disturb-failed-launch-action.json"
+  checkpoint "stage2 failed launch: after"
 }
 
 # Operator service admit retains its request on the service's owner lane. The
@@ -513,14 +528,49 @@ stage2_prepare_disturb_project() {
 }
 
 stage2_activate_disturb_project() {  # HOST
-  local host="$1"
-  stage2_host_client --host "$host" project activate --project perch-disturb --worktree "$CANON" \
+  local host="$1" request_id next_request retained="$RAW/stage2-disturb-activation-retained.json"
+  checkpoint "stage2 activation perch-disturb: submit"
+  # A host command otherwise inherits the 900-second client default, which is
+  # longer than the outer staging harness deadline. Submit with zero wait and
+  # read this same retained product request until its actual activation result.
+  stage2_host_client --host "$host" --wait-seconds 0 project activate \
+      --project perch-disturb --worktree "$CANON" \
       > "$RAW/stage2-disturb-activation.json" 2> "$RAW/stage2-disturb-activation-errors.txt" || return 1
+  if ! request_id="$("$PY" -I - "$RAW/stage2-disturb-activation.json" <<'PYACTIVATION-REQUEST'
+import json,re,sys
+from pathlib import Path
+value=json.loads(Path(sys.argv[1]).read_text())
+if value.get("outcome")=="pending":
+    token=value.get("request_id")
+    if value.get("terminal") is not False or not isinstance(token,str) or not re.fullmatch(r"[0-9a-f]{32}",token):
+        raise SystemExit("activation returned an invalid retained request")
+    print(token)
+PYACTIVATION-REQUEST
+)"; then return 1; fi
+  while [ -n "$request_id" ]; do
+    checkpoint "stage2 activation perch-disturb: read retained request $request_id"
+    stage2_host_client --host "$host" request-status --request-id "$request_id" \
+        > "$retained" 2>> "$RAW/stage2-disturb-activation-errors.txt" || return 1
+    if ! next_request="$("$PY" -I - "$retained" "$request_id" <<'PYACTIVATION-RETAINED'
+import json,re,sys
+from pathlib import Path
+value=json.loads(Path(sys.argv[1]).read_text())
+if value.get("outcome")=="pending":
+    token=value.get("request_id")
+    if value.get("terminal") is not False or token!=sys.argv[2] or not re.fullmatch(r"[0-9a-f]{32}",token or ""):
+        raise SystemExit("activation changed its retained request id")
+    print(token)
+PYACTIVATION-RETAINED
+)"; then return 1; fi
+    request_id="$next_request"
+  done
+  if [ -s "$retained" ]; then cp "$retained" "$RAW/stage2-disturb-activation.json"; fi
   stage2_host_client --host "$host" project status --project perch-disturb \
       > "$RAW/stage2-disturb-second-project-status.json" 2>> "$RAW/stage2-disturb-activation-errors.txt" || return 1
   "$PY" -I "$REPORT_PY" stage2-review-ref --status "$RAW/stage2-disturb-second-project-status.json" \
       --activation "$RAW/stage2-disturb-activation.json" --bundle "$CANARY_DIR/disturb-project" \
       > "$RAW/stage2-disturb-review-ref.json" 2>> "$RAW/stage2-disturb-activation-errors.txt" || return 1
+  checkpoint "stage2 activation perch-disturb: prepared and reviewed"
 }
 
 stage2_disturb_seed_conflict() {
@@ -548,49 +598,79 @@ stage2_run_disturbances() {  # HOST
   return 0
 }
 
+stage2_restart_due_reconciled() {
+  # Read the raw product observations written by stage2_disturb_restart. The
+  # same active Due must be either unresolved and still held, or terminal and
+  # released. Neither valid disposition requires a resumed worker marker.
+  "$PY" -I - "$RAW/stage2-disturb-restart-before-dues.json" \
+      "$RAW/stage2-disturb-restart-after-dues.json" \
+      "$RAW/stage2-disturb-restart-before-owner.json" \
+      "$RAW/stage2-disturb-restart-after-owner.json" \
+      "$RAW/stage2-disturb-activation.json" <<'PYRESTART-DUE'
+import json,sys
+from pathlib import Path
+
+def read(path):
+    try: return json.loads(Path(path).read_text())
+    except Exception: return None
+
+def due(snapshot, task_id):
+    if not isinstance(snapshot,dict) or snapshot.get("outcome")!="read": return None
+    schedules=snapshot.get("schedules")
+    if not isinstance(schedules,list): return None
+    matches=[]
+    for row in schedules:
+        if not isinstance(row,dict): continue
+        target=row.get("target") or {}
+        ref=row.get("task_ref") or (target.get("task_ref") if isinstance(target,dict) else None)
+        if isinstance(ref,dict) and ref.get("id")==task_id: matches.append(row)
+    return matches[0] if len(matches)==1 else None
+
+before,after,before_owner,after_owner,activation=(read(p) for p in sys.argv[1:])
+refs=((((activation or {}).get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs") or {}
+d_ref=refs.get("D") or {}
+if not isinstance(d_ref.get("id"),str): raise SystemExit(1)
+old,new=due(before,d_ref["id"]),due(after,d_ref["id"])
+if not isinstance(old,dict) or not isinstance(new,dict): raise SystemExit(1)
+schedule=old.get("schedule_id")
+if (not isinstance(schedule,str) or not schedule or new.get("schedule_id")!=schedule
+        or old.get("assignment_ref")!=new.get("assignment_ref")
+        or (old.get("target") or {}).get("task_ref")!=(new.get("target") or {}).get("task_ref")
+        or old.get("host_state")!="active" or old.get("stop_state")!="active"
+        or old.get("completion_state")!="none"):
+    raise SystemExit(1)
+old_holds=((before_owner or {}).get("native_capacity") or {}).get("holds")
+new_holds=((after_owner or {}).get("native_capacity") or {}).get("holds")
+if not isinstance(old_holds,list) or schedule not in old_holds or not isinstance(new_holds,list):
+    raise SystemExit(1)
+host_state=new.get("host_state")
+completion=new.get("completion_state")
+evidence=(isinstance(new.get("host_evidence"),dict) and bool(new["host_evidence"])
+          or isinstance(new.get("completion_evidence"),dict) and bool(new["completion_evidence"]))
+if host_state not in {"unknown","pending","active","paused","failed"} or not evidence:
+    raise SystemExit(1)
+unresolved=completion in {"none","unknown"} and new.get("stop_state")=="active"
+terminal=completion in {"succeeded","failed"} or new.get("stop_state")=="completed"
+if unresolved and schedule in new_holds: raise SystemExit(0)
+if terminal and schedule not in new_holds: raise SystemExit(0)
+raise SystemExit(1)
+PYRESTART-DUE
+}
+
 stage2_disturb_restart_task() {  # HOST
-  local host="$1" marker old_pid current_pid command new_marker trace
+  local host="$1" marker old_pid trace
+  checkpoint "stage2 restart task D: admit and hold worker"
   stage2_disturb_arm restart D hold
   stage2_admit_tasks D "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
   marker="$(stage2_wait_marker worker-D)" || return 1
   old_pid="$(cat "$marker")" || return 1
+  checkpoint "stage2 restart task D: restart with held worker pid $old_pid"
   stage2_disturb_restart "$host" perch-disturb || return 1
-  while :; do
-    new_marker="$(find "$CANARY_DIR" -name .perch-worker-D.pid -print -quit 2>/dev/null || true)"
-    current_pid="$(cat "$new_marker" 2>/dev/null || true)"
-    command="$(ps -ww -p "$current_pid" -o command= 2>/dev/null || true)"
-    if [ -n "$current_pid" ] && [ "$current_pid" = "$old_pid" ]; then
-      break
-    fi
-    if [ -n "$current_pid" ] && [ "$current_pid" != "$old_pid" ]; then
-      case "$command" in
-        *"$CANARY_DIR/perch-fake-claude"*) stage2_release_marker "$new_marker" || return 1; break ;;
-      esac
-    fi
-    stage2_host_client --host "$host" project status --project perch-disturb \
-      > "$RAW/stage2-disturb-restart-reconcile-project.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
-    if ! "$PY" -I - "$RAW/stage2-disturb-restart-reconcile-project.json" <<'PYRESTART'
-import json,sys
-from pathlib import Path
-v=json.loads(Path(sys.argv[1]).read_text())
-tasks=v.get("tasks") or []
-row=next((item for item in tasks if isinstance(item,dict) and item.get("id")=="D"),{})
-raise SystemExit(0 if (row.get("dispatch") or {}).get("state")=="launched" else 1)
-PYRESTART
-    then
-      break
-    fi
-    if "$PY" -I - "$RAW/stage2-disturb-restart-after-owner.json" <<'PYRESTART-CAPACITY'
-import json,sys
-from pathlib import Path
-v=json.loads(Path(sys.argv[1]).read_text())
-raise SystemExit(0 if (v.get("native_capacity") or {}).get("active_or_uncertain")==0 else 1)
-PYRESTART-CAPACITY
-    then
-      break
-    fi
-    stage2_owner_alive || return 1
-  done
+  if ! stage2_restart_due_reconciled; then
+    echo "restart did not produce an evidenced held or terminal disposition for task D" >> "$RAW/stage2-setup-errors.txt"
+    return 1
+  fi
+  checkpoint "stage2 restart task D: exact Due reconciled from owner evidence"
   trace="$(find "$CANARY_DIR" -name '.perch-disturb-D-trace.json' -print -quit 2>/dev/null || true)"
   [ -z "$trace" ] || cp "$trace" "$RAW/stage2-disturb-restart-worker-trace.json"
   return 0
@@ -1105,6 +1185,8 @@ run_stage() {  # STAGE
   LABS="$CANARY_DIR/labs"
   mkdir -p "$RAW"
   if [ "$stage" = 2 ]; then
+    : > "$RAW/perch.log"
+    checkpoint "stage 2: initialized raw evidence"
     "$PY" -I "$REPORT_PY" stage2-owner-labs --root "$CANON.otto-labs" \
       --out "$RAW/stage2-owner-labs-before.json"
   fi
@@ -1171,15 +1253,18 @@ run_stage() {  # STAGE
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: staging did not start (rc $RESTART_RC)"
         elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
-        elif stage2_setup && { [ -z "$FAKE" ] || stage2_prepare_disturb_project; }; then
+        elif { checkpoint "stage2 owner setup: begin"; stage2_setup; } \
+            && { [ -z "$FAKE" ] || { checkpoint "stage2 disturbance project setup: begin"; stage2_prepare_disturb_project; }; }; then
           host="$($PY -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
           if stage2_admit_tasks C && stage2_edit_C && stage2_admit_tasks "A B"; then
+            checkpoint "stage2 primary tasks C/A/B admitted"
             if stage2_finish_C && stage2_dispatch_tasks && \
                 { [ -z "$FAKE" ] || stage2_run_disturbances "$host"; }; then
               if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
                 cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
               fi
               "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value ran
+              checkpoint "stage2 primary dispatch and disturbances: complete"
               host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
               stage2_host_client --host "$host" project status --project perch-stage2 > "$RAW/stage2-dispatch-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
               cold_client service status > "$RAW/stage2-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
