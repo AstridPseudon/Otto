@@ -130,7 +130,9 @@ class OttoAssessment:
         current_parent = self._reader.get_identity(ResourceRef(parent.authority, parent.kind, parent.id))
         if current_parent is None or (parent.revision is not None and parent.revision != current_parent.ref.revision):
             raise OttoAssessmentError("parent obligation is missing or stale")
-        events = tuple(self._reader.list_events(stream="assessment"))
+        events = tuple(self._reader.list_events(
+            stream="assessment", assessment_parent=current_parent.ref
+        ))
         if len(events) > 10000:
             raise OttoAssessmentError("assessment history exceeds the complete-view bound")
 

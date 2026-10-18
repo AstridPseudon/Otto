@@ -153,6 +153,143 @@ class LocalAssessmentCompositionTests(unittest.TestCase):
         self.assertEqual((before.cumulative_used_units, before.held_units), (3, 0))
         self.assertEqual((after.cumulative_used_units, after.held_units), (3, 0))
 
+    def test_parent_coverage_bound_ignores_unrelated_assessment_history(self):
+        from otto.portfolio.assessment import OttoAssessment, OttoAssessmentError
+
+        store = self.f.store
+        assessment = AssessmentModule(store, actor=self.f.actor)
+        task = ResourceRef.from_dict(self.state["task_refs"]["PA01"])
+        other = ResourceRef.from_dict(self.state["task_refs"]["PA06"])
+        criterion = ResourceRef.from_dict(self.state["criterion_refs"]["C01"])
+        other_criterion = ResourceRef.from_dict(self.state["criterion_refs"]["C09"])
+
+        target_scope = assessment.declare_scope(
+            "assecap-target", parent_obligation=task, protocol="inspection",
+            criteria=[criterion], designated_approver="manager",
+            authority=self.f.actor.authority,
+            policy={"required_for_completion": True},
+            logical_request_key="assecap-target",
+        )
+        other_scope = assessment.declare_scope(
+            "assecap-other", parent_obligation=other, protocol="inspection",
+            criteria=[other_criterion], designated_approver="manager",
+            authority=self.f.actor.authority,
+            policy={"required_for_completion": True},
+            logical_request_key="assecap-other",
+        )
+
+        # Keep a real current correction in the coverage view while exercising
+        # both correction event shapes in the parent selector.
+        document = ContentDocument(
+            ResourceRef(self.f.actor.authority, "dat.content.document", "assecap-source"),
+            role="SOURCE", visibility="shared", access_mode="read",
+            maintainer="manager", authoring_scope=self.f.project.ref,
+        )
+        revision = ContentRevision(
+            document.ref, "rev-1", {"inspection": "assecap", "source_digest": "a" * 64},
+            self.f.actor, initial=True,
+        )
+        envelope = self.f.owner.content.build_create_document(
+            TransactionContext(self.f.actor, "assecap-source", "b" * 64), document, revision
+        )
+        self.f.owner.content.execute(envelope)
+        packet = assessment.freeze_input(
+            target_scope.ref, packet={"inspected": True}, consumed_refs=[revision.ref],
+            logical_request_key="assecap-input",
+        )
+        limit_pool = LimitService(store).create_pool(
+            ResourceRef(self.f.actor.authority, "limit", "assecap-pool"),
+            capacity_units=1, cumulative_allowance_units=2,
+            logical_request_key="assecap-pool", actor=self.f.actor,
+        )
+        result = assessment.assess(
+            target_scope.ref, candidate=revision.ref, criterion=criterion,
+            input_packet=packet.ref, verdict="REWORK", findings=[{"summary": "needs correction"}],
+            protocol_result={"inspected": True}, limit_pool=limit_pool.ref,
+            logical_request_key="assecap-rework",
+        )
+        correction = assessment.create_correction(
+            result.ref, instruction="Correct the finding", logical_request_key="assecap-correction"
+        )
+        events = store.list_events(stream="assessment")
+        target_event = next(
+            event for event in events if event.subject.id == target_scope.ref.id
+            and event.event_type == "assessment.scope.declared"
+        )
+        other_event = next(
+            event for event in events if event.subject.id == other_scope.ref.id
+            and event.event_type == "assessment.scope.declared"
+        )
+        correction_event = next(
+            event for event in events if event.subject.id == correction.ref.id
+            and event.event_type == "assessment.correction.created"
+        )
+        sequence = events[-1].sequence + 1
+
+        amended_scope_event = replace(
+            target_event, event_id="assecap-amended-scope", sequence=sequence,
+            before_refs=(target_scope.ref, task, task),
+            effects={"owner_amendment": {"request_key": "assecap-amendment"}},
+        )
+        store.append_event(amended_scope_event)
+        sequence += 1
+        resolved_correction_event = replace(
+            correction_event, event_id="assecap-correction-resolved", sequence=sequence,
+            event_type="assessment.correction.resolved",
+            before_refs=(correction.ref, result.ref), effects={"status": "resolved"},
+        )
+        store.append_event(resolved_correction_event)
+        sequence += 1
+
+        selected = store.list_events(stream="assessment", assessment_parent=task)
+        selected_ids = {event.event_id for event in selected}
+        self.assertIn("assecap-amended-scope", selected_ids)
+        self.assertIn(correction_event.event_id, selected_ids)
+        self.assertIn("assecap-correction-resolved", selected_ids)
+
+        def add_history(template, label):
+            nonlocal sequence
+            with store.transaction() as transaction:
+                for index in range(10_001):
+                    store.append_event(
+                        replace(
+                            template,
+                            event_id=f"assecap-{label}-{index}",
+                            sequence=sequence,
+                            effects={},
+                        ),
+                        transaction=transaction,
+                    )
+                    sequence += 1
+
+        add_history(other_event, "other")
+        view = OttoAssessment(assessment, self.f.actor)
+        coverage = view.coverage(task)
+        self.assertTrue(coverage["complete_scan"])
+        self.assertEqual(coverage["scope_count"], 1)
+        self.assertEqual(coverage["scopes"][0]["ref"], target_scope.ref.to_dict())
+        self.assertEqual(coverage["coverage"][0]["state"], "assessed")
+        self.assertEqual([row["ref"] for row in coverage["corrections"]], [correction.ref.to_dict()])
+
+        policy = LocalAssessmentPolicy.from_run_config(
+            self.config, state=self.state
+        )
+        commands = self.f.owner.manager_assessment(
+            project_ref=self.state["project_ref"],
+            task_ref=self.state["task_refs"]["PA01"],
+            manager_assignment_ref=self.state["assignment_ref"],
+            manager_actor=self.state["manager"],
+            manager_generation=self.state["manager_generation"],
+            assessment_policy=policy,
+        )
+        self.assertEqual(commands.required_scope().ref, target_scope.ref)
+
+        add_history(target_event, "target")
+        with self.assertRaisesRegex(OttoAssessmentError, "complete-view bound"):
+            view.coverage(task)
+        with self.assertRaisesRegex(OttoAssessmentError, "complete-view bound"):
+            commands.required_scope()
+
     def test_current_source_role_dat_documents_accept_and_complete_both_tasks(self):
         manager_assessment_pool_from_command(self.f.owner, state=self.state, request=self.request("PA01"))
         for alias, criterion_alias in (("PA01", "C01"), ("PA06", "C09")):
