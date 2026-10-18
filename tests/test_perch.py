@@ -1061,6 +1061,11 @@ class AssertionKindTests(unittest.TestCase):
         self.assertTrue(any("final product status snapshot missing" in detail
                             and "A, B" in detail for detail in failures), failures)
         self.assertFalse(any("has no landed and completed product status" in detail for detail in failures), failures)
+        patch(raw, "stage2-store-events.json", lambda value: value.update(events=[
+            row for row in value["events"] if not (row.get("alias") == "A"
+                                                    and row.get("event_type") == "work.result.appended")]))
+        failures = perch_report.stage2_timeline_failures(raw, json.loads((raw / "config.json").read_text()))
+        self.assertTrue(any("A missing landing observation" in detail for detail in failures), failures)
 
     def test_stage_two_completion_requires_manager_turn_accepted_citations_and_resolved_holds(self):
         cases = (
@@ -1090,11 +1095,6 @@ class AssertionKindTests(unittest.TestCase):
         self.assertEqual(statuses(raw)["worker-kill-recovery"], "fail")
         shell = PERCH.read_text(encoding="utf-8")
         self.assertIn('stage2-boundary-closed --status "$RAW/stage2-recovery-owner.json"', shell)
-        patch(raw, "stage2-store-events.json", lambda value: value.update(events=[
-            row for row in value["events"] if not (row.get("alias") == "A"
-                                                    and row.get("event_type") == "work.result.appended")]))
-        failures = perch_report.stage2_timeline_failures(raw, json.loads((raw / "config.json").read_text()))
-        self.assertTrue(any("A missing landing observation" in detail for detail in failures), failures)
 
     def test_stage_two_instruction_edit_requires_exact_project_sheet_event(self):
         cases = (
