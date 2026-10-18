@@ -1306,7 +1306,11 @@ class ExecutionApplication:
             due = self._read(schedule_id)
             return owner.inline_execution(self, due,
                 lambda: self._gated_start(schedule_id=schedule_id, settle=settle))
-        if self._direct_host_directory is not None:
+        # The built-in native transport needs a serialized owner for its pin.
+        # Injected bindings keep the direct path: a binding that launches a
+        # process must supply an owner, or its pin aborts before input.
+        if (self._direct_host_directory is not None
+                and getattr(self.runtime.adapter, "direct_native_host_required", False)):
             direct = ExecutionHost(directory=self._direct_host_directory,
                 handler=lambda _request: None, bounded_transports=True)
             direct.start()

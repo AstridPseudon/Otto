@@ -432,6 +432,7 @@ def _compose_on_process(observer, authorization, pin):
 class ClaudeWorkerAdapter:
     owner_transport_only = True
     owner_bound = True
+    direct_native_host_required = True
     require_host_context = True
     adapter_identity = IDENTITY
     # Worker invocations are finite leaves (no coordinating workers); the
