@@ -254,13 +254,16 @@ class ToolFacade:
                 "result": result,
             }
         except Exception as exc:
-            # Only the owner's explicit landing refusal is safe to describe to a
-            # worker. Generic exceptions can carry arbitrary code/message fields
-            # and those fields may contain credentials or private state.
+            # Only class-declared owner error codes are classified. Generic
+            # exceptions can acquire arbitrary instance code/message fields that
+            # may contain credentials or private state.
             from herzchen.fleet.landing import LandingError
+            code = getattr(type(exc), "code", None)
+            message = getattr(type(exc), "message", None)
             if isinstance(exc, LandingError):
-                message = exc.message if isinstance(exc.message, str) and exc.message else str(exc)
-                return {"ok": False, "error": exc.code, "detail": message}
+                message = exc.message
+            if isinstance(code, str) and code and isinstance(message, str) and message:
+                return {"ok": False, "error": code, "detail": message}
             return _refusal("owner_unavailable", type(exc).__name__)
 
     def _allowed(self, role: str, tool: object) -> ToolSpec | None:
