@@ -831,14 +831,13 @@ class PortfolioOwnerBootstrap:
 
     def packet_service(self) -> Any:
         """Return the owner-scoped DAT visibility and attention facade."""
-        from herzchen.content import domain_contribution as content_contribution
-        from herzchen.content.packets import ContextPacketService
+        from herzchen.content.packets import ContextPacketService, domain_contribution as packet_contribution
         with self._facade_lock:
             if self._closed:
                 raise RuntimeError("owner bootstrap is closed")
             if self._packet_service is None:
                 self._packet_service = self._own(ContextPacketService(
-                    self.store.domain_handler((content_contribution(),))))
+                    self.store.domain_handler((packet_contribution(),))))
             return self._packet_service
 
     def project_finished(self, project_ref: Any) -> Any:
