@@ -83,6 +83,7 @@ class ProjectOperator:
     def __init__(self, config: dict, config_sha256: str):
         self.config, self.config_sha256 = config, config_sha256
         self.store = None
+        self.owner = None
 
     def __enter__(self):
         target = self.config['store']
@@ -110,11 +111,20 @@ class ProjectOperator:
             self.operations = self.application.portfolio.operations
             return self
         except BaseException:
+            if self.owner is not None:
+                try:
+                    self.owner.close()
+                except BaseException:
+                    pass
             self.store.close()
             raise
 
     def __exit__(self, *_):
-        self.store.close()
+        try:
+            if self.owner is not None:
+                self.owner.close()
+        finally:
+            self.store.close()
 
     def _task(self, raw: str) -> dict:
         pin = json.loads(raw)
@@ -191,9 +201,7 @@ class ProjectOperator:
         scope = plan['pilot_scope']
         need(scope['task_alias'] == 'T01' and scope['criterion_alias'] == 'C01', 'only original T01/C01 is permitted')
         self._task(json.dumps(scope['task_ref']))
-        from herzchen.domains.assessment import AssessmentModule
-        assessment = AssessmentModule(self.store, actor=self.owner.owner_actor,
-            payload_resolver=self.owner.evidence_payload_resolver)
+        assessment = self.owner.assessment_module()
         assessment_scope = assessment.get_scope(ResourceRef.from_dict(scope['assessment_scope_ref']))
         need(json_value(assessment_scope.ref) == scope['assessment_scope_ref'],
              'original C01 scope is stale')

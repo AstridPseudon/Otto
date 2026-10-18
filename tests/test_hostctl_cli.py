@@ -112,6 +112,13 @@ class HostctlFixture(unittest.TestCase):
         _write_launcher(self.launcher, FAKE_VERSION)
 
     # -- helpers -----------------------------------------------------------
+    def _isolate_command_tempdir(self):
+        command_tmp = tempfile.TemporaryDirectory(prefix="sessionfd-", dir="/private/tmp")
+        previous = tempfile.tempdir
+        self.addCleanup(command_tmp.cleanup)
+        tempfile.tempdir = command_tmp.name
+        self.addCleanup(lambda: setattr(tempfile, "tempdir", previous))
+
     def _ottoctl(self, *args: str):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -179,6 +186,127 @@ class HostctlFixture(unittest.TestCase):
 
 
 class HostctlCliTest(HostctlFixture):
+    def test_resident_project_status_retires_services_and_preserves_principals(self):
+        import copy
+        from otto.hostctl.owner import HostSession
+
+        self._isolate_command_tempdir()
+        self._ready()
+        fd_dir = next(
+            (path for path in ("/dev/fd", "/proc/self/fd") if os.path.isdir(path)),
+            None,
+        )
+        if fd_dir is None:
+            self.skipTest("no process descriptor census is available")
+
+        def census():
+            return {
+                "descriptors": len(os.listdir(fd_dir)),
+                "threads": len(threading.enumerate()),
+                "command_dirs": sum(
+                    entry.name.startswith("herzchen-command-")
+                    for entry in os.scandir(tempfile.gettempdir())
+                ),
+            }
+
+        code, result = self._ottoctl("project", "status", "--project", "demo-run")
+        self.assertEqual(code, 0, result)
+        before = census()
+        for _ in range(200):
+            code, result = self._ottoctl(
+                "project", "status", "--project", "demo-run"
+            )
+            self.assertEqual(code, 0, result)
+            self.assertEqual(result["outcome"], "read")
+        after = census()
+        for name in before:
+            self.assertLessEqual(
+                after[name], before[name] + 3,
+                f"{name} grew from {before[name]} to {after[name]}",
+            )
+
+        def check_principals():
+            config = host_config.load(Path(self.home))
+            alternate = copy.deepcopy(config)
+            alternate["owner"]["actor"] = "second-owner"
+            with HostSession(config, project_ids=("demo-run",)) as first:
+                first_transport = first.owner.graph.command_port.transport
+            self.assertFalse(os.path.exists(first_transport.socket_path))
+            with HostSession(alternate, project_ids=("different-project",)) as second:
+                self.assertEqual(second.owner.owner_actor.actor, "second-owner")
+                self.assertEqual(
+                    second.owner.project_read_grant.project_ids,
+                    ("different-project",),
+                )
+                self.assertNotEqual(
+                    second.owner.graph.command_port.transport.session_id,
+                    first_transport.session_id,
+                )
+
+        self.owner_service.call(check_principals)
+
+    def test_resident_document_assessment_and_reviewed_pool_calls_retire_services(self):
+        from herzchen.contracts import ResourceRef
+        from otto.portfolio.manager_assessment_command import manager_assessment_from_command
+
+        short_home = tempfile.TemporaryDirectory(prefix="sf-", dir="/private/tmp")
+        self.addCleanup(short_home.cleanup)
+        self.home = str(Path(short_home.name, "h"))
+        self._isolate_command_tempdir()
+        self._init()
+        run_path = Path(self.bundle, "run.json")
+        run = json.loads(run_path.read_text())
+        run["assessment_accounting"] = {
+            "kind": "owner_local_bookkeeping", "purpose": "resource census", "local_only": True,
+            "pool_id": "sessionfd-assessment-pool", "capacity_units": 1,
+            "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C1"],
+        }
+        run_path.write_text(json.dumps(run), encoding="utf-8")
+        self._register()
+        self._activate()
+        fd_dir = next((path for path in ("/dev/fd", "/proc/self/fd") if os.path.isdir(path)), None)
+        if fd_dir is None:
+            self.skipTest("no process descriptor census is available")
+
+        def census():
+            return {
+                "descriptors": len(os.listdir(fd_dir)),
+                "threads": len(threading.enumerate()),
+                "command_dirs": sum(entry.name.startswith("herzchen-command-")
+                                    for entry in os.scandir(tempfile.gettempdir())),
+            }
+
+        def exercise():
+            journey = self.owner_service._attach("demo-run", host_kind=None)
+            state = journey.state
+            project = ResourceRef.from_dict(state["project_ref"])
+            alias = "T1"
+            request = {"task": alias, "operation": "coverage", "arguments": {},
+                       "expected_task_ref": state["task_refs"][alias],
+                       "expected_assignment_ref": state["assignment_ref"],
+                       "expected_generation": state["manager_generation"]}
+            activation = journey.owner.reviewed_plan_activation()
+            pool_policy = {"pool_id": "sessionfd-reviewed-pool", "capacity_units": 1,
+                           "cumulative_allowance_units": 1}
+            operations = (
+                ("manager status", lambda: journey.execution_host.handler({"command": "status"})),
+                ("documents", lambda: journey._documents(project)),
+                ("manager assessment", lambda: manager_assessment_from_command(
+                    journey.owner, request=request, state=state)),
+                ("reviewed pool", lambda: activation._pool(pool_policy, "sessionfd-pool-census")),
+            )
+            for name, operation in operations:
+                operation()
+                before = census()
+                for _ in range(200):
+                    operation()
+                after = census()
+                for resource in before:
+                    self.assertLessEqual(after[resource], before[resource] + 3,
+                        f"{name}: {resource} grew from {before[resource]} to {after[resource]}")
+
+        self.owner_service.call(exercise)
+
     def test_install_creates_private_installation_and_refuses_a_second_install(self):
         out = self._init()
         self.assertEqual(out["outcome"], "created")

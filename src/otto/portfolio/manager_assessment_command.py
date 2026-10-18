@@ -23,11 +23,12 @@ def manager_assessment_from_command(owner: Any, *, request: Mapping[str, Any],
     if alias not in state["task_refs"]:
         raise ValueError("unknown task alias")
     policy = _bound_policy(policy, state)
-    return owner.manager_assessment(
+    with owner.manager_assessment(
         project_ref=state["project_ref"], task_ref=state["task_refs"][alias],
         manager_assignment_ref=state["assignment_ref"], manager_actor=state["manager"],
         manager_generation=state["manager_generation"], assessment_policy=policy,
-    ).execute(request)
+    ) as commands:
+        return commands.execute(request)
 
 
 def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, Any],
@@ -64,12 +65,24 @@ def manager_assessment_pool_from_command(owner: Any, *, request: Mapping[str, An
 class ManagerAssessmentCommands:
     """Owner-issued, exact task/assignment capability, revalidated on every call."""
 
-    def __init__(self, *, assessment: Any, reader: Any, actor: Any, task: ResourceRef,
+    def __init__(self, *, assessment: Any, assessment_facade: Any, reader: Any, actor: Any, task: ResourceRef,
                  assignment: ResourceRef, generation: int, authorize: Any, policy: Any, pool_guard: Any) -> None:
         self._assessment, self._reader, self._actor = assessment, reader, actor
+        self._assessment_facade = assessment_facade
         self._task, self._assignment, self._generation = task, assignment, generation
         self._authorize = authorize
         self._policy, self._pool_guard = policy, pool_guard
+
+    def close(self) -> None:
+        if self._assessment_facade is not None:
+            facade, self._assessment_facade = self._assessment_facade, None
+            facade.close()
+
+    def __enter__(self) -> "ManagerAssessmentCommands":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
 
     def required_scope(self, *, require: bool = True, completed_read: bool = False) -> Any:
         """Resolve the one required scope without creating a competing gate."""

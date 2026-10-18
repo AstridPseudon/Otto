@@ -132,7 +132,6 @@ BRIEF_T1 = "# Brief: T1\n\nBuild the first outcome. Proof: tests pass.\n"
 class WorkerWorkspaceCompositionTests(unittest.TestCase):
     def test_fresh_project_view_loads_owner_policy_and_exact_criterion_aliases(self):
         from types import SimpleNamespace
-        from unittest.mock import patch
         from herzchen.contracts import ResourceRef
         from otto.hostctl.serve import HostOwnerService
 
@@ -155,6 +154,7 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
         service.owner = SimpleNamespace(
             binding=SimpleNamespace(authenticated_actor=lambda principal: principal),
             graph=SimpleNamespace(reader=reader, current=lambda _ref: identities[project.id]),
+            assessment=lambda actor: assessed,
             evidence_payload_resolver=object())
         service.store = object()
         service._documents = lambda _project: [{"path": "run.json", "text": json.dumps({
@@ -163,9 +163,7 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
                 "cumulative_allowance_units": 1, "scope_mode": "check-accepted",
                 "task_criterion_pairs": ["T1/C01"]}})}]
 
-        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
-             patch("herzchen.domains.assessment.AssessmentModule"):
-            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+        service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
 
         self.assertEqual(service.state["assessment_policy"]["scope_mode"], "check-accepted")
         self.assertEqual(service.state["task_refs"], {"T1": task.to_dict()})
@@ -189,9 +187,7 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
             "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
                 "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
                 "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C01"]}})}]
-        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
-             patch("herzchen.domains.assessment.AssessmentModule"):
-            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+        service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
         parsed = policy.LocalAssessmentPolicy.from_run_config(service.state["assessment_policy"], state=service.state)
         self.assertEqual(parsed.scope_mode, "review-required")
 
@@ -199,10 +195,8 @@ class WorkerWorkspaceCompositionTests(unittest.TestCase):
             "assessment_accounting": {"kind": "owner_local_bookkeeping", "purpose": "local checks",
                 "local_only": True, "pool_id": "fleet-checks", "capacity_units": 1,
                 "cumulative_allowance_units": 1, "task_criterion_pairs": ["T1/C99"]}})}]
-        with patch("otto.portfolio.assessment.OttoAssessment", return_value=assessed), \
-             patch("herzchen.domains.assessment.AssessmentModule"):
-            with self.assertRaisesRegex(RuntimeError, "does not bind current owner records"):
-                service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
+        with self.assertRaisesRegex(RuntimeError, "does not bind current owner records"):
+            service._hydrate_assessment_policy(SimpleNamespace(payload={"tasks": [prior_task.to_dict()]}))
 
     def _service(self, due, workspace):
         from types import SimpleNamespace

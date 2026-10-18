@@ -663,103 +663,103 @@ class ManagerJourneyCommands:
                 raise PermissionError("original review key policy differs or has unknown provenance; use a distinct authorized correction judgment")
             manifest = prior
         if reviewed is None:
-            commands = self.owner.manager_assessment(project_ref=manifest["project_ref"],
+            with self.owner.manager_assessment(project_ref=manifest["project_ref"],
                 task_ref=manifest["task_ref"], manager_assignment_ref=manifest["assignment_ref"],
                 manager_actor=self.state["manager"], manager_generation=manifest["generation"],
-                assessment_policy=policy)
-            existing_scope = commands.required_scope(require=False)
-            candidate = commands._ref(request.get("candidate_ref"), "candidate_ref")
-            sources = commands._refs(request.get("source_refs"), "source_refs")
-            judgments = request.get("judgments")
-            aliases = self._review_criteria(manifest["task_ref"], policy)
-            if not isinstance(judgments, Mapping) or set(judgments) != set(aliases):
-                raise ReviewInputSchemaError("judgments", "input schema rejected before review effects: supply explicit judgment for every "
-                    "configured task criterion; exact aliases: " + ", ".join(sorted(aliases)) +
-                    ". Read review-input --task " + alias + " for their pinned refs")
-            inspection = request.get("inspection")
-            if not isinstance(inspection, Mapping) or not inspection:
-                raise ReviewInputSchemaError("inspection", 'input schema rejected before review effects: inspection must be a nonempty JSON '
-                    'object containing substantive observed evidence, for example {"observed":"your inspection"}; '
-                    'a JSON string, array or empty object is not accepted')
-            evidence = []
-            for criterion_alias, judgment in judgments.items():
-                if (not isinstance(judgment, Mapping)
-                        or set(judgment) != {"verdict", "rationale", "evidence_refs"}
-                        or judgment["verdict"] not in {"PASS", "REWORK", "UNKNOWN"}
-                        or not isinstance(judgment["rationale"], str) or not judgment["rationale"].strip()):
-                    raise ReviewInputSchemaError("judgments." + criterion_alias,
-                        "each criterion requires exactly verdict, rationale and evidence_refs; verdict must be PASS, REWORK or UNKNOWN",
-                        allowed_values=["PASS", "REWORK", "UNKNOWN"])
-                evidence.extend(commands._refs(judgment["evidence_refs"], "evidence_refs"))
-            evidence = list(dict.fromkeys(evidence))
-            if self._instruction_document(candidate) or candidate not in evidence:
-                raise ValueError("ordinary review requires the actual artifact/result candidate in evidence_refs; "
-                    "GUIDE/MANDATE instruction documents cannot substitute for delivered work. "
-                    "Use review-input --task to discover retained worker refs, then inspect the artifact and exact task outcome.")
-            for judgment in judgments.values():
-                if any(char in judgment["rationale"] for char in ("/", "\\", "\x00")):
-                    raise ReviewInputSchemaError("judgments.rationale", "rationale is an assessment identifier: use nonblank text without slash, backslash or NUL; "
-                                     "put paths and substantive inspection prose in inspection")
-            hashes = {}
-            for ref in evidence:
-                payload = commands._reader.get_identity(ref).payload
-                digest = payload.get("content_digest")
-                if ref.kind == "dat.content.document":
-                    content = self.owner.content.read(ref)
-                    if "content" in content:
-                        digest = _digest(content["content"])
-                # Both public observation kinds retain their immutable body in
-                # value. Help replies/application reports are substantive
-                # evidence alongside worker results, not instruction packets.
-                if ref.kind in {"wrk.result", "wrk.report"} and isinstance(payload.get("value"), Mapping):
-                    digest = _digest(payload["value"])
-                if not isinstance(digest, str) or len(digest) != 64:
-                    raise ValueError("evidence has no retained content digest: " + ref.id)
-                hashes[ref.kind + ":" + ref.id + ":" + ref.revision] = digest
-            self._journal(key, "intent", manifest)
-            self.owner.create_manager_assessment_pool(project_ref=manifest["project_ref"],
-                task_ref=manifest["task_ref"], manager_assignment_ref=manifest["assignment_ref"],
-                manager_actor=self.state["manager"], manager_generation=manifest["generation"],
-                logical_request_key="journey-pool:" + policy.pool_ref.id, assessment_policy=policy)
+                assessment_policy=policy) as commands:
+                existing_scope = commands.required_scope(require=False)
+                candidate = commands._ref(request.get("candidate_ref"), "candidate_ref")
+                sources = commands._refs(request.get("source_refs"), "source_refs")
+                judgments = request.get("judgments")
+                aliases = self._review_criteria(manifest["task_ref"], policy)
+                if not isinstance(judgments, Mapping) or set(judgments) != set(aliases):
+                    raise ReviewInputSchemaError("judgments", "input schema rejected before review effects: supply explicit judgment for every "
+                        "configured task criterion; exact aliases: " + ", ".join(sorted(aliases)) +
+                        ". Read review-input --task " + alias + " for their pinned refs")
+                inspection = request.get("inspection")
+                if not isinstance(inspection, Mapping) or not inspection:
+                    raise ReviewInputSchemaError("inspection", 'input schema rejected before review effects: inspection must be a nonempty JSON '
+                        'object containing substantive observed evidence, for example {"observed":"your inspection"}; '
+                        'a JSON string, array or empty object is not accepted')
+                evidence = []
+                for criterion_alias, judgment in judgments.items():
+                    if (not isinstance(judgment, Mapping)
+                            or set(judgment) != {"verdict", "rationale", "evidence_refs"}
+                            or judgment["verdict"] not in {"PASS", "REWORK", "UNKNOWN"}
+                            or not isinstance(judgment["rationale"], str) or not judgment["rationale"].strip()):
+                        raise ReviewInputSchemaError("judgments." + criterion_alias,
+                            "each criterion requires exactly verdict, rationale and evidence_refs; verdict must be PASS, REWORK or UNKNOWN",
+                            allowed_values=["PASS", "REWORK", "UNKNOWN"])
+                    evidence.extend(commands._refs(judgment["evidence_refs"], "evidence_refs"))
+                evidence = list(dict.fromkeys(evidence))
+                if self._instruction_document(candidate) or candidate not in evidence:
+                    raise ValueError("ordinary review requires the actual artifact/result candidate in evidence_refs; "
+                        "GUIDE/MANDATE instruction documents cannot substitute for delivered work. "
+                        "Use review-input --task to discover retained worker refs, then inspect the artifact and exact task outcome.")
+                for judgment in judgments.values():
+                    if any(char in judgment["rationale"] for char in ("/", "\\", "\x00")):
+                        raise ReviewInputSchemaError("judgments.rationale", "rationale is an assessment identifier: use nonblank text without slash, backslash or NUL; "
+                                         "put paths and substantive inspection prose in inspection")
+                hashes = {}
+                for ref in evidence:
+                    payload = commands._reader.get_identity(ref).payload
+                    digest = payload.get("content_digest")
+                    if ref.kind == "dat.content.document":
+                        content = self.owner.content.read(ref)
+                        if "content" in content:
+                            digest = _digest(content["content"])
+                    # Both public observation kinds retain their immutable body in
+                    # value. Help replies/application reports are substantive
+                    # evidence alongside worker results, not instruction packets.
+                    if ref.kind in {"wrk.result", "wrk.report"} and isinstance(payload.get("value"), Mapping):
+                        digest = _digest(payload["value"])
+                    if not isinstance(digest, str) or len(digest) != 64:
+                        raise ValueError("evidence has no retained content digest: " + ref.id)
+                    hashes[ref.kind + ":" + ref.id + ":" + ref.revision] = digest
+                self._journal(key, "intent", manifest)
+                self.owner.create_manager_assessment_pool(project_ref=manifest["project_ref"],
+                    task_ref=manifest["task_ref"], manager_assignment_ref=manifest["assignment_ref"],
+                    manager_actor=self.state["manager"], manager_generation=manifest["generation"],
+                    logical_request_key="journey-pool:" + policy.pool_ref.id, assessment_policy=policy)
 
-            def execute(operation: str, arguments: Mapping[str, Any], suffix: str, operation_key: str | None = None) -> Any:
-                return commands.execute({"operation": operation, "arguments": arguments,
-                    "request_key": operation_key or "journey:" + key + ":" + suffix,
-                    "expected_task_ref": manifest["task_ref"],
-                    "expected_assignment_ref": manifest["assignment_ref"],
-                    "expected_generation": manifest["generation"]})["ref"]
+                def execute(operation: str, arguments: Mapping[str, Any], suffix: str, operation_key: str | None = None) -> Any:
+                    return commands.execute({"operation": operation, "arguments": arguments,
+                        "request_key": operation_key or "journey:" + key + ":" + suffix,
+                        "expected_task_ref": manifest["task_ref"],
+                        "expected_assignment_ref": manifest["assignment_ref"],
+                        "expected_generation": manifest["generation"]})["ref"]
 
-            scope_id = "ordinary-" + _digest([manifest["task_ref"], aliases])[:28]
-            scope = (existing_scope.ref.to_dict() if existing_scope is not None else
-                execute("declare-scope", {"scope_ref": {
-                    "authority": candidate.authority, "kind": "assessment.scope", "id": scope_id},
-                    "criterion_refs": list(aliases.values()), "protocol": "ordinary-manager-judgment"}, "scope",
-                    operation_key="journey-scope:" + scope_id))
-            packet = execute("freeze-input", {"scope_ref": scope, "candidate_ref": candidate.to_dict(),
-                "criterion_refs": list(aliases.values()), "source_refs": [ref.to_dict() for ref in sources],
-                "evidence_refs": [ref.to_dict() for ref in evidence], "packet": inspection}, "input")
-            results, gates = [], []
-            for criterion_alias, criterion in aliases.items():
-                judgment = judgments[criterion_alias]
-                common = {"scope_ref": scope, "candidate_ref": candidate.to_dict(), "criterion_ref": criterion}
-                execute("select-candidate", {**common, "rationale": judgment["rationale"]},
-                        criterion_alias + ":select")
-                result = execute("assess", {**common, "input_ref": packet,
-                    "verdict": judgment["verdict"], "limit_pool_ref": policy.pool_ref.to_dict(),
-                    "protocol_result": {"inspection": inspection, "judgment": judgment}},
-                    criterion_alias + ":assess")
-                results.append(result)
-                if judgment["verdict"] == "PASS":
-                    gates.append(execute("accept", {"result_ref": result,
-                        "candidate_ref": candidate.to_dict(), "criterion_ref": criterion,
-                        "evidence_refs": judgment["evidence_refs"], "rationale": judgment["rationale"]},
-                        criterion_alias + ":accept"))
-            outcome = ("accepted" if len(gates) == len(aliases) else
-                       "unknown" if any(value["verdict"] == "UNKNOWN" for value in judgments.values()) else "rework")
-            reviewed = self._journal(key, "review", {"outcome": outcome,
-                "candidate_ref": candidate.to_dict(), "result_refs": results, "gate_refs": gates,
-                "evidence_refs": [ref.to_dict() for ref in evidence], "evidence_hashes": hashes,
-                "provider_called": False, "accounting": "owner_local_bookkeeping"})
+                scope_id = "ordinary-" + _digest([manifest["task_ref"], aliases])[:28]
+                scope = (existing_scope.ref.to_dict() if existing_scope is not None else
+                    execute("declare-scope", {"scope_ref": {
+                        "authority": candidate.authority, "kind": "assessment.scope", "id": scope_id},
+                        "criterion_refs": list(aliases.values()), "protocol": "ordinary-manager-judgment"}, "scope",
+                        operation_key="journey-scope:" + scope_id))
+                packet = execute("freeze-input", {"scope_ref": scope, "candidate_ref": candidate.to_dict(),
+                    "criterion_refs": list(aliases.values()), "source_refs": [ref.to_dict() for ref in sources],
+                    "evidence_refs": [ref.to_dict() for ref in evidence], "packet": inspection}, "input")
+                results, gates = [], []
+                for criterion_alias, criterion in aliases.items():
+                    judgment = judgments[criterion_alias]
+                    common = {"scope_ref": scope, "candidate_ref": candidate.to_dict(), "criterion_ref": criterion}
+                    execute("select-candidate", {**common, "rationale": judgment["rationale"]},
+                            criterion_alias + ":select")
+                    result = execute("assess", {**common, "input_ref": packet,
+                        "verdict": judgment["verdict"], "limit_pool_ref": policy.pool_ref.to_dict(),
+                        "protocol_result": {"inspection": inspection, "judgment": judgment}},
+                        criterion_alias + ":assess")
+                    results.append(result)
+                    if judgment["verdict"] == "PASS":
+                        gates.append(execute("accept", {"result_ref": result,
+                            "candidate_ref": candidate.to_dict(), "criterion_ref": criterion,
+                            "evidence_refs": judgment["evidence_refs"], "rationale": judgment["rationale"]},
+                            criterion_alias + ":accept"))
+                outcome = ("accepted" if len(gates) == len(aliases) else
+                           "unknown" if any(value["verdict"] == "UNKNOWN" for value in judgments.values()) else "rework")
+                reviewed = self._journal(key, "review", {"outcome": outcome,
+                    "candidate_ref": candidate.to_dict(), "result_refs": results, "gate_refs": gates,
+                    "evidence_refs": [ref.to_dict() for ref in evidence], "evidence_hashes": hashes,
+                    "provider_called": False, "accounting": "owner_local_bookkeeping"})
         if reviewed["outcome"] == "accepted" and request.get("finish", True):
             completion = self.finish_task({"task": alias, "request_key": key + ":finish", "review_key": key})
             response = {**reviewed, "completion": completion}

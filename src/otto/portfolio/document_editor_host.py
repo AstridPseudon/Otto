@@ -45,20 +45,32 @@ class DocumentEditorHost:
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.writer_id = "otto.document-editor"
+        self._buffers: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        self.vision_validator = vision_validator
         self.leases = FileWriterLeaseAuthority(
             self.directory / "writer-locks", authority=owner.store.authority,
             secret=secret, writer_identities=(self.writer_id,), clock=clock)
-        self.sessions = AuthoringSessionService(owner.store, materializer=self._materialize)
-        self.authoring = DocumentAuthoringHandler(owner.store, authoring=self.sessions,
-                                                 vision_validator=vision_validator)
-        self.lifecycle = AuthoringLifecycle(self.sessions, writer_leases=self.leases,
-                                           writer_identity=self.writer_id, clock=clock)
+        self._bind_owner(owner)
+
+    def _bind_owner(self, owner: Any) -> None:
+        """Refresh owner-scoped facades while retaining editor process state."""
+        sessions = owner._own(AuthoringSessionService(
+            owner.store, materializer=self._materialize))
+        authoring = owner._own(DocumentAuthoringHandler(
+            owner.store, authoring=sessions, vision_validator=self.vision_validator))
+        lifecycle = AuthoringLifecycle(sessions, writer_leases=self.leases,
+                                       writer_identity=self.writer_id, clock=self.clock)
         from .manager_application import ManagerApplication
-        self.operations = ManagerApplication.from_owner(
-            owner, document_authoring=self.authoring,
-            idle_lifecycle=self.lifecycle).document_operations
-        self._buffers: dict[str, dict[str, Any]] = {}
-        self._lock = threading.Lock()
+        operations = ManagerApplication.from_owner(
+            owner, document_authoring=authoring,
+            idle_lifecycle=lifecycle).document_operations
+        self._owner = owner
+        self.actor = owner.owner_actor
+        self.sessions = sessions
+        self.authoring = authoring
+        self.lifecycle = lifecycle
+        self.operations = operations
 
     def _materialize(self, checkout: Any, initial_bytes: bytes) -> Mapping[str, Any]:
         # Session IDs originate in EDT, never in the transport. Refuse a path
@@ -387,10 +399,14 @@ def _editor_secret(root: Path) -> bytes:
 
 def owner_editor_host(session: Any, home: str | Path) -> DocumentEditorHost:
     """The owner's own editor host, built from the owner session the lane composed."""
-    key = (str(Path(home).resolve()), tuple(getattr(session, "project_ids", ())))
+    actor = session.owner.owner_actor
+    key = (str(Path(home).resolve()), tuple(getattr(session, "project_ids", ())),
+           actor.authority, actor.actor)
     with _OWNER_EDITORS_LOCK:
         cached = _OWNER_EDITORS.get(key)
         if cached is not None and cached[0] is session.store:
+            if cached[1]._owner is not session.owner:
+                cached[1]._bind_owner(session.owner)
             return cached[1]
         root = Path(home) / "editor"
         host = DocumentEditorHost(owner=session.owner, directory=root, secret=_editor_secret(root))

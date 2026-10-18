@@ -166,11 +166,8 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
             policy_state = dict(state)
             criterion_refs = policy_state.get("criterion_refs")
             if not isinstance(criterion_refs, Mapping) or not criterion_refs:
-                from herzchen.domains.assessment import AssessmentModule
-                from otto.portfolio.assessment import OttoAssessment
                 manager_principal = project_owner.binding.authenticated_actor(state.get("manager"))
-                assessed = OttoAssessment(AssessmentModule(project_owner.store, actor=manager_principal,
-                    payload_resolver=project_owner.evidence_payload_resolver), manager_principal)
+                assessed = project_owner.assessment(manager_principal)
                 coverage = assessed.coverage(task_ref)
                 current_task_identity = project_owner.graph.reader.get_identity(task_ref)
                 if current_task_identity is None or current_task_identity.ref != task_ref:
@@ -212,133 +209,142 @@ def make_landing_service(*, fleet: Any, result_store: ResultStore,
         if (not isinstance(manager_actor, str) or not manager_actor.strip()
                 or type(manager_generation) is not int or manager_generation < 1):
             raise LandingError("owner manager assignment is unavailable for assessment")
+        commands = None
+        transferred = False
         try:
-            commands = project_owner.manager_assessment(
-                project_ref=project_ref.to_dict(), task_ref=task_ref.to_dict(),
-                manager_assignment_ref=manager_ref.to_dict(), manager_actor=manager_actor,
-                manager_generation=manager_generation, assessment_policy=policy)
-            project_owner.create_manager_assessment_pool(
-                project_ref=project_ref.to_dict(), task_ref=task_ref.to_dict(),
-                manager_assignment_ref=manager_ref.to_dict(), manager_actor=manager_actor,
-                manager_generation=manager_generation,
-                logical_request_key="fleet-pool:" + policy.pool_ref.id,
-                assessment_policy=policy)
-        except Exception as exc:
-            raise LandingError("owner assessment command admission failed: " + str(exc)) from exc
+            try:
+                commands = project_owner.manager_assessment(
+                    project_ref=project_ref.to_dict(), task_ref=task_ref.to_dict(),
+                    manager_assignment_ref=manager_ref.to_dict(), manager_actor=manager_actor,
+                    manager_generation=manager_generation, assessment_policy=policy)
+                project_owner.create_manager_assessment_pool(
+                    project_ref=project_ref.to_dict(), task_ref=task_ref.to_dict(),
+                    manager_assignment_ref=manager_ref.to_dict(), manager_actor=manager_actor,
+                    manager_generation=manager_generation,
+                    logical_request_key="fleet-pool:" + policy.pool_ref.id,
+                    assessment_policy=policy)
+            except Exception as exc:
+                raise LandingError("owner assessment command admission failed: " + str(exc)) from exc
 
-        commit = record.get("commit")
-        if not isinstance(commit, str) or len(commit) not in {40, 64} or any(c not in "0123456789abcdef" for c in commit):
-            raise LandingError("verified lab commit is not a canonical object id")
-        # Resolve the evidence from this exact sealed check. A runner record is
-        # not itself an assessment evidence ref; retain its receipt through the
-        # existing managed Evidence command path and bind that capture to the
-        # sealed receipt identity.
-        run_id = record.get("run_id")
-        try:
-            sealed = result_store.get(run_id)
-        except Exception as exc:
-            raise LandingError("sealed runner result cannot be resolved for evidence") from exc
-        try:
-            sealed_binding = ResultStore.binding(sealed["argv"], sealed["cwd"], commit) if isinstance(sealed, Mapping) else None
-        except (KeyError, TypeError, ValueError):
-            sealed_binding = None
-        if (not isinstance(sealed, Mapping) or dict(sealed) != dict(record)
-                or sealed.get("commit") != commit or sealed.get("exit_code") != 0
-                or sealed.get("state") != "settled" or sealed.get("outcome") != "exited"
-                or sealed.get("binding") != sealed_binding):
-            raise LandingError("assessment evidence is not tied to the exact passing sealed runner result")
-        evidence_bytes = json.dumps(dict(sealed), sort_keys=True, separators=(",", ":")).encode("utf-8")
-        evidence_digest = sha256(evidence_bytes).hexdigest()
-        evidence_handler = getattr(project_owner, "evidence_payload_resolver", None)
-        capture_evidence = getattr(evidence_handler, "submit", None)
-        if not callable(capture_evidence):
-            raise LandingError("owner managed Evidence capture is unavailable for runner receipt")
-        runner = _runner_identity(sealed)
-        try:
-            captured = capture_evidence(evidence_bytes, actor=project_owner.binding.authenticated_actor(manager_actor),
-                logical_request_key="fleet-runner-evidence:" + sha256(
-                    (assignment_id + ":" + str(run_id) + ":" + str(sealed.get("binding"))).encode()).hexdigest(),
-                project_ref=project_ref, task_ref=task_ref,
-                original_creator=manager_actor, format="application/json",
-                source_digest=evidence_digest, source_length=len(evidence_bytes),
-                provenance={"runner": runner, "evidence_kind": "fleet-sealed-check-receipt"})
-            evidence_ref = _owner_ref(captured.get("revision_ref"), "runner evidence", "dat.content.document")
-            resolve_evidence = getattr(evidence_handler, "resolve", None)
-            if not callable(resolve_evidence):
-                raise LandingError("owner managed Evidence resolver is unavailable for runner receipt")
-            resolved = resolve_evidence(evidence_ref,
-                actor=project_owner.binding.authenticated_actor(manager_actor), verify_full=True)
-            if (not isinstance(resolved, Mapping)
-                    or resolved.get("availability") in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}
-                    or resolved.get("representation") != "managed"
-                    or resolved.get("verification") != "full-verified"
-                    or resolved.get("actual_digest") != evidence_digest
-                    or not isinstance(resolved.get("manifest"), Mapping)
-                    or resolved["manifest"].get("byte_digest") != evidence_digest
-                    or resolved["manifest"].get("byte_length") != len(evidence_bytes)):
-                raise LandingError("retained runner receipt cannot be fully verified")
-        except Exception as exc:
-            raise LandingError("owner could not retain the exact runner receipt as evidence: " + str(exc)) from exc
-        admitted = getattr(dispatch, "admitted_revision", None)
-        repo_line = {"repo_name": repo_name, "line_ref": "refs/heads/" + branch,
-                    "lab_name": task_id}
-        candidate_key = "fleet-land:" + sha256((assignment_id + ":" + commit + ":" +
-            str(runner.get("run_id")) + ":" + str(runner.get("binding"))).encode()).hexdigest()
-        candidate_value = {"task_ref": task_ref.to_dict(), "admitted_revision": admitted,
-                           "assignment_ref": assignment_ref.to_dict(), "assignment_id": assignment_id,
-                           "lab_commit": commit, **repo_line, "runner": runner}
-        try:
-            candidate_record = project_owner.assignments.append_result(
-                assignment_ref, candidate_value, expected_generation=generation,
-                logical_request_key=candidate_key, actor=project_owner.owner_actor)
-            if candidate_record.value != candidate_value:
-                raise LandingError("retained lab candidate differs from the verified commit and runner record")
-            candidate = candidate_record.ref
-        except Exception as exc:
-            raise LandingError("owner could not record the verified lab commit as its candidate: " + str(exc)) from exc
+            commit = record.get("commit")
+            if not isinstance(commit, str) or len(commit) not in {40, 64} or any(c not in "0123456789abcdef" for c in commit):
+                raise LandingError("verified lab commit is not a canonical object id")
+            # Resolve the evidence from this exact sealed check. A runner record is
+            # not itself an assessment evidence ref; retain its receipt through the
+            # existing managed Evidence command path and bind that capture to the
+            # sealed receipt identity.
+            run_id = record.get("run_id")
+            try:
+                sealed = result_store.get(run_id)
+            except Exception as exc:
+                raise LandingError("sealed runner result cannot be resolved for evidence") from exc
+            try:
+                sealed_binding = ResultStore.binding(sealed["argv"], sealed["cwd"], commit) if isinstance(sealed, Mapping) else None
+            except (KeyError, TypeError, ValueError):
+                sealed_binding = None
+            if (not isinstance(sealed, Mapping) or dict(sealed) != dict(record)
+                    or sealed.get("commit") != commit or sealed.get("exit_code") != 0
+                    or sealed.get("state") != "settled" or sealed.get("outcome") != "exited"
+                    or sealed.get("binding") != sealed_binding):
+                raise LandingError("assessment evidence is not tied to the exact passing sealed runner result")
+            evidence_bytes = json.dumps(dict(sealed), sort_keys=True, separators=(",", ":")).encode("utf-8")
+            evidence_digest = sha256(evidence_bytes).hexdigest()
+            evidence_handler = getattr(project_owner, "evidence_payload_resolver", None)
+            capture_evidence = getattr(evidence_handler, "submit", None)
+            if not callable(capture_evidence):
+                raise LandingError("owner managed Evidence capture is unavailable for runner receipt")
+            runner = _runner_identity(sealed)
+            try:
+                captured = capture_evidence(evidence_bytes, actor=project_owner.binding.authenticated_actor(manager_actor),
+                    logical_request_key="fleet-runner-evidence:" + sha256(
+                        (assignment_id + ":" + str(run_id) + ":" + str(sealed.get("binding"))).encode()).hexdigest(),
+                    project_ref=project_ref, task_ref=task_ref,
+                    original_creator=manager_actor, format="application/json",
+                    source_digest=evidence_digest, source_length=len(evidence_bytes),
+                    provenance={"runner": runner, "evidence_kind": "fleet-sealed-check-receipt"})
+                evidence_ref = _owner_ref(captured.get("revision_ref"), "runner evidence", "dat.content.document")
+                resolve_evidence = getattr(evidence_handler, "resolve", None)
+                if not callable(resolve_evidence):
+                    raise LandingError("owner managed Evidence resolver is unavailable for runner receipt")
+                resolved = resolve_evidence(evidence_ref,
+                    actor=project_owner.binding.authenticated_actor(manager_actor), verify_full=True)
+                if (not isinstance(resolved, Mapping)
+                        or resolved.get("availability") in {"missing", "corrupt", "purged", "staged", "pending-reclaim"}
+                        or resolved.get("representation") != "managed"
+                        or resolved.get("verification") != "full-verified"
+                        or resolved.get("actual_digest") != evidence_digest
+                        or not isinstance(resolved.get("manifest"), Mapping)
+                        or resolved["manifest"].get("byte_digest") != evidence_digest
+                        or resolved["manifest"].get("byte_length") != len(evidence_bytes)):
+                    raise LandingError("retained runner receipt cannot be fully verified")
+            except Exception as exc:
+                raise LandingError("owner could not retain the exact runner receipt as evidence: " + str(exc)) from exc
+            admitted = getattr(dispatch, "admitted_revision", None)
+            repo_line = {"repo_name": repo_name, "line_ref": "refs/heads/" + branch,
+                        "lab_name": task_id}
+            candidate_key = "fleet-land:" + sha256((assignment_id + ":" + commit + ":" +
+                str(runner.get("run_id")) + ":" + str(runner.get("binding"))).encode()).hexdigest()
+            candidate_value = {"task_ref": task_ref.to_dict(), "admitted_revision": admitted,
+                               "assignment_ref": assignment_ref.to_dict(), "assignment_id": assignment_id,
+                               "lab_commit": commit, **repo_line, "runner": runner}
+            try:
+                candidate_record = project_owner.assignments.append_result(
+                    assignment_ref, candidate_value, expected_generation=generation,
+                    logical_request_key=candidate_key, actor=project_owner.owner_actor)
+                if candidate_record.value != candidate_value:
+                    raise LandingError("retained lab candidate differs from the verified commit and runner record")
+                candidate = candidate_record.ref
+            except Exception as exc:
+                raise LandingError("owner could not record the verified lab commit as its candidate: " + str(exc)) from exc
 
-        execution_key = "fleet:" + candidate_key
-        expected = {"expected_task_ref": task_ref.to_dict(),
-                    "expected_assignment_ref": manager_ref.to_dict(),
-                    "expected_generation": manager_generation}
-        def execute(operation: str, arguments: Mapping[str, Any], suffix: str) -> Mapping[str, Any]:
-            return commands.execute({"operation": operation, "arguments": arguments,
-                "request_key": execution_key + ":" + suffix, **expected})
+            execution_key = "fleet:" + candidate_key
+            expected = {"expected_task_ref": task_ref.to_dict(),
+                        "expected_assignment_ref": manager_ref.to_dict(),
+                        "expected_generation": manager_generation}
+            def execute(operation: str, arguments: Mapping[str, Any], suffix: str) -> Mapping[str, Any]:
+                return commands.execute({"operation": operation, "arguments": arguments,
+                    "request_key": execution_key + ":" + suffix, **expected})
 
-        try:
-            # Activation owns the acceptance scope. Landing consumes its required
-            # scope and must never add a second policy declaration.
-            scope = commands.required_scope(require=True)
-            if scope is None:
-                raise LandingError("owner assessment setup has no required scope for this task")
-            if set(scope.criterion_refs) != set(criteria):
-                raise LandingError("assessment scope criteria differ from the owner policy pins")
-            if (scope.review_required is not False or scope.allow_no_review is not True
-                    or getattr(policy, "scope_mode", None) != "check-accepted"
-                    or scope.protocol != "check-accepted"
-                    or scope.policy.get("acceptance_mode") != "check-accepted"):
-                raise LandingError(
-                    "owner assessment scope requires a separate review; fleet check evidence cannot substitute for review"
-                )
-            scope_ref = scope.ref
-            packet = execute("freeze-input", {"scope_ref": scope_ref.to_dict(),
-                "candidate_ref": candidate.to_dict(), "criterion_refs": [item.to_dict() for item in criteria],
-                "source_refs": [candidate.to_dict()], "evidence_refs": [evidence_ref.to_dict()],
-                "packet": {"admitted_revision": admitted, "lab_commit": commit,
-                           "runner": runner, "line_ref": "refs/heads/" + branch}}, "input")
-            packet_ref = ResourceRef.from_dict(packet["ref"])
-        except Exception as exc:
-            raise LandingError("owner could not freeze the committed lab assessment input: " + str(exc)) from exc
+            try:
+                # Activation owns the acceptance scope. Landing consumes its required
+                # scope and must never add a second policy declaration.
+                scope = commands.required_scope(require=True)
+                if scope is None:
+                    raise LandingError("owner assessment setup has no required scope for this task")
+                if set(scope.criterion_refs) != set(criteria):
+                    raise LandingError("assessment scope criteria differ from the owner policy pins")
+                if (scope.review_required is not False or scope.allow_no_review is not True
+                        or getattr(policy, "scope_mode", None) != "check-accepted"
+                        or scope.protocol != "check-accepted"
+                        or scope.policy.get("acceptance_mode") != "check-accepted"):
+                    raise LandingError(
+                        "owner assessment scope requires a separate review; fleet check evidence cannot substitute for review"
+                    )
+                scope_ref = scope.ref
+                packet = execute("freeze-input", {"scope_ref": scope_ref.to_dict(),
+                    "candidate_ref": candidate.to_dict(), "criterion_refs": [item.to_dict() for item in criteria],
+                    "source_refs": [candidate.to_dict()], "evidence_refs": [evidence_ref.to_dict()],
+                    "packet": {"admitted_revision": admitted, "lab_commit": commit,
+                               "runner": runner, "line_ref": "refs/heads/" + branch}}, "input")
+                packet_ref = ResourceRef.from_dict(packet["ref"])
+            except Exception as exc:
+                raise LandingError("owner could not freeze the committed lab assessment input: " + str(exc)) from exc
 
-        assessment = _FleetAssessmentCommands(commands, candidate, criteria, packet_ref,
-                                               policy.pool_ref, manager_actor, execution_key,
-                                               (evidence_ref,))
-        return {"candidate": candidate, "criterion": criterion, "parent_obligation": task_ref,
-                "actor": project_owner.binding.authenticated_actor(manager_actor),
-                "criteria": criteria,
-                "scope": scope_ref, "input_packet": packet_ref, "limit_pool": policy.pool_ref,
-                "assessment": assessment,
-                "assess_kwargs": {"logical_request_key": execution_key + ":assess"}}
+            assessment = _FleetAssessmentCommands(commands, candidate, criteria, packet_ref,
+                                                   policy.pool_ref, manager_actor, execution_key,
+                                                   (evidence_ref,))
+            transferred = True
+            return {"candidate": candidate, "criterion": criterion, "parent_obligation": task_ref,
+                    "actor": project_owner.binding.authenticated_actor(manager_actor),
+                    "criteria": criteria,
+                    "scope": scope_ref, "input_packet": packet_ref, "limit_pool": policy.pool_ref,
+                    "assessment": assessment,
+                    "assess_kwargs": {"logical_request_key": execution_key + ":assess"}}
+        finally:
+            if commands is not None and not transferred:
+                close = getattr(commands, "close", None)
+                if callable(close):
+                    close()
 
     def current_criterion(pinned: Any) -> Any:
         criterion = _owner_ref(pinned, "criterion", "assessment.criterion")
@@ -416,6 +422,11 @@ class _FleetAssessmentCommands:
         self.evidence_refs = exact_evidence
         self.manager_actor = manager_actor
         self.request_key = request_key
+
+    def close(self) -> None:
+        close = getattr(self.commands, "close", None)
+        if callable(close):
+            close()
 
     def assess(self, scope: Any, *, candidate: Any, criterion: Any, input_packet: Any,
                verdict: Any, protocol_result: Any, limit_pool: Any, actor: Any, **_kwargs: Any) -> Any:

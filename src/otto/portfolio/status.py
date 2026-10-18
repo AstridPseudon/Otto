@@ -143,7 +143,6 @@ def portfolio_status(session: Any, portfolio_ref: Any = None, *,
     ``labs`` is an optional ``LabFleet``; its count is the lab count (``None``
     when no fleet is supplied). ``slot_kinds`` are the responsibility slots.
     """
-    from herzchen.kernel import LimitService
     from otto.agents.host_profiles import SLOTS
     from .dependencies import PortfolioDependencies
     from .issue_loop import IssueLoop
@@ -182,7 +181,7 @@ def portfolio_status(session: Any, portfolio_ref: Any = None, *,
              if session.host and not owner_authorized else session.owner.owner_actor)
     dependencies = PortfolioDependencies(session.owner.graph, session.store.consumer(), actor=actor,
                                         owner_actor=session.owner.owner_actor, portfolio_ref=portfolio)
-    limits = LimitService(session.store)
+    limits = session.owner._limit_service
     projects, attention, all_pools = [], [], {}
     for record in records:
         pid = record.ref.id

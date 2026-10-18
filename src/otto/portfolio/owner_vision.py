@@ -6,7 +6,6 @@ module opens no Store, discovers no projects, and grants no provider authority.
 from typing import Any, Mapping
 
 from herzchen.contracts import AuthenticatedActor, ResourceRef
-from herzchen.content.packets import ContextPacketService
 from herzchen.content.packets import AccessDeniedError, UnresolvedReferenceError
 from herzchen.content.authoring import DocumentAuthoringHandler
 from herzchen.content.vision import ManagedVisionDefinitions, VisionValidator
@@ -37,7 +36,7 @@ class OwnerVision:
         self.pack = load_vision_pack(managed_pack=managed_pack)
         if dict(expected_selection) != self.pack.selection():
             raise PermissionError("Vision managed selection differs from the adopted exact pins")
-        self.packets = ContextPacketService(owner.store)
+        self.packets = owner.packet_service()
         definitions = ManagedVisionDefinitions((managed_pack,), tuple(
             ExecutionPin("vision/" + resource.path, resource.kind,
                          managed_pack.source.source_revision, resource.source_digest)
@@ -45,8 +44,8 @@ class OwnerVision:
         self.validator = VisionValidator(definitions, target_reader=self._owner_target)
         if editor._buffers:
             raise RuntimeError("Vision composition requires the unused editor at owner startup")
-        editor.authoring = DocumentAuthoringHandler(owner.store, authoring=editor.sessions,
-                                                    vision_validator=self.validator)
+        editor.authoring = owner._own(DocumentAuthoringHandler(
+            owner.store, authoring=editor.sessions, vision_validator=self.validator))
         from .manager_application import ManagerApplication
         editor.operations = ManagerApplication.from_owner(owner, document_authoring=editor.authoring,
             idle_lifecycle=editor.lifecycle).document_operations

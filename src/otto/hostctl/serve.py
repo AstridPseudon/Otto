@@ -233,8 +233,6 @@ class HostOwnerService:
             self.state["criterion_refs"] = {}
             return
 
-        from herzchen.domains.assessment import AssessmentModule
-        from otto.portfolio.assessment import OttoAssessment
 
         pairs = configured.get("task_criterion_pairs")
         if not isinstance(pairs, list) or not 1 <= len(pairs) <= 256:
@@ -280,8 +278,7 @@ class HostOwnerService:
             self.state["task_refs"] = linked_tasks
 
         actor = self.owner.binding.authenticated_actor(self.state["manager"])
-        assessed = OttoAssessment(AssessmentModule(self.store, actor=actor,
-            payload_resolver=self.owner.evidence_payload_resolver), actor)
+        assessed = self.owner.assessment(actor)
         missing_tasks = requested_tasks - set(self.state["task_refs"])
         if missing_tasks:
             raise RuntimeError("assessment policy names a task outside the exact current project")
@@ -416,11 +413,9 @@ class HostOwnerService:
         accountable supervisor. The owner discloses exactly these documents
         to the project's own bound manager; nothing outside project.files.
         """
-        from herzchen.content import domain_contribution as content_contribution
-        from herzchen.content.packets import ContextPacketService
         from otto.portfolio.documents import ProjectDocumentReader
         reader = ProjectDocumentReader(sheet_reader=self.owner.sheet, content_reader=self.owner.content,
-            visibility_reader=ContextPacketService(self.store.domain_handler((content_contribution(),))))
+            visibility_reader=self.owner.packet_service())
         supervisor = self.help_delivery.readers.current_supervisor(project.to_dict())
         actor = self.binding.authenticated_actor(supervisor.principal) if supervisor else self.owner.owner_actor
         rows = []
