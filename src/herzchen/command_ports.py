@@ -460,11 +460,17 @@ class _OwnerService:
                     or (info.st_dev, info.st_ino) != self.directory_identity):
                 return
             if self.socket_identity is not None:
-                socket_info = os.lstat(self.transport.socket_path)
-                if (not stat.S_ISSOCK(socket_info.st_mode)
-                        or (socket_info.st_dev, socket_info.st_ino) != self.socket_identity):
-                    return
-                os.unlink(self.transport.socket_path)
+                try:
+                    socket_info = os.lstat(self.transport.socket_path)
+                except FileNotFoundError:
+                    # The owned socket may already have been removed; the empty
+                    # directory is still safe to remove after its identity check.
+                    pass
+                else:
+                    if (not stat.S_ISSOCK(socket_info.st_mode)
+                            or (socket_info.st_dev, socket_info.st_ino) != self.socket_identity):
+                        return
+                    os.unlink(self.transport.socket_path)
             os.rmdir(directory)  # Also removes the empty lazy/in-process directory.
         except OSError:
             pass  # Foreign contents or an already closed path are preserved.

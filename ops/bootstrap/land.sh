@@ -238,6 +238,22 @@ PY
 }
 temp_owners > "$G/owners.before" || fail "could not inspect temporary service owners"
 
+# Command transports use one private directory per owner. Track the census across this landing so
+# a test or check that leaks a directory is reported even when its process exited cleanly.
+temp_command_dirs() {
+  "$PY" - "$TMPDIR" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+if root.is_dir():
+    for path in sorted(root.glob("herzchen-command-*")):
+        if path.is_dir() and not path.is_symlink():
+            print(path.resolve())
+PY
+}
+temp_command_dirs > "$G/command-dirs.before" || fail "could not inspect temporary command directories"
+
 # Run one test file in DIR with output to OUT; the last line records pytest's exit status.
 run_pytest() {  # DIR FILE OUT
   local rc=0
@@ -435,6 +451,10 @@ NEW_OWNERS="$(grep -vxF -f "$G/owners.before" "$G/owners.after" || true)"
 OLD_OWNERS="$(grep -xF -f "$G/owners.before" "$G/owners.after" || true)"
 [ -z "$OLD_OWNERS" ] || log "staging owner(s) under a temporary root left before this landing (not its own): $(echo $OLD_OWNERS)"
 [ -z "$NEW_OWNERS" ] || fail "orphan service run(s) after sweep: $(echo "$NEW_OWNERS" | sed 's/^/pid /; s/ \// home \//' | tr '\n' ' ')"
+
+temp_command_dirs > "$G/command-dirs.after" || fail "could not inspect temporary command directories after sweep"
+NEW_COMMAND_DIRS="$(grep -vxF -f "$G/command-dirs.before" "$G/command-dirs.after" || true)"
+[ -z "$NEW_COMMAND_DIRS" ] || fail "orphan herzchen-command directory(ies) after sweep: $(echo "$NEW_COMMAND_DIRS" | tr '\n' ' ')"
 
 [ -z "$NEW_FAILS" ] || fail "new test failures: $(echo "$NEW_FAILS" | grep . | tr '\n' ' ')"
 

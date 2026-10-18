@@ -186,6 +186,18 @@ def test_owner_failure_is_generic():
     assert token not in repr(reply)
 
 
+def test_generic_owner_error_fields_cannot_expose_private_message():
+    error = RuntimeError("secret-token-xyz")
+    error.code = "owner_detail"
+    error.message = "RuntimeError: secret-token-xyz"
+    facade, book, _ledger, _ = _facade(owner=FakeOwner({TASK_OP: error}))
+    token = book.issue("a1", ROLE)
+
+    reply = facade.call(token, TASK_TOOL, {"title": "x"})
+    assert reply == {"ok": False, "error": "owner_unavailable", "detail": "RuntimeError"}
+    assert "secret-token-xyz" not in repr(reply)
+
+
 # --- transport: socket server and stdio MCP server
 
 import json
@@ -281,6 +293,55 @@ def _kill_if_running(proc: subprocess.Popen) -> None:
 
 def _tool_payload(reply: dict) -> dict:
     return json.loads(reply["result"]["content"][0]["text"])
+
+
+class _CommandFacade:
+    endpoints = ("status",)
+
+    def status(self):
+        return {"ok": True}
+
+
+def test_bound_command_facade_close_removes_owned_temp_directory(tmp_path):
+    from herzchen import command_ports as cp
+
+    transport = cp._start_service(_CommandFacade(), "test.domain", "test.Facade", ("status",), None, str(tmp_path))
+    directory = Path(transport.socket_path).parent
+    assert directory.is_dir()
+    cp.close_consumer_facade(transport)
+    assert not directory.exists()
+
+
+def test_unbound_command_facade_creates_no_temp_directory(tmp_path, monkeypatch):
+    from herzchen import command_ports as cp
+
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    cp.command_facade(_CommandFacade, "test.domain")
+    assert list(tmp_path.glob("herzchen-command-*")) == []
+
+
+@pytest.mark.parametrize("mode", ["exit", "error"])
+def test_bound_command_facade_removes_temp_directory_at_process_exit(tmp_path, mode):
+    script = """
+import sys
+from herzchen import command_ports as cp
+class Facade:
+    endpoints = ("status",)
+    def status(self): return {}
+transport = cp._start_service(Facade(), "test.domain", "test.Facade", ("status",), None, sys.argv[1])
+if sys.argv[2] == "error": raise RuntimeError("simulated command failure")
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = SRC_DIR + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["HERZCHEN_IN_PROCESS_COMMAND_FALLBACK"] = "1"
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path), mode],
+                            capture_output=True, text=True, env=env, timeout=30)
+    if mode == "exit":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert "simulated command failure" in result.stderr
+    assert list(tmp_path.glob("herzchen-command-*")) == []
 
 
 def test_socket_serves_list_and_call_by_token(sock_dir):
