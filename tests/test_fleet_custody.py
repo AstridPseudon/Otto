@@ -1384,6 +1384,45 @@ def test_missing_kernel_birth_keeps_custody_uncertain_and_unsignalled(tmp_path):
     assert custody.Custody.from_latch(latch, census_fn=lambda: {}).doubt == "tracked process identity unavailable"
 
 
+def test_unreadable_zombie_leader_does_not_keep_an_empty_group_uncertain(tmp_path):
+    pid = 987662
+    birth = "darwin:1792350000:100"
+    latch = _write_latch(tmp_path / "zombie.json", pid, birth, {pid: birth})
+    snap = {pid: custody.Proc(pid, 1, pid, None, zombie=True)}
+
+    with mock.patch.object(custody.os, "kill") as kill, mock.patch.object(custody.os, "killpg") as killpg:
+        disposition = custody.resume_cleanup(latch, 0, census_fn=lambda: snap)
+
+    assert disposition.state == "gone", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == []
+    assert not os.path.exists(latch)
+
+
+def test_latch_cleanup_settles_after_signalled_members_become_zombies(tmp_path):
+    leader, child = 987663, 987664
+    leader_birth = "darwin:1792350000:100"
+    child_birth = "darwin:1792350000:200"
+    latch = _write_latch(tmp_path / "zombie-after-term.json", leader, leader_birth,
+                         {leader: leader_birth, child: child_birth})
+    snap = {leader: custody.Proc(leader, 1, leader, leader_birth),
+            child: custody.Proc(child, leader, leader, child_birth)}
+
+    def finish_group(pgid, sig):
+        assert (pgid, sig) == (leader, signal.SIGTERM)
+        snap[leader] = custody.Proc(leader, 1, leader, None, zombie=True)
+        snap[child] = custody.Proc(child, leader, leader, None, zombie=True)
+
+    with mock.patch.object(custody.os, "kill") as kill, \
+            mock.patch.object(custody.os, "killpg", side_effect=finish_group) as killpg:
+        disposition = custody.resume_cleanup(latch, 0, census_fn=lambda: snap)
+
+    assert disposition.state == "gone", disposition
+    assert kill.call_args_list == []
+    assert killpg.call_args_list == [mock.call(leader, signal.SIGTERM)]
+    assert not os.path.exists(latch)
+
+
 def test_display_time_latch_cannot_claim_a_kernel_identity(tmp_path):
     pid = 987658
     latch = tmp_path / "old-latch.json"

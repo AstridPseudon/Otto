@@ -220,7 +220,11 @@ class Custody:
             return "ours"
         leader = snap.get(self.pgid)
         if leader is not None and self.leader_birth is not None and leader.birth is None:
-            return "unproven"                 # an unreadable identity cannot prove pid reuse
+            # A zombie still holds its PID, so it cannot be a recycled live leader. Once the
+            # group has no live members, its unreadable birth does not block proving it empty.
+            if leader.zombie and not members:
+                return "empty"
+            return "unproven"
         if leader is not None and self.leader_birth is not None and leader.birth != self.leader_birth:
             return "reused"                    # the leader pid was recycled: the old group was empty
         return "unproven" if members else "empty"
