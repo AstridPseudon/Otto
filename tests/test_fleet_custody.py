@@ -212,7 +212,8 @@ def _fleet_registry_fixture(tmp_path, request, *, plan=None, landing_factory=Non
                 base_revision=task.ref.revision, logical_request_key="fleet-test-task-plan",
                 actor=actor)
         current_payload = task.payload
-        stamp = authoring_stamp(task.ref.revision, current_payload, actor)
+        expected_admitted_revision = task.ref.revision
+        stamp = authoring_stamp(expected_admitted_revision, current_payload, actor)
         task = owner.graph.revise(task.ref, metadata_namespaces={NAMESPACE: stamp},
             base_revision=task.ref.revision, logical_request_key="fleet-test-task-admission",
             actor=actor)
@@ -223,9 +224,10 @@ def _fleet_registry_fixture(tmp_path, request, *, plan=None, landing_factory=Non
         assignment = owner.assignments.assign(task.ref, role="executor", principal="worker-a",
             manager=view.state["manager"], session="worker-native",
             logical_request_key="fleet-test-worker-assignment", actor=actor)
-        return owner, project, task, assignment
+        return owner, project, task, assignment, expected_admitted_revision
 
-    owner, project, task, owner_assignment = fixture.owner_service.call(prepare_owner_records)
+    owner, project, task, owner_assignment, expected_admitted_revision = fixture.owner_service.call(
+        prepare_owner_records)
     repository = Path(repository_path) if repository_path is not None else tmp_path / "checkout"
     repository.mkdir(exist_ok=True)
     if not (repository / ".git").exists():
@@ -262,11 +264,12 @@ def _fleet_registry_fixture(tmp_path, request, *, plan=None, landing_factory=Non
             and subprocess.run(["git", "-C", str(repository), "show-ref", "--verify", "--quiet",
                                 "refs/heads/" + plan["branch"]]).returncode == 0):
         registry.prepare_worker_lab(project.ref, task.ref)
-    return registry, project, task, owner_assignment, record, record.token, repository
+    return (registry, project, task, owner_assignment, record, record.token, repository,
+            expected_admitted_revision)
 
 
 def test_owner_registry_binds_lab_and_line_to_dispatch_record_and_reuses_repo_branch_pair(tmp_path, request):
-    registry, project, task, assignment, record, token, repository = _fleet_registry_fixture(
+    registry, project, task, assignment, record, token, repository, expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"route": "normal", "size": 1, "lines": 99,
                                      "repo": "repo-a", "branch": "project-line"},
         landing_factory=lambda **_kwargs: object())
@@ -278,7 +281,7 @@ def test_owner_registry_binds_lab_and_line_to_dispatch_record_and_reuses_repo_br
     assert first["task"].ref.to_dict() == task.ref.to_dict()
     assert first["task_id"] == task.ref.id
     assert first["assignment_ref"] == assignment.ref.to_dict()
-    assert first["admitted_revision"] == record.admitted_revision
+    assert first["admitted_revision"] == expected_admitted_revision
     assert first["repo_path"] == str(repository)
     assert first["branch"] == "project-line"
     assert first["line_ref"] == "refs/heads/project-line"
@@ -291,7 +294,7 @@ def test_owner_registry_refuses_unchecked_out_configured_line_before_lab_creatio
     from herzchen.contracts import ResourceRef
     from herzchen.fleet.landing import LandingError
 
-    registry, project, task, _assignment, _record, _token, repository = _fleet_registry_fixture(
+    registry, project, task, _assignment, _record, _token, repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "configured-line"})
     subprocess.run(["git", "-C", str(repository), "branch", "configured-line"], check=True,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -305,7 +308,7 @@ def test_owner_registry_refuses_dirty_line_when_reusing_existing_lab(request, tm
     from herzchen.contracts import ResourceRef
     from herzchen.fleet.landing import LandingError
 
-    registry, project, task, _assignment, _record, _token, repository = _fleet_registry_fixture(
+    registry, project, task, _assignment, _record, _token, repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "project-line"})
     first = registry.prepare_worker_lab(project.ref, task.ref)
     (repository / "README.md").write_text("dirty line\n")
@@ -317,7 +320,7 @@ def test_owner_registry_refuses_dirty_line_when_reusing_existing_lab(request, tm
 
 
 def test_owner_registry_prepares_lab_on_clean_configured_line(request, tmp_path):
-    registry, project, task, _assignment, _record, _token, _repository = _fleet_registry_fixture(
+    registry, project, task, _assignment, _record, _token, _repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "project-line"})
 
     first = registry.prepare_worker_lab(project.ref, task.ref)
@@ -328,7 +331,7 @@ def test_owner_registry_prepares_lab_on_clean_configured_line(request, tmp_path)
 
 
 def test_owner_registry_allows_project_revision_advance_only_while_task_is_still_linked(tmp_path, request):
-    registry, project, task, _assignment, record, _token, _repository = _fleet_registry_fixture(
+    registry, project, task, _assignment, record, _token, _repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "project-line"},
         advance_project=True)
 
@@ -349,7 +352,7 @@ def test_owner_registry_allows_project_revision_advance_only_while_task_is_still
 
 
 def test_owner_registry_refuses_token_from_another_assignment(tmp_path, request):
-    registry, _project, _task, _assignment, record, _token, _repository = _fleet_registry_fixture(
+    registry, _project, _task, _assignment, record, _token, _repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "project-line"})
     foreign = registry.dispatcher.tokens.issue("another-assignment", "worker")
 
@@ -400,7 +403,7 @@ def test_worker_facade_check_is_feedback_and_done_lands_only_its_bound_lab_and_l
                                 parent_obligation="obligation@1", actor="owner", **pins)
 
     bound_landing = BoundLanding()
-    registry, project, task, assignment, record, token, _repository = _fleet_registry_fixture(
+    registry, project, task, assignment, record, token, _repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "main"},
         landing_factory=lambda **_kwargs: bound_landing, repository_path=line, checkpoint=checkpoint)
     fleet = registry._pairs[("repo-a", "main")][0]
@@ -431,6 +434,17 @@ def test_worker_facade_check_is_feedback_and_done_lands_only_its_bound_lab_and_l
                        "current_revision": task.ref.revision, "payload": task.payload}
     bound_landing.landing, _landing_calls = _service(fleet, runner, task=task_projection)
     socket_path = str(registry.facade_socket)
+    redirection_args = {"lab_name": second_task.ref.id, "task_id": second_task.ref.id}
+    rejected_check = facade_request(socket_path, {
+        "op": "call", "token": token, "tool": "check", "args": redirection_args})
+    assert rejected_check.get("ok") is False, rejected_check
+    assert rejected_check.get("error") == "bad_args", rejected_check
+    rejected_done = facade_request(socket_path, {
+        "op": "call", "token": token, "tool": "done", "args": redirection_args})
+    assert rejected_done.get("ok") is False, rejected_done
+    assert rejected_done.get("error") == "bad_args", rejected_done
+    assert _run(line, "rev-parse", "refs/heads/main") == base, \
+        "second-task facade arguments advanced the project's line"
     context = facade_request(socket_path, {"op": "call", "token": token, "tool": "task", "args": {}})
     assert context.get("ok") is True and context.get("result", {}).get("task_id") == task.ref.id, context
     checked = facade_request(socket_path, {"op": "call", "token": token, "tool": "check", "args": {}})
@@ -470,7 +484,7 @@ def test_landed_done_revokes_before_facade_waiter_resumes(request, tmp_path):
             return {"feedback_only": True}
 
     landing = Landing()
-    registry, _project, task, _assignment, record, token, _repo = _fleet_registry_fixture(
+    registry, _project, task, _assignment, record, token, _repo, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request,
         plan={"repo": "repo-a", "branch": "project-line"},
         landing_factory=lambda **_kwargs: landing,
@@ -552,7 +566,7 @@ def test_worker_facade_refuses_foreign_assignment_token(request, tmp_path):
     fleet.labs["T1"] = lab
     landing, _landing_calls = _service(fleet, _Runner(), task=_admitted_task())
 
-    registry, _project, task, assignment, record, _token, _repository = _fleet_registry_fixture(
+    registry, _project, task, assignment, record, _token, _repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan={"repo": "repo-a", "branch": "main"},
         landing_factory=lambda **_kwargs: landing, repository_path=line)
     fleet.labs[task.ref.id] = lab
@@ -1272,7 +1286,7 @@ def test_done_refuses_failed_mismatched_or_unresolvable_check_evidence(tmp_path,
     ({"repo": "missing", "branch": "project-line"}, "unknown repo: missing"),
 ], ids=["missing-branch", "missing-repo", "unknown-repo"])
 def test_owner_registry_names_missing_or_unknown_project_plan_key(request, tmp_path, plan, message):
-    registry, _project, _task, _assignment, record, token, _repository = _fleet_registry_fixture(
+    registry, _project, _task, _assignment, record, token, _repository, _expected_admitted_revision = _fleet_registry_fixture(
         tmp_path, request, plan=plan)
 
     with pytest.raises(LookupError, match=message):
