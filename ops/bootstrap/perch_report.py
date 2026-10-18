@@ -1550,6 +1550,13 @@ def stage2_failures(raw, config):
     found = {name: [] for name in STAGE2}
     if read_json(raw / "notes.json", {}).get("admit-and-dispatch") != "ran":
         found["admit-and-dispatch-ran"].append("scenario did not run against staging COMPOSEFLEET")
+    activation_record = read_json(raw / "stage2-activation.json", {}) or {}
+    dispatch_record = read_json(raw / "stage2-dispatch-status.json", {}) or {}
+    store_record = read_json(raw / "stage2-store-events.json", {}) or {}
+    if (not (((activation_record.get("activation") or {}).get("steps") or {}).get("tasks") or {}).get("task_refs")
+            or not dispatch_record.get("tasks") or not store_record.get("events")):
+        found["admit-and-dispatch-ran"].append(
+            "activation, final owner status or direct Store events are missing from the scenario")
 
     tasks = config.get("stage2_tasks", [])
     dependencies = config.get("stage2_dependencies", {})
@@ -1968,14 +1975,11 @@ def assertions(raw):
         for name in STAGE1:
             add(name, found.get(name, []), STAGE1_OK[name], skip=skip)
     if "admit-and-dispatch" in (config.get("scenarios") or []):
-        ran = notes.get("admit-and-dispatch") == "ran"
         found = stage2_failures(raw, config)
         add("admit-and-dispatch-ran", found["admit-and-dispatch-ran"],
             "staging COMPOSEFLEET dispatch scenario ran")
         for name in STAGE2[1:]:
-            add(name, found.get(name, []), "staging observation matches the stage-2 contract",
-                skip=None if ran or name in {"stage2-review-document", "operator-presence-approved"}
-                else (notes.get("admit-and-dispatch") or "skipped: scenario did not run"))
+            add(name, found.get(name, []), "staging observation matches the stage-2 contract")
     return results
 
 

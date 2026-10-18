@@ -936,7 +936,16 @@ class AssertionKindTests(unittest.TestCase):
         self.assertEqual(got["admit-and-dispatch-ran"]["status"], "fail")
         self.assertIn("did not run", got["admit-and-dispatch-ran"]["detail"])
         self.assertIn("failed:", json.loads((raw / "notes.json").read_text(encoding="utf-8"))["admit-and-dispatch"])
-        self.assertEqual(got["admitted-ready-dependency-order"]["status"], "skip")
+        self.assertEqual(got["admitted-ready-dependency-order"]["status"], "fail")
+
+    def test_stage_two_note_without_owner_evidence_fails_closed(self):
+        raw = clean_stage2_raw(self.tmp / "stage2-note-only")
+        for path in raw.iterdir():
+            if path.name not in {"config.json", "notes.json"}:
+                path.unlink()
+        got = {row["name"]: row["status"] for row in perch_report.assertions(raw)
+               if row["name"] in perch_report.STAGE2}
+        self.assertEqual(got, {name: "fail" for name in perch_report.STAGE2})
 
     def test_stage_two_report_names_real_check_and_fake_presence(self):
         raw = clean_stage2_raw(self.tmp / "stage2-report-contract")
