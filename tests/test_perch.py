@@ -1951,6 +1951,15 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertEqual(judgment["verdict"], "PASS")
         self.assertNotIn("complete-task", [words[0] for words in calls])
 
+        def held_completion_client(*words):
+            if words[0] == "review-task":
+                return {"outcome": "accepted", "gate_refs": [{**criterion, "kind": "assessment.decision"}],
+                        "completion": {"outcome": "held"}}
+            return client(*words)
+
+        with self.assertRaisesRegex(RuntimeError, "review or finish was refused"):
+            fake.scripted_manager_turn("A", client=held_completion_client)
+
         calls.clear()
         fake.scripted_manager_turn("C", client=client)
         recovery = next(words for words in calls if words[0] == "execution-control" and
