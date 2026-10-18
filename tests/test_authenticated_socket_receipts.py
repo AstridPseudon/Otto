@@ -70,6 +70,34 @@ class AuthenticatedSocketReceiptTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob("request-*.json")), [])
         self.assertNotIn("private-credential", (self.root / ("socket-intent-" + "a" * 32 + ".json")).read_text())
 
+    def test_command_status_reads_only_exact_authenticated_socket_scope(self):
+        self.dispatch()
+        request = {"command": "command-status", "request_id": "a" * 32,
+                   "transport_request_id": "b" * 32}
+        ingress = HostIngress("unix-socket", object())
+        status = self.host._dispatch(request, ingress=ingress)
+        self.assertEqual(status["summary"]["issue_id"], "issue")
+        self.assertFalse(status["outer_command"]["retained"])
+        self.assertFalse((self.root / ("socket-intent-" + "b" * 32 + ".json")).exists())
+        self.assertEqual(len(self.calls), 1)
+
+        original_binding, original_context = self.binding, self.context
+        for binding, context in (
+            (replace(original_binding, actor=AuthenticatedActor("fixture", "foreign", "private-credential")),
+             {**original_context, "principal": "foreign"}),
+            (replace(original_binding, generation=2), {**original_context, "generation": 2}),
+            (replace(original_binding, assignment_ref=ResourceRef("fixture", "wrk.assignment", "other", "rev-1")),
+             {**original_context, "assignment_ref": ResourceRef("fixture", "wrk.assignment", "other", "rev-1").to_dict()}),
+            (original_binding, {**original_context,
+                "project_ref": {**self.project, "id": "other-project"}}),
+        ):
+            self.binding, self.context = binding, context
+            denied = self.host._dispatch(request, ingress=ingress)
+            self.assertEqual(denied["outcome"], "error", denied)
+            self.assertFalse(denied["effects_started"])
+        self.binding, self.context = original_binding, original_context
+        self.assertEqual(len(self.calls), 1)
+
     def test_actual_disconnected_client_late_commit_is_retained_before_send(self):
         admitted, release = threading.Event(), threading.Event()
         def effect(request):

@@ -882,11 +882,10 @@ class EscalationTests(ServeTests):
         attached = self.attached()
         fields = ["--issue-id", issue_id, "--authority-source", "x", "--response", "Use design B",
                   "--proposed-solution", "x", "--next-action", "x"]
-        # A launched process cannot answer for the oracle: not over its file lane (no owner grant) ...
-        forged = manager_client.run_launched(["--timeout-seconds", "30", "respond-help", "--request-key", "forged",
-            *fields], {"OTTO_MANAGER_IPC": attached["manager_ipc"]})
-        self.assertNotEqual(forged.get("outcome"), "responded", forged)
-        self.assertIn("host lane", json.dumps(forged))
+        # A launched process has no owner-custody file transport.
+        with self.assertRaises(PermissionError):
+            manager_client.run_launched(["--timeout-seconds", "30", "respond-help", "--request-key", "forged",
+                *fields], {"OTTO_MANAGER_IPC": attached["manager_ipc"]})
         # ... and the orchestrator cannot smuggle it through the manager relay.
         smuggled = self.orchestrator("respond-help", "--request-key", "smuggled", *fields)
         self.assertEqual(smuggled["outcome"], "error", smuggled)
