@@ -116,7 +116,7 @@ class HostOwnerService:
         # project supervisor to read those canonical records.
         self._hydrate_assessment_policy(record)
         self._default_adapter_factory = adapter_factory is None
-        self.adapter_factory = adapter_factory or self._claude_adapter
+        self.adapter_factory = adapter_factory or self._host_adapter
         self.worker_mcp_provider = worker_mcp_provider
         self.worker_lab_provider = worker_lab_provider
         self.worker_context_provider = worker_context_provider
@@ -454,6 +454,29 @@ class HostOwnerService:
                               manager_write_roots=launch["write_roots"] if manager_role else (),
                               manager_env=launch["env"] if manager_role else None,
                               worker_mcp=worker_mcp)
+
+    def _host_adapter(self, *, principal: str, model: str, reasoning: str, service: Any = None,
+                      worker_mcp: Any = None, workspace: Optional[str] = None,
+                      source: Optional[str] = None, roles: tuple = ("worker", "manager")) -> Any:
+        """Select only the adapter declared by this project's admitted host."""
+        host = getattr(self.session, "host", None)
+        kind = host.get("kind") if isinstance(host, Mapping) else None
+        if kind not in ("claude-code", "codex") or (self.config.get("hosts") or {}).get(kind) != host:
+            from .adapters import AdapterUnavailable
+            raise AdapterUnavailable("project has no matching admitted host adapter")
+        if kind == "claude-code":
+            return self._claude_adapter(principal=principal, model=model, reasoning=reasoning,
+                service=service, worker_mcp=worker_mcp, workspace=workspace, source=source, roles=roles)
+        from .adapters import compose_codex
+        manager_role = "manager" in roles
+        launch = self.manager_launch() if manager_role else None
+        return compose_codex(self.config, source=source or str(self.render_run_view()),
+            worktree=workspace or self.worktree(), model=model, reasoning=reasoning,
+            roles=roles, owner=principal,
+            native_caller_socket=str(self.paths["socket"]) if manager_role else None,
+            native_process_observer=self.native_callers.observe if manager_role else None,
+            manager_write_roots=launch["write_roots"] if launch is not None else (),
+            worker_mcp=worker_mcp)
 
     def _execution(self, *, principal: str, model: str, reasoning: str, evidence_id: str,
                    workspace: Optional[str] = None, **_: Any) -> Any:

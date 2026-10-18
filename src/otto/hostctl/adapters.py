@@ -23,6 +23,13 @@ def claude_settings(config: Mapping[str, Any]) -> Mapping[str, Any]:
     return settings
 
 
+def codex_settings(config: Mapping[str, Any]) -> Mapping[str, Any]:
+    settings = ((config.get("hosts") or {}).get("codex") or {}).get("adapters", {}).get("codex")
+    if not isinstance(settings, Mapping):
+        raise AdapterUnavailable("this host declares no codex adapter")
+    return settings
+
+
 def launcher_check(config: Mapping[str, Any]) -> dict[str, Any]:
     """Inspect the pinned Claude launcher (runs `claude --version` only)."""
     from otto.agents.claude_cli import ClaudeBindingError, LauncherPin
@@ -63,6 +70,39 @@ def compose_claude(config: Mapping[str, Any], *, worktree: str, model: str, reas
         roles=roles, authentication=settings.get("authentication", "existing-user"),
         native_caller_socket=native_caller_socket, native_process_observer=native_process_observer,
         manager_write_roots=tuple(manager_write_roots), manager_env=manager_env, worker_mcp=worker_mcp)
+
+
+def compose_codex(config: Mapping[str, Any], *, worktree: str, model: str, reasoning: str,
+                  source: Optional[str] = None,
+                  roles: tuple = ("worker", "manager"), owner: str = "otto-host",
+                  native_caller_socket: Optional[str] = None, native_process_observer: Any = None,
+                  manager_write_roots: tuple = (), worker_mcp: Any = None) -> Any:
+    """Compose the admitted Codex CLI with owner evidence, grant and write scope."""
+    import hashlib
+    from otto.agents.codex_host_reader import CodexAppServerThreadReader
+    from otto.agents.herzchen_adapter import HerzchenCodexAdapter
+
+    settings = codex_settings(config)
+    declared = tuple(settings.get("roles", ("worker",)))
+    if not roles or set(roles) - set(declared):
+        raise AdapterUnavailable("host declares codex roles " + ", ".join(declared))
+    if worker_mcp is not None and roles != ("worker",):
+        raise AdapterUnavailable("a worker MCP grant requires only the worker role")
+    launcher = settings.get("launcher")
+    if not isinstance(launcher, str) or not launcher:
+        raise AdapterUnavailable("codex launcher is not configured")
+    root = Path(config["home"]) / "state" / "codex-native"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    context_key = hashlib.sha256((owner + "\0" + worktree).encode()).hexdigest()[:24]
+    return HerzchenCodexAdapter(
+        owner=owner, source=source or worktree, worktree=worktree, launcher=launcher,
+        requested_model=model, requested_reasoning=reasoning,
+        host_context_path=str(root / (context_key + ".jsonl")),
+        trusted_thread_reader=CodexAppServerThreadReader(launcher=launcher),
+        require_host_context=True,
+        native_caller_socket=native_caller_socket,
+        native_process_observer=native_process_observer,
+        writable_roots=tuple(manager_write_roots), worker_mcp=worker_mcp)
 
 
 def adapter_selection(config: Mapping[str, Any], *, worktree: Optional[str] = None) -> Any:

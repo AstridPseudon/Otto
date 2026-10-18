@@ -147,6 +147,7 @@ class HerzchenCodexAdapter:
         source_verifier_factory: Optional[Callable[..., Any]] = None,
         writable_roots: Sequence[str] = (),
         native_caller_socket: Optional[str] = None,
+        worker_mcp: Any = None,
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.owner = _text(owner, "owner")
@@ -154,6 +155,12 @@ class HerzchenCodexAdapter:
         self.worktree = _text(worktree, "worktree")
         self.writable_roots = tuple(_text(value, "writable_roots") for value in writable_roots)
         self.native_caller_socket = native_caller_socket
+        if worker_mcp is not None:
+            from herzchen.fleet.tools.pins import require_sole_server
+            require_sole_server(worker_mcp, "otto")
+            if not worker_mcp.token or not worker_mcp.token_env:
+                raise HerzchenAdapterError("worker MCP grant requires an owner-issued token")
+        self.worker_mcp = worker_mcp
         self.launcher = _text(launcher, "launcher")
         self.requested_model = _text(requested_model, "requested_model")
         self.requested_reasoning = _text(requested_reasoning, "requested_reasoning")
@@ -197,6 +204,7 @@ class HerzchenCodexAdapter:
             trusted_thread_reader=self.trusted_thread_reader,
             source_verifier_factory=self.source_verifier_factory, monotonic_clock=self.monotonic_clock,
             writable_roots=self.writable_roots, native_caller_socket=socket,
+            worker_mcp=self.worker_mcp,
         )
         bound._turn_started_callback = self._turn_started_callback
         bound._usage_callback = self._usage_callback
@@ -520,6 +528,7 @@ class HerzchenCodexAdapter:
                 native_process_observer=ExecutionHost.owner_callback(self.native_process_observer),
                 **({"process_pin": self.process_pin} if self.process_pin is not None else {}),
                 writable_roots=self.writable_roots, native_caller_socket=self.native_caller_socket,
+                mcp=self.worker_mcp,
                 native_caller_profile=NATIVE_CALLER_PROFILE,
                 delivered_brief=brief, model_projection=model_projection, cursor_queue=cursor_queue, **bounded,
             )
@@ -539,6 +548,7 @@ class HerzchenCodexAdapter:
                    if self.native_process_observer is not None else {}),
                 **({"process_pin": self.process_pin} if self.process_pin is not None else {}),
                 **({"native_caller_socket": self.native_caller_socket} if self.native_caller_socket is not None else {}),
+                **({"mcp": self.worker_mcp} if self.worker_mcp is not None else {}),
                 **({"usage_callback": usage_callback, "usage_phase": usage_phase}
                    if self._usage_callback is not None else {}),
                 **receiving, **bounded,
