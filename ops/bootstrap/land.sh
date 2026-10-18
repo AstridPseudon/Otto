@@ -1,11 +1,12 @@
 #!/bin/bash
-# Land one finished task onto canon/main through the gate (RUNBOOK section 4): rebase the lab,
+# Land finished tasks onto canon/main through the gate (RUNBOOK section 4): rebase the lab,
 # check placement (D14) and changed test expectations (D19), run the check, sweep the tests the
 # task touches (twice each) against a BASE baseline (a new failure is re-run alone, paired with
 # BASE, before it refuses; flaky ones are listed in $OPS_DIR/flaky.txt), merge --no-ff, push to $GIT_REMOTE,
 # remove the lab and branch. One landing at a time. Every step is logged to
 # $RUNS_DIR/TASK/land.log. A gate failure before the merge leaves canon/main unchanged.
 #   land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]
+#   land.sh --batch TASK [TASK ...] [--d19 TASK=FILE]   (at most eight tasks)
 # The check is the brief's line "Check command: `...`" unless --check is given. The title
 # is the brief's "Title:" line unless --title is given, and falls back to TASK.
 # Exit 4: existing test expectations changed and no --d19 decision was given.
@@ -17,9 +18,11 @@ REASON=""
 LOCKED=""
 LANDED=""
 LAND_TMPDIR=""
+LAND_CANDIDATE=""
 die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
 finish() {
   local rc=$?
+  [ -z "$LAND_CANDIDATE" ] || git -C "$OTTO_REPO" worktree remove --force "$LAND_CANDIDATE" >/dev/null 2>&1 || true
   [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
   [ -z "$LAND_TMPDIR" ] || rm -rf "$LAND_TMPDIR"
   # "landed" means pushed, whatever the exit status: a run stopped by a signal can end with status 0,
@@ -29,67 +32,106 @@ finish() {
     4) echo "LAND RESULT: d19" ;;
     *) echo "LAND RESULT: refused ${REASON:-ended before the merge was pushed (exit $rc)}" ;;
   esac
+  return "$rc"
 }
 trap finish EXIT
 trap 'REASON="interrupted by a signal; canon/main unchanged unless the log says pushed"; exit 143' TERM INT HUP
 
-valid_task "${1:-}" || die "usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]"
-TASK="$1"
-shift
+BATCH=""
+TASKS=()
 TITLE=""
 CHECK=""
 D19=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --title) TITLE="${2:-}"; shift 2 ;;
-    --check) CHECK="${2:-}"; shift 2 ;;
-    --d19) D19="${2:-}"; shift 2 ;;
-    *) die "unknown argument: $1" ;;
-  esac
-done
+if [ "${1:-}" = --batch ]; then
+  BATCH=1; shift
+  D19_ARGS=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --d19) [ $# -ge 2 ] || die "--d19 needs TASK=FILE"; D19_ARGS+=("$2"); shift 2 ;;
+      --*) die "unknown batch argument: $1" ;;
+      *) valid_task "$1" || die "invalid batch task: $1"; TASKS+=("$1"); shift ;;
+    esac
+  done
+  [ "${#TASKS[@]}" -ge 1 ] && [ "${#TASKS[@]}" -le 8 ] || die "--batch needs one to eight tasks"
+  [ "$(printf '%s\n' "${TASKS[@]}" | sort -u | wc -l | tr -d ' ')" -eq "${#TASKS[@]}" ] || die "batch tasks must be distinct"
+else
+  valid_task "${1:-}" || die "usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]"
+  TASKS=("$1"); shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title) TITLE="${2:-}"; shift 2 ;;
+      --check) CHECK="${2:-}"; shift 2 ;;
+      --d19) D19="${2:-}"; shift 2 ;;
+      *) die "unknown argument: $1" ;;
+    esac
+  done
+fi
+TASK="${TASKS[0]}"
 LAB="$LABS_DIR/$TASK"
 RUN="$RUNS_DIR/$TASK"
 BRANCH="lab/$TASK"
-[ -d "$LAB" ] || die "no lab at $LAB"
-[ -f "$LAB/.brief.md" ] || die "no brief at $LAB/.brief.md"
-git -C "$OTTO_REPO" show-ref --verify --quiet "refs/heads/$BRANCH" || die "no branch $BRANCH"
-"$PY" -I "$HERE/workers.py" check --file "$WORKERS_JSON" --task "$TASK" \
-  || die "land $TASK after its worker exits"
+for task in "${TASKS[@]}"; do
+  task_lab="$LABS_DIR/$task"
+  [ -d "$task_lab" ] || die "no lab at $task_lab"
+  [ -f "$task_lab/.brief.md" ] || die "no brief at $task_lab/.brief.md"
+  git -C "$OTTO_REPO" show-ref --verify --quiet "refs/heads/lab/$task" || die "no branch lab/$task"
+  "$PY" -I "$HERE/workers.py" check --file "$WORKERS_JSON" --task "$task" \
+    || die "land $task after its worker exits"
+  if [ -n "$(uncommitted_work "$task_lab")" ]; then
+    uncommitted_work "$task_lab" >&2
+    die "lab $task_lab has uncommitted work; the worker must commit it"
+  fi
+done
 [ "$(git -C "$OTTO_REPO" symbolic-ref --short HEAD)" = canon/main ] \
   || die "$OTTO_REPO must have canon/main checked out"
 [ -z "$(git -C "$OTTO_REPO" status --porcelain --untracked-files=no)" ] \
   || die "$OTTO_REPO has uncommitted changes"
-if [ -n "$(uncommitted_work "$LAB")" ]; then
-  uncommitted_work "$LAB" >&2
-  die "lab $LAB has uncommitted work; the worker must commit it"
-fi
-
-if [ -z "$CHECK" ]; then
-  CHECK_RAW="$(brief_field "$LAB" 'Check command')"
-  CHECK_LINE="$(awk '/^[*]*Check command:/ { print NR; exit }' "$LAB/.brief.md")"
+CHECKS=(); TITLES=(); D19S=()
+for task in "${TASKS[@]}"; do
+  task_lab="$LABS_DIR/$task"
+  task_check="$CHECK"
+  if [ -z "$task_check" ]; then
+  CHECK_RAW="$(brief_field "$task_lab" 'Check command')"
+  CHECK_LINE="$(awk '/^[*]*Check command:/ { print NR; exit }' "$task_lab/.brief.md")"
   if [[ "$CHECK_RAW" == \`*\`* ]]; then
-    CHECK="${CHECK_RAW#\`}"
-    CHECK="${CHECK%%\`*}"
-  else
-    CHECK=""
+    task_check="${CHECK_RAW#\`}"
+    task_check="${task_check%%\`*}"
   fi
-  if [ -n "$CHECK" ] && "$PY" - "$CHECK" <<'PY'
+  if [ -n "$task_check" ] && "$PY" - "$task_check" <<'PY'
 import re
 import sys
 
 raise SystemExit(0 if re.search(r"<[^>]*>", sys.argv[1]) else 1)
 PY
   then
-    die "Check command on brief line ${CHECK_LINE:-unknown} contains a placeholder; fill it in before landing"
+    die "$task: Check command on brief line ${CHECK_LINE:-unknown} contains a placeholder; fill it in before landing"
   fi
-fi
-[ -n "$CHECK" ] || die "no backticked check command: add a 'Check command: \`...\`' line to the brief, or pass --check"
-if [ -z "$TITLE" ]; then
-  TITLE="$(brief_field "$LAB" 'Title')"
-fi
-TITLE="${TITLE:-$TASK}"
+  fi
+  [ -n "$task_check" ] || die "no backticked check command: add a 'Check command: \`...\`' line to the brief, or pass --check"
+  CHECKS+=("$task_check")
+  task_title="$TITLE"
+  [ -n "$task_title" ] || task_title="$(brief_field "$task_lab" 'Title')"
+  TITLES+=("${task_title:-$task}")
+  task_d19="$D19"
+  if [ -n "$BATCH" ]; then
+    task_d19=""
+    for arg in "${D19_ARGS[@]-}"; do
+      case "$arg" in "$task="*) task_d19="${arg#*=}" ;; esac
+    done
+    if [ -z "$task_d19" ] && [ -f "$OPS_DIR/reviews/D19-$task.md" ]; then
+      task_d19="$OPS_DIR/reviews/D19-$task.md"
+    fi
+  fi
+  D19S+=("$task_d19")
+done
+CHECK="${CHECKS[0]}"; TITLE="${TITLES[0]}"; D19="${D19S[0]}"
 
-mkdir -p "$RUN" "$OPS_DIR"
+LOGS=()
+for task in "${TASKS[@]}"; do
+  mkdir -p "$RUNS_DIR/$task"
+  LOGS+=("$RUNS_DIR/$task/land.log")
+done
+mkdir -p "$OPS_DIR"
 mkdir "$OPS_DIR/land.lock" 2>/dev/null || die "another landing is running ($OPS_DIR/land.lock); wait for it"
 LOCKED=1
 # Give this landing a short, private TMPDIR so staging sockets stay within Unix socket limits and
@@ -102,19 +144,44 @@ export TMPDIR
 OTTO_LAND_TMPDIR="$LAND_TMPDIR"
 export OTTO_LAND_TMPDIR
 LOG="$RUN/land.log"
-log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "$LOG"; }
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" | tee -a "${LOGS[@]}"; }
 fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; exit 1; }
 
 BASE="$(git -C "$OTTO_REPO" rev-parse canon/main)"
-log "land $TASK: BASE $BASE"
-echo "rebasing $BRANCH onto canon/main ($(git -C "$OTTO_REPO" rev-parse --short canon/main))"
-if ! git -C "$LAB" rebase --quiet canon/main; then
-  git -C "$LAB" rebase --abort || true
-  die "rebase onto canon/main conflicts; resume the worker's session with the conflict"
-fi
-log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase; the merge's tree)"
-
 gitl() { git -C "$OTTO_REPO" "$@"; }
+if [ -n "$BATCH" ]; then
+  log "land batch ${TASKS[*]}: BASE $BASE"
+  # Pytest walks parent directories while choosing its root; a checkout under /tmp would cross
+  # unrelated private entries there. Keep the candidate beside the labs and clean it in finish.
+  LAND_CANDIDATE="$LABS_DIR/_batch-$$"
+  gitl worktree add --detach --quiet "$LAND_CANDIDATE" "$BASE" || fail "cannot create batch candidate"
+else
+  log "land $TASK: BASE $BASE"
+fi
+
+ACCEPTED=(); ACCEPTED_INDEX=()
+textual_conflicts() {  # WORKTREE newline-separated paths
+  local root="$1" paths="$2" path
+  [ -n "$paths" ] || return 1
+  while IFS= read -r path; do
+    [ -f "$root/$path" ] && grep -q '^<<<<<<< ' "$root/$path" || return 1
+  done <<< "$paths"
+}
+for i in "${!TASKS[@]}"; do
+  TASK="${TASKS[$i]}"; LAB="$LABS_DIR/$TASK"; BRANCH="lab/$TASK"
+  CHECK="${CHECKS[$i]}"; TITLE="${TITLES[$i]}"; D19="${D19S[$i]}"
+  echo "rebasing $BRANCH onto canon/main ($(gitl rev-parse --short canon/main))"
+  if ! git -C "$LAB" rebase --quiet canon/main; then
+    conflicts="$(git -C "$LAB" diff --name-only --diff-filter=U)"
+    textual=""; textual_conflicts "$LAB" "$conflicts" && textual=1
+    git -C "$LAB" rebase --abort || true
+    if [ -n "$BATCH" ] && [ -n "$textual" ]; then
+      log "DROP $TASK: textual conflict while rebasing onto canon/main; task stays in its lab"
+      continue
+    fi
+    die "rebase onto canon/main conflicts; resume the worker's session with the conflict"
+  fi
+  log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase; the merge's tree)"
 
 # Cheap checks first, so an exit 4 or a D14 refusal costs seconds, not a sweep.
 # placement (D14)
@@ -202,9 +269,48 @@ PY
     *) fail "D19: missing explicit LAND or SEND BACK Decision in $D19" ;;
   esac
 fi
+  if [ -n "$BATCH" ]; then
+    before_merge="$(git -C "$LAND_CANDIDATE" rev-parse HEAD)"
+    if ! git -C "$LAND_CANDIDATE" merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge-$TASK.log" 2>&1; then
+      conflicts="$(git -C "$LAND_CANDIDATE" diff --name-only --diff-filter=U)"
+      textual=""; textual_conflicts "$LAND_CANDIDATE" "$conflicts" && textual=1
+      git -C "$LAND_CANDIDATE" merge --abort >/dev/null 2>&1 || true
+      if [ -n "$textual" ]; then
+        log "DROP $TASK: textual conflict with earlier batch task in $(echo "$conflicts" | tr '\n' ' '); task stays in its lab"
+        continue
+      fi
+      fail "cannot merge $TASK into candidate (output: $RUN/merge-$TASK.log)"
+    fi
+    if [ "$(git -C "$LAND_CANDIDATE" rev-parse HEAD)" = "$before_merge" ]; then
+      log "DROP $TASK: its commit is already included in the batch candidate; task stays in its lab"
+      continue
+    fi
+  fi
+  ACCEPTED+=("$TASK"); ACCEPTED_INDEX+=("$i")
+done
+if [ -n "$BATCH" ]; then
+  [ "${#ACCEPTED[@]}" -gt 0 ] || fail "all batch tasks had textual conflicts; nothing to land"
+  LAB="$LAND_CANDIDATE"
+  DIFF_REF="$(git -C "$LAB" rev-parse HEAD)"
+  TASK="${ACCEPTED[0]}"; RUN="$RUNS_DIR/$TASK"
+  CHECK=""  # each check runs separately; the union sweep must run every selected file twice
+  log "tested commit $DIFF_REF (ordered batch candidate: ${ACCEPTED[*]})"
+else
+  TASK="${TASKS[0]}"; LAB="$LABS_DIR/$TASK"; BRANCH="lab/$TASK"
+  CHECK="${CHECKS[0]}"; RUN="$RUNS_DIR/$TASK"; DIFF_REF="$BRANCH"
+fi
 
 # ---- gate ----
 G="$RUN/.gate"; rm -rf "$G"; mkdir -p "$G"  # dot-folders: portfolio applies skip scratch
+if [ -n "$BATCH" ]; then
+  : > "$G/task-files.tsv"
+  for i in "${ACCEPTED_INDEX[@]}"; do
+    task="${TASKS[$i]}"
+    gitl diff --name-only "$BASE...lab/$task" -- src ops tests | while IFS= read -r path; do
+      printf '%s\t%s\n' "$task" "$path"
+    done >> "$G/task-files.tsv"
+  done
+fi
 
 # Staging owners (`service run`) whose home is under a temporary root, one "pid home" per line.
 # A swept test can leave one behind even when its temporary home has no pidfile (TOOLING21, 17 Oct).
@@ -254,7 +360,7 @@ ids_of() {  # OUT FILE
 }
 
 # Build a shell script that runs every top-level &&-joined check part and remembers any failure.
-CHECK_RUN="$("$PY" - "$CHECK" <<'PY'
+check_script() { "$PY" - "$1" <<'PY'
 import sys
 
 command = sys.argv[1]
@@ -285,26 +391,40 @@ for part in parts:
         print("{\n%s\n}\nrc=$?\nif [ \"$rc\" -ne 0 ]; then failed=1; fi" % part)
 print('exit "$failed"')
 PY
-)"
+}
 
 # 0. The task's own check, on the rebased commit (D19, rule 1). Until 15 Oct the gate parsed it and never ran it.
 # otto_gate_exit (beside this script): a run is over when pytest has reported, even if a test leaked a thread.
-( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
-    "$HEAVY" --weight 1 --purpose "$TASK check" -- \
-    bash -c "$CHECK_RUN" ) > "$G/check.txt" 2>&1 || CHECK_FAILED=1
-CHECK_SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$G/check.txt" || true)"
-[ -z "$CHECK_SKIPPED" ] || fail "the task's check has no executed tests: $CHECK_SKIPPED (output: $G/check.txt)"
-if grep -q -E 'no tests ran|Interrupted:' "$G/check.txt" \
-    || { ! grep -q -E '[0-9]+ (passed|failed|skipped|xfailed|xpassed)' "$G/check.txt" \
-         && { [ -z "${CHECK_FAILED:-}" ] || grep -q -E '^(ERROR|FAILED|SUBFAILED\([^)]*\)) ' "$G/check.txt"; }; }; then
-  fail "the task's check did not complete a test run: $CHECK (output: $G/check.txt)"
-fi
-[ -n "${CHECK_FAILED:-}" ] || log "check passed: $CHECK"
+CHECK_FAILED_TASKS=(); CHECK_FAILED_OUTS=(); CHECK_FAILED_COMMANDS=()
+for i in "${ACCEPTED_INDEX[@]}"; do
+  check_task="${TASKS[$i]}"; task_check="${CHECKS[$i]}"
+  check_out="$G/check.txt"
+  [ -z "$BATCH" ] || check_out="$G/check-$check_task.txt"
+  CHECK_RUN="$(check_script "$task_check")"
+  check_failed=""
+  ( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
+      "$HEAVY" --weight 1 --purpose "$check_task check" -- \
+      bash -c "$CHECK_RUN" ) > "$check_out" 2>&1 || check_failed=1
+  CHECK_SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$check_out" || true)"
+  [ -z "$CHECK_SKIPPED" ] || fail "the task's check has no executed tests: $CHECK_SKIPPED (output: $check_out)"
+  if grep -q -E 'no tests ran|Interrupted:' "$check_out" \
+      || { ! grep -q -E '[0-9]+ (passed|failed|skipped|xfailed|xpassed)' "$check_out" \
+           && { [ -z "$check_failed" ] || grep -q -E '^(ERROR|FAILED|SUBFAILED\([^)]*\)) ' "$check_out"; }; }; then
+    fail "the task's check did not complete a test run: $task_check (output: $check_out)"
+  fi
+  if [ -n "$check_failed" ]; then
+    CHECK_FAILED_TASKS+=("$check_task"); CHECK_FAILED_OUTS+=("$check_out"); CHECK_FAILED_COMMANDS+=("$task_check")
+  elif [ -n "$BATCH" ]; then
+    log "check $check_task passed: $task_check"
+  else
+    log "check passed: $task_check"
+  fi
+done
 
 # a. Sweep
-CHANGED_CODE="$(gitl diff --name-only "$BASE...$BRANCH" -- src ops)"
-TESTS_TOUCHED="$(gitl diff --name-only --diff-filter=ACMR "$BASE...$BRANCH" -- 'tests/test_*.py' || true)"
-TESTS_ADDED="$(gitl diff --name-only --diff-filter=A "$BASE...$BRANCH" -- 'tests/test_*.py' || true)"
+CHANGED_CODE="$(gitl diff --name-only "$BASE...$DIFF_REF" -- src ops)"
+TESTS_TOUCHED="$(gitl diff --name-only --diff-filter=ACMR "$BASE...$DIFF_REF" -- 'tests/test_*.py' || true)"
+TESTS_ADDED="$(gitl diff --name-only --diff-filter=A "$BASE...$DIFF_REF" -- 'tests/test_*.py' || true)"
 SWEEP="$( { printf '%s\n' "$CHANGED_CODE" | "$PY" -I -c '
 import os, re, sys
 lab = sys.argv[1]
@@ -381,36 +501,123 @@ reproduces() {  # FILE ID
   return 1
 }
 
+# Name each task that changed the failing test or a source file it imports. Shared changed files
+# name every contributor; an unowned failure stays unattributed so the manager can split the batch.
+owners_of() {  # TEST FILE
+  "$PY" - "$LAB/$1" "$1" "$G/task-files.tsv" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+test_path, relative, manifest = sys.argv[1:]
+source = Path(test_path).read_text(encoding="utf-8", errors="replace") if Path(test_path).is_file() else ""
+owners = []
+for row in Path(manifest).read_text().splitlines():
+    task, path = row.split("\t", 1)
+    match = path == relative
+    if path.startswith("src/") and path.endswith(".py"):
+        module = path[4:-3].replace("/", ".")
+        if module.endswith(".__init__"):
+            module = module[:-9]
+        parent, _, leaf = module.rpartition(".")
+        patterns = [r"^\s*import\s+%s\b" % re.escape(module),
+                    r"^\s*from\s+%s\s+import\b" % re.escape(module)]
+        if parent:
+            patterns.append(r"^\s*from\s+%s\s+import\b[^\n]*\b%s\b" % (re.escape(parent), re.escape(leaf)))
+        match |= any(re.search(pattern, source, re.M) for pattern in patterns)
+    elif path.startswith("ops/"):
+        leaf = Path(path).name
+        names = [leaf, leaf[:-3]] if leaf.endswith(".py") else [leaf]
+        match |= any(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name), source)
+                     for name in names)
+    if match and task not in owners:
+        owners.append(task)
+print(" ".join(owners) if owners else "unattributed")
+PY
+}
+record_new() {  # ID
+  local id="$1" f owners
+  if [ -n "$BATCH" ]; then
+    f="${id%%::*}"
+    owners="$(owners_of "$f")"
+    log "NEW failure: $id (tasks: $owners)"
+    NEW_FAILS="$NEW_FAILS$id [tasks: $owners]"$'\n'
+  else
+    NEW_FAILS="$NEW_FAILS$id"$'\n'
+  fi
+}
+
 # A check that failed only on tests canon fails too (the same ids, red on BASE) is not refused for them:
 # they are pre-existing, as in the sweep, and go to canon-reds.txt for REDS. Anything else refuses
 # (16 Oct: canon's manager-loop red refused CHANGE, A4 and COMPOSEFLEET until the check was narrowed).
-if [ -n "${CHECK_FAILED:-}" ]; then
-  check_ids="$(ids_of "$G/check.txt" check)"
-  [ -n "$check_ids" ] || fail "the task's check failed: $CHECK (output: $G/check.txt)"
+NEW_FAILS=""
+for i in "${!CHECK_FAILED_TASKS[@]}"; do
+  check_task="${CHECK_FAILED_TASKS[$i]}"; check_out="${CHECK_FAILED_OUTS[$i]}"; task_check="${CHECK_FAILED_COMMANDS[$i]}"
+  check_ids="$(ids_of "$check_out" check)"
+  [ -n "$check_ids" ] || fail "the task's check failed: $task_check (output: $check_out)"
+  check_preexisting=""
   for id in $check_ids; do
     f="${id%%::*}"
-    case "$id" in *::exit-*) fail "the task's check failed: $CHECK (output: $G/check.txt)" ;; esac
-    gitl cat-file -e "$BASE:$f" 2>/dev/null || fail "the task's check failed: $id (output: $G/check.txt)"
-    ids_of "$(baseline_out "$f")" "$f" | grep -qxF "$id" || fail "the task's check failed: $id (output: $G/check.txt)"
+    if [ -z "$BATCH" ]; then
+      case "$id" in *::exit-*) fail "the task's check failed: $task_check (output: $check_out)" ;; esac
+      gitl cat-file -e "$BASE:$f" 2>/dev/null || fail "the task's check failed: $id (output: $check_out)"
+      ids_of "$(baseline_out "$f")" "$f" | grep -qxF "$id" || fail "the task's check failed: $id (output: $check_out)"
+    else
+      if gitl cat-file -e "$BASE:$f" 2>/dev/null \
+          && ids_of "$(baseline_out "$f")" "$f" | grep -qxF "$id"; then
+        :
+      else
+        record_new "$id"
+        continue
+      fi
+    fi
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $check_task $id (check; also red on BASE)" >> "$OPS_DIR/canon-reds.txt"
+    check_preexisting="$check_preexisting $id"
   done
-  for id in $check_ids; do echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $TASK $id (check; also red on BASE)" >> "$OPS_DIR/canon-reds.txt"; done
-  log "check passed except failures also red on BASE: $(echo $check_ids) (listed in ops/canon-reds.txt)"
-fi
+  [ -z "$check_preexisting" ] || log "check passed except failures also red on BASE: ${check_preexisting# } (listed in ops/canon-reds.txt)"
+done
 
-NEW_FAILS=""
+# GATEPAR's bounded parallel run phase keeps each file's two runs in order. Judgment stays serial,
+# including BASE comparisons and isolated reproductions.
+GATE_JOBS="${OTTO_GATE_JOBS:-3}"
+case "$GATE_JOBS" in ''|*[!0-9]*) fail "OTTO_GATE_JOBS must be a positive integer (got: $GATE_JOBS)" ;; esac
+[ "$GATE_JOBS" -gt 0 ] || fail "OTTO_GATE_JOBS must be a positive integer (got: $GATE_JOBS)"
+mkdir -p "$G/sweep"
+run_sweep_file() {  # FILE
+  local f="$1" dir first n
+  dir="$G/sweep/$f"
+  mkdir -p "$dir"
+  first=1
+  case " $CHECK " in *" -k "*|*::*) ;; *" $f "*) first=2 ;; esac
+  for n in $(seq "$first" 2); do
+    run_pytest "$LAB" "$f" "$dir/run$n.txt"
+  done
+}
+batch_pids=""; batch_count=0
+for f in $SWEEP; do
+  run_sweep_file "$f" &
+  batch_pids="${batch_pids:+$batch_pids }$!"
+  batch_count=$((batch_count + 1))
+  if [ "$batch_count" -ge "$GATE_JOBS" ]; then
+    for pid in $batch_pids; do wait "$pid" || fail "sweep run phase failed for a worker (pid $pid)"; done
+    batch_pids=""; batch_count=0
+  fi
+done
+for pid in $batch_pids; do wait "$pid" || fail "sweep run phase failed for a worker (pid $pid)"; done
+
 for f in $SWEEP; do
   : > "$G/lab.ids"
   first=1
   # A file the passing check ran whole (named in it, with no -k or :: selection) has had its first run.
   case " $CHECK " in *" -k "*|*::*) ;; *" $f "*) first=2; log "sweep $f run 1/2: 0 failing (the check's run)" ;; esac
   for n in $(seq "$first" 2); do
-    run_pytest "$LAB" "$f" "$G/run$n.txt"
-    SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$G/run$n.txt" || true)"
-    [ -z "$SKIPPED" ] || fail "sweep $f has no executed tests: $SKIPPED (output: $G/run$n.txt)"
-    ids="$(ids_of "$G/run$n.txt" "$f")"; kept=""
+    out="$G/sweep/$f/run$n.txt"
+    SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$out" || true)"
+    [ -z "$SKIPPED" ] || fail "sweep $f has no executed tests: $SKIPPED (output: $out)"
+    ids="$(ids_of "$out" "$f")"; kept=""
     if [ -n "$ids" ]; then
       printf '%s\n' "$ids" >> "$G/lab.ids"
-      kept="$G/fail-$(basename "$f")-run$n.txt"; cp "$G/run$n.txt" "$kept"
+      kept="$G/fail-$(basename "$f")-run$n.txt"; cp "$out" "$kept"
     fi
     log "sweep $f run $n/2: $(printf '%s' "$ids" | grep -c . || true) failing${kept:+ (output: $kept)}"
   done
@@ -418,13 +625,14 @@ for f in $SWEEP; do
   [ -s "$G/lab.ids" ] || continue
   if ! gitl cat-file -e "$BASE:$f" 2>/dev/null; then
     # a file the task added has no baseline: all its failures are new
-    NEW_FAILS="$NEW_FAILS$(cat "$G/lab.ids")"$'\n'; continue
+    while IFS= read -r id; do record_new "$id"; done < "$G/lab.ids"
+    continue
   fi
   bo="$(baseline_out "$f")"
   ids_of "$bo" "$f" | sort -u > "$G/base.ids"
   while IFS= read -r id; do
     if grep -qxF -- "$id" "$G/base.ids"; then log "pre-existing failure (also on BASE): $id"
-    elif reproduces "$f" "$id"; then NEW_FAILS="$NEW_FAILS$id"$'\n'; fi
+    elif reproduces "$f" "$id"; then record_new "$id"; fi
   done < "$G/lab.ids"
 done
 
@@ -472,6 +680,9 @@ if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
 else
   log "staging: skipped (STAGE/PERCH not landed)"
 fi
+if [ -n "$BATCH" ] && [ -n "$(git -C "$LAB" status --porcelain --untracked-files=no)" ]; then
+  fail "batch candidate changed during checks or staging; tested commit no longer matches its tree"
+fi
 
 # e. remote
 git -C "$OTTO_REPO" fetch --quiet "$GIT_REMOTE" || fail "cannot fetch $GIT_REMOTE"
@@ -481,23 +692,49 @@ gitl merge-base --is-ancestor "$GIT_REMOTE/main" canon/main \
 # f. merge and push
 [ "$(gitl rev-parse canon/main)" = "$BASE" ] \
   || fail "canon/main moved during the gate; run land.sh $TASK again"
-if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge.log" 2>&1; then
-  gitl merge --abort 2>/dev/null || true
-  fail "merge failed; canon/main unchanged (see $RUN/merge.log)"
+if [ -n "$BATCH" ]; then
+  gitl merge --ff-only "$DIFF_REF" > "$RUN/merge.log" 2>&1 \
+    || fail "candidate fast-forward failed; canon/main unchanged (see $RUN/merge.log)"
+else
+  if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge.log" 2>&1; then
+    gitl merge --abort 2>/dev/null || true
+    fail "merge failed; canon/main unchanged (see $RUN/merge.log)"
+  fi
 fi
 log "merged $(gitl rev-parse --short HEAD)"
 if ! gitl push --quiet "$GIT_REMOTE" canon/main:main >> "$RUN/merge.log" 2>&1; then
+  if [ -n "$BATCH" ]; then
+    # One ref push contains the entire accepted history. A failed push must not leave a local
+    # partial landing that a later command might accidentally publish.
+    if [ "$(gitl ls-remote "$GIT_REMOTE" refs/heads/main 2>/dev/null | awk '{print $1}')" = "$(gitl rev-parse HEAD)" ]; then
+      log "push response failed, but $GIT_REMOTE/main has the complete batch tip"
+    else
+      gitl reset --hard "$BASE" >> "$RUN/merge.log" 2>&1 || true
+      fail "push to $GIT_REMOTE failed; batch canon/main restored to $BASE (see $RUN/merge.log)"
+    fi
+  else
   REASON="push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD)"
   log "FAIL: push to $GIT_REMOTE failed; the local merge stays on canon/main (see $RUN/merge.log)"
   echo "push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD) (log: $LOG)" >&2
   exit 1
+  fi
 fi
 log "pushed canon/main to $GIT_REMOTE/main"
 LANDED="$(gitl rev-parse --short HEAD)"
 
 # g. clean up and record
-"$HERE/otto-lab.sh" remove "$TASK" | tee -a "$LOG"
+if [ -n "$BATCH" ]; then
+  for task in "${ACCEPTED[@]}"; do
+    "$HERE/otto-lab.sh" remove "$task" | tee -a "${LOGS[@]}"
+  done
+else
+  "$HERE/otto-lab.sh" remove "$TASK" | tee -a "$LOG"
+fi
 SHORT="$(gitl diff --shortstat "$BASE" HEAD)"
 REMOVED="$(gitl diff --numstat "$BASE" HEAD | awk '{ d += $2 } END { print d+0 }')"
 log "net: ${SHORT:-no change}; lines removed: $REMOVED"
-echo "landed $TASK: $(gitl rev-parse --short HEAD) $(gitl log -1 --format=%s)"
+if [ -n "$BATCH" ]; then
+  echo "landed batch ${ACCEPTED[*]}: $(gitl rev-parse --short HEAD)"
+else
+  echo "landed $TASK: $(gitl rev-parse --short HEAD) $(gitl log -1 --format=%s)"
+fi

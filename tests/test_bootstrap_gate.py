@@ -441,6 +441,134 @@ class LandGate(Scratch):
         self.assertIn("WARN: tests/test_new.py passes on canon/main", self.log("T9"))
 
 
+class BatchLandGate(Scratch):
+    def setUp(self):
+        super().setUp()
+        self.start()
+
+    def batch(self, *tasks):
+        return sh(["bash", str(BOOT / "land.sh"), "--batch", *tasks], env=self.env, check=False)
+
+    def landed_tasks(self):
+        subjects = sh(["git", "log", "--format=%s", "%s..canon/main" % self.base], cwd=self.repo).stdout.splitlines()
+        return [line for line in reversed(subjects) if line.startswith("Land ")]
+
+    def remote_head(self):
+        return sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
+
+    def test_batch_rejects_more_than_eight_tasks(self):
+        r = self.batch(*("T%d" % i for i in range(9)))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("one to eight tasks", r.stdout + r.stderr)
+        self.assertEqual(self.remote_head(), self.base)
+
+    def test_green_three_task_batch_has_three_commits_and_one_push(self):
+        for task in ("A", "B", "C"):
+            self.lab(task, {"src/otto/%s.py" % task.lower(): "VALUE = %r\n" % task})
+        pushes = self.tmp / "pushes"
+        hook = self.remote / "hooks/post-receive"
+        hook.write_text("#!/bin/sh\necho push >> %s\n" % pushes)
+        hook.chmod(0o755)
+        r = self.batch("A", "B", "C")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.landed_tasks(), ["Land A: Do A", "Land B: Do B", "Land C: Do C"])
+        self.assertEqual(self.remote_head(), self.head())
+        self.assertEqual(pushes.read_text().splitlines(), ["push"])
+        self.assertEqual(self.log("A").count("sweep tests/test_herzchen_boundary.py run "), 2)
+        for task in ("A", "B", "C"):
+            self.assertFalse((self.labs / task).exists(), task)
+        self.assertIn("LAND RESULT: landed ", r.stdout)
+
+    def test_textual_conflict_drops_only_the_conflicting_task(self):
+        self.lab("A", {"src/otto/feature.py": "VALUE = 'A'\n"})
+        self.lab("B", {"src/otto/feature.py": "VALUE = 'B'\n"})
+        self.lab("C", {"src/otto/other.py": "VALUE = 'C'\n"})
+        r = self.batch("A", "B", "C")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.landed_tasks(), ["Land A: Do A", "Land C: Do C"])
+        self.assertEqual(self.remote_head(), self.head())
+        self.assertTrue((self.labs / "B").exists())
+        self.assertIn("B", r.stdout + r.stderr)
+        self.assertIn("conflict", r.stdout + r.stderr)
+
+    def test_new_failure_refuses_every_task_and_names_its_owner(self):
+        self.lab("A", {"src/otto/other.py": "VALUE = 'A'\n"})
+        self.lab("B", {"src/otto/mod.py": "def f():\n    return 2\n"})
+        self.lab("C", {"note.txt": "C\n"})
+        r = self.batch("A", "B", "C")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.head(), self.base)
+        self.assertEqual(self.remote_head(), self.base)
+        self.assertEqual(self.landed_tasks(), [])
+        for task in ("A", "B", "C"):
+            self.assertTrue((self.labs / task).exists(), task)
+        self.assertIn("NEW failure: tests/test_mod.py::test_f", r.stdout + r.stderr)
+        self.assertIn("tasks: B", r.stdout + r.stderr)
+        self.assertNotIn("tasks: A", r.stdout + r.stderr)
+
+    def test_added_failing_test_is_owned_by_its_task(self):
+        self.lab("A", {"note-a.txt": "A\n"})
+        self.lab("B", {"tests/test_new_red.py": "def test_new():\n    assert False\n"})
+        r = self.batch("A", "B")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.remote_head(), self.base)
+        self.assertIn("tests/test_new_red.py::test_new", r.stdout + r.stderr)
+        self.assertIn("tasks: B", r.stdout + r.stderr)
+
+    def test_every_check_runs_on_the_candidate_and_red_check_names_source_task(self):
+        for task, files in (("A", {"note-a.txt": "A\n"}),
+                            ("B", {"src/otto/mod.py": "def f():\n    return 2\n"}),
+                            ("C", {"note-c.txt": "C\n"})):
+            self.lab(task, files)
+            marker = self.tmp / ("check-" + task)
+            checked_file = "tests/test_mod.py" if task == "B" else "tests/test_herzchen_boundary.py"
+            check = ("%s -c \"from pathlib import Path; Path('%s').write_text('ran')\" && "
+                     "%s -m pytest -q %s") % (sys.executable, marker, sys.executable, checked_file)
+            (self.labs / task / ".brief.md").write_text("**Title:** Do %s\nCheck command: `%s`\n" % (task, check))
+        r = self.batch("A", "B", "C")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.remote_head(), self.base)
+        for task in ("A", "B", "C"):
+            self.assertTrue((self.tmp / ("check-" + task)).exists(), "check missing for " + task)
+        self.assertIn("NEW failure: tests/test_mod.py::test_f", r.stdout + r.stderr)
+        self.assertIn("tasks: B", r.stdout + r.stderr)
+
+    def test_batch_requires_each_changed_expectation_decision(self):
+        changed = "from otto import mod\n\n\ndef test_f():\n    assert mod.f() == 2\n"
+        self.lab("A", {"src/otto/mod.py": "def f():\n    return 2\n", "tests/test_mod.py": changed})
+        self.lab("B", {"note-b.txt": "B\n"})
+        pending = self.batch("A", "B")
+        self.assertEqual(pending.returncode, 4, pending.stdout + pending.stderr)
+        self.assertEqual(self.remote_head(), self.base)
+        decision = self.ops / "reviews/D19-A.md"
+        decision.parent.mkdir(parents=True)
+        decision.write_text("Decision: LAND\ntests/test_mod.py\n")
+        r = self.batch("A", "B")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.landed_tasks(), ["Land A: Do A", "Land B: Do B"])
+        self.assertIn("D19: review says LAND", self.log("A"))
+
+    def test_batch_runs_each_gated_stage_once(self):
+        calls = self.tmp / "stage-calls"
+        report = self.tmp / "stage-report.md"
+        perch = ('#!/bin/sh\necho "$1" >> %s\n'
+                 'echo "staging tree sha $OTTO_STAGING_REF" > %s\n'
+                 'echo "perch: stage $1 report at %s"\n') % (calls, report, report)
+        self.lab("A", {"ops/bootstrap/staging.sh": "#!/bin/sh\n", "ops/bootstrap/perch.sh": perch})
+        self.lab("B", {"note-b.txt": "B\n"})
+        r = self.batch("A", "B")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(calls.read_text().splitlines(), ["0", "1"])
+        self.assertIn("staging: perch --fake passed", self.log("A"))
+
+    def test_single_task_entrypoint_still_uses_its_merge_and_log(self):
+        self.lab("A", {"note.txt": "A\n"})
+        r = self.land("A")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.landed_tasks(), ["Land A: Do A"])
+        self.assertIn("sweep tests/test_herzchen_boundary.py run 1/2", self.log("A"))
+
+
 class RunTaskRoute(Scratch):
     def run_route(self, route, resume=False):
         task = "R" + route
