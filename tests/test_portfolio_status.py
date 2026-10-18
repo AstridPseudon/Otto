@@ -49,6 +49,98 @@ class PortfolioStatusTests(unittest.TestCase):
     def status(self, **kwargs):
         return portfolio_status(self.session, now=self.now, service_status=kwargs.pop("service_status", {}), **kwargs)
 
+    def test_status_project_selectors_use_indexed_project_keys(self):
+        import json
+
+        self.owner.graph.create_task(self.projects[0].ref, logical_request_key="indexed-task-0")
+        self.owner.graph.create_task(self.projects[1].ref, logical_request_key="indexed-task-1")
+        manager = self.manager()
+        self.due()
+        self.owner.assignments.append_report(manager.ref, {
+            "schema": "otto.issue.v1", "issue_id": "indexed-issue",
+            "issue_version": 1, "project_ref": self.projects[1].ref.to_dict(),
+            "problem": "Need a decision", "awaiting": "orchestrator",
+            "observed_at": self.now.isoformat(),
+        }, logical_request_key="indexed-report")
+
+        foreign_ref = {"authority": "owner", "kind": "work.project", "id": "foreign"}
+        templates = (
+            ("work.task", {"project_ref": foreign_ref, "lifecycle": "pending"}),
+            ("wrk.assignment", {"scope": foreign_ref, "role": "manager",
+                                "status": "queued"}),
+            ("otto.due-record", {"project_ref": "foreign", "role": "manager"}),
+            ("wrk.report", {"value": {"project_ref": foreign_ref,
+                                     "schema": "otto.issue.v1"}}),
+        )
+        stamp = self.now.isoformat()
+        payloads = [
+            (kind, json.dumps({**payload, "noise": "x" * 256},
+                              sort_keys=True, separators=(",", ":")))
+            for kind, payload in templates
+        ]
+        with self.store.transaction() as tx:
+            tx.executemany(
+                "INSERT INTO identities "
+                "(authority, kind, id, current_revision, version, edit_token, "
+                "payload_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [("owner", payloads[n % 4][0], f"foreign-{n:05d}", "rev-1",
+                  1, None, payloads[n % 4][1], stamp, stamp)
+                 for n in range(10_000)],
+            )
+
+        reference = self.status()  # Generic reader, before optional indexes exist.
+        self.store.prepare_identity_lookup_indexes()
+
+        class PlanningConnection:
+            def __init__(self, base):
+                self.base = base
+                self.plans = []
+
+            def execute(self, sql, parameters=()):
+                if sql.startswith(
+                    "SELECT authority, kind, id, current_revision, "
+                    "updated_at, json_object("
+                ):
+                    details = tuple(
+                        row[3] for row in self.base.execute(
+                            "EXPLAIN QUERY PLAN " + sql, parameters
+                        )
+                    )
+                    self.plans.append((sql, tuple(parameters), details))
+                return self.base.execute(sql, parameters)
+
+            def __getattr__(self, name):
+                return getattr(self.base, name)
+
+        original = self.store._connection
+        planning = PlanningConnection(original)
+        self.store._connection = planning
+        try:
+            actual = self.status()
+        finally:
+            self.store._connection = original
+
+        self.assertEqual(actual, reference)
+        self.assertEqual(
+            {row["project_ref"]["id"] for row in actual["projects"]},
+            {project.id for project in self.projects},
+        )
+        indexes = {
+            "work.task": "identities_status_task_project_lookup",
+            "wrk.assignment": "identities_status_assignment_project_lookup",
+            "otto.due-record": "identities_due_project_lookup",
+            "wrk.report": "identities_status_report_project_lookup",
+        }
+        self.assertEqual(len(planning.plans), 4, planning.plans)
+        failures = []
+        for sql, parameters, details in planning.plans:
+            kind = next(k for k in indexes if k in sql or k in parameters)
+            if not any("SEARCH identities USING INDEX " + indexes[kind] in detail
+                       and "<expr>=?" in detail for detail in details):
+                failures.append((kind, sql, parameters, details))
+        self.assertFalse(failures, failures)
+
     def manager(self):
         return self.owner.assignments.assign(self.projects[1].ref, role="manager", principal="manager",
                                               logical_request_key="manager")

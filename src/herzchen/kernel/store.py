@@ -1569,7 +1569,8 @@ class Store:
         A bounded projection for multi-project summaries: one read of the
         current identities of one kind, never event history, returning only
         the named fields plus ``ref`` and ``updated_at``. Paths are structural
-        names; every path and value is an SQL parameter.
+        names; values are SQL parameters. Four declared project selectors use
+        fixed expressions when their optional indexes are present.
         """
         values = tuple(match_values)
         if (not isinstance(kind, str) or not kind.strip() or not isinstance(fields, Mapping) or not fields
@@ -1599,9 +1600,40 @@ class Store:
             args.extend([self._structural_path(path), *choices])
         with self._transaction_lock:
             self._require_open()
+            indexed_selectors = {
+                ("work.task", ("project_ref", "id")): (
+                    "identities_status_task_project_lookup", "$.project_ref.id"),
+                ("wrk.assignment", ("scope", "id")): (
+                    "identities_status_assignment_project_lookup", "$.scope.id"),
+                ("otto.due-record", ("project_ref",)): (
+                    "identities_due_project_lookup", "$.project_ref"),
+                ("wrk.report", ("value", "project_ref", "id")): (
+                    "identities_status_report_project_lookup", "$.value.project_ref.id"),
+            }
+            selector = indexed_selectors.get((kind, tuple(match_path)))
+            index_clause = ""
+            query_clauses = clauses
+            query_args = args
+            if selector is not None:
+                index_name, literal_path = selector
+                present = {row[0] for row in self._connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'")}
+                if index_name in present:
+                    projection_args = len(columns) * 2
+                    generic_selector_args = 3 + len(values)
+                    query_clauses = [
+                        "authority = ?", "kind = '" + kind + "'",
+                        "json_extract(payload_json, '" + literal_path + "') IN (" +
+                        ",".join("?" for _ in values) + ")",
+                        *clauses[3:],
+                    ]
+                    query_args = (args[:projection_args] + [self.authority, *values] +
+                                  args[projection_args + generic_selector_args:])
+                    index_clause = " INDEXED BY " + index_name
             rows = self._connection.execute(
                 "SELECT authority, kind, id, current_revision, updated_at, json_object(" + ", ".join(columns) +
-                ") FROM identities WHERE " + " AND ".join(clauses) + " ORDER BY id", args).fetchall()
+                ") FROM identities" + index_clause + " WHERE " + " AND ".join(query_clauses) +
+                " ORDER BY id", query_args).fetchall()
         return tuple({**json.loads(row[5]), "ref": ResourceRef(row[0], row[1], row[2], row[3]).to_dict(),
                       "updated_at": row[4]} for row in rows)
 
