@@ -75,7 +75,9 @@ class RosterPinTests(unittest.TestCase):
             request_key="rosterpin-unadmitted-d",
         )
         request["instruction_contract"]["task_ref"] = d_ref.to_dict()
-        denied = f.app.assign_and_start(**request)
+        assigned = f.app.assign_worker(**request)
+        self.assertEqual(assigned["outcome"], "committed", assigned)
+        denied = f.app.start(schedule_id=assigned["schedule_id"])
         self.assertEqual(denied["outcome"], "partial", denied)
         self.assertEqual(denied["stage"], "admission", denied)
         self.assertEqual(len(f.provider.calls), calls_before + 1)
