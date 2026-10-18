@@ -186,6 +186,18 @@ def test_owner_failure_is_generic():
     assert token not in repr(reply)
 
 
+def test_generic_owner_error_fields_cannot_expose_private_message():
+    error = RuntimeError("secret-token-xyz")
+    error.code = "owner_detail"
+    error.message = "RuntimeError: secret-token-xyz"
+    facade, book, _ledger, _ = _facade(owner=FakeOwner({TASK_OP: error}))
+    token = book.issue("a1", ROLE)
+
+    reply = facade.call(token, TASK_TOOL, {"title": "x"})
+    assert reply == {"ok": False, "error": "owner_unavailable", "detail": "RuntimeError"}
+    assert "secret-token-xyz" not in repr(reply)
+
+
 # --- transport: socket server and stdio MCP server
 
 import json

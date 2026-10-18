@@ -254,17 +254,14 @@ class ToolFacade:
                 "result": result,
             }
         except Exception as exc:
-            # Only classified domain errors may expose their message. Generic
-            # owner exceptions can contain credentials or private state.
-            code = getattr(exc, "code", None)
-            message = getattr(exc, "message", None)
-            if not (isinstance(code, str) and code):
-                return _refusal("owner_unavailable", type(exc).__name__)
-            if not isinstance(message, str) or not message:
-                message = str(exc)
-            if isinstance(message, str) and message:
-                return {"ok": False, "error": code, "detail": message}
-            return {"ok": False, "error": "owner_unavailable", "detail": type(exc).__name__}
+            # Only the owner's explicit landing refusal is safe to describe to a
+            # worker. Generic exceptions can carry arbitrary code/message fields
+            # and those fields may contain credentials or private state.
+            from herzchen.fleet.landing import LandingError
+            if isinstance(exc, LandingError):
+                message = exc.message if isinstance(exc.message, str) and exc.message else str(exc)
+                return {"ok": False, "error": exc.code, "detail": message}
+            return _refusal("owner_unavailable", type(exc).__name__)
 
     def _allowed(self, role: str, tool: object) -> ToolSpec | None:
         if not isinstance(tool, str):
