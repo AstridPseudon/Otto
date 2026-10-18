@@ -262,6 +262,52 @@ def test_owner_registry_binds_lab_and_line_to_dispatch_record_and_reuses_repo_br
     assert first["landing"] is second["landing"]
 
 
+def test_owner_registry_refuses_unchecked_out_configured_line_before_lab_creation(monkeypatch, tmp_path):
+    from herzchen.contracts import ResourceRef
+    from herzchen.fleet.landing import LandingError
+
+    registry, task, _record, _token, repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "configured-line"})
+    subprocess.run(["git", "-C", str(repository), "branch", "configured-line"], check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    project = registry.owner.graph.current(ResourceRef.from_dict(task.payload["project_ref"]))
+
+    with pytest.raises(LandingError, match="not on the configured line branch"):
+        registry.prepare_worker_lab(project.ref, task.ref)
+
+    assert registry._pairs == {}, "line preflight must run before fleet or lab construction"
+
+
+def test_owner_registry_refuses_dirty_line_when_reusing_existing_lab(monkeypatch, tmp_path):
+    from herzchen.contracts import ResourceRef
+    from herzchen.fleet.landing import LandingError
+
+    registry, task, _record, _token, repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"})
+    project_ref = task.payload["project_ref"]
+    project = registry.owner.graph.current(ResourceRef.from_dict(project_ref))
+    first = registry.prepare_worker_lab(project.ref, task.ref)
+    (repository / "README.md").write_text("dirty line\n")
+
+    with pytest.raises(LandingError, match="clean and at its branch tip"):
+        registry.prepare_worker_lab(project.ref, task.ref)
+
+    assert first["fleet"].get(task.id) == first["lab"], "refusal must retain the existing lab"
+
+
+def test_owner_registry_prepares_lab_on_clean_configured_line(monkeypatch, tmp_path):
+    registry, task, _record, _token, _repository = _fleet_registry_fixture(
+        monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"})
+    from herzchen.contracts import ResourceRef
+    project = registry.owner.graph.current(ResourceRef.from_dict(task.payload["project_ref"]))
+
+    first = registry.prepare_worker_lab(project.ref, task.ref)
+    second = registry.prepare_worker_lab(project.ref, task.ref)
+
+    assert second["lab"] == first["lab"]
+    assert second["fleet"] is first["fleet"]
+
+
 def test_owner_registry_allows_project_revision_advance_only_while_task_is_still_linked(monkeypatch, tmp_path):
     registry, task, record, _token, _repository = _fleet_registry_fixture(
         monkeypatch, tmp_path, plan={"repo": "repo-a", "branch": "project-line"},

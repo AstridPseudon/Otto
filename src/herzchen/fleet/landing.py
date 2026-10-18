@@ -31,6 +31,34 @@ class LandingError(RuntimeError):
         self.settled = settled
 
 
+def assert_line_checkout_clean(repo: Any, line_ref: str, *,
+                               git: Optional[Callable[..., Any]] = None) -> None:
+    """Require the configured line to be checked out cleanly at its branch tip.
+
+    Worker preparation and landing share this preflight so an unusable line is
+    refused before a worker lab is created or reused, and again before landing.
+    """
+    def run(*args: str) -> str:
+        if git is not None:
+            value = git(repo, *args)
+            return value.decode() if isinstance(value, bytes) else str(value)
+        done = subprocess.run(["git", "-C", os.fspath(repo), *args], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if done.returncode:
+            detail = done.stderr.decode("utf-8", "replace").strip()
+            raise LandingError("git %s failed: %s" % (args[0], detail))
+        return done.stdout.decode("utf-8", "surrogateescape")
+
+    branch = run("symbolic-ref", "-q", "HEAD").strip()
+    if branch != line_ref:
+        raise LandingError("line checkout is not on the configured line branch")
+    head = run("rev-parse", "HEAD").strip()
+    ref = run("rev-parse", "--verify", line_ref).strip()
+    status = run("status", "--porcelain", "-z", "--untracked-files=all")
+    if head != ref or status:
+        raise LandingError("line checkout must be clean and at its branch tip")
+
+
 class LandingService:
     """Owner-injected lab landing service.
 
@@ -377,14 +405,7 @@ class LandingService:
         return record
 
     def _assert_line_clean(self, repo: Path) -> None:
-        branch = self._git(repo, "symbolic-ref", "-q", "HEAD").strip()
-        if branch != self.line_ref:
-            raise LandingError("line checkout is not on the configured line branch")
-        head = self._git(repo, "rev-parse", "HEAD").strip()
-        ref = self._git(repo, "rev-parse", "--verify", self.line_ref).strip()
-        status = self._git(repo, "status", "--porcelain", "-z", "--untracked-files=all")
-        if head != ref or status:
-            raise LandingError("line checkout must be clean and at its branch tip")
+        assert_line_checkout_clean(repo, self.line_ref, git=self._git)
 
     def _require_current_criterion(self, pinned: Any) -> None:
         if pinned is None:
