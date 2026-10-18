@@ -30,6 +30,7 @@ import argparse
 from datetime import datetime, timezone
 from contextlib import contextmanager
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -141,25 +142,78 @@ def read_status(path: Path) -> dict[str, Any]:
     if value is None:
         return {"outcome": "not_running", "status_path": str(path), "provider_called": False,
                 "next_action": "the operator starts the one owner service: `ottoctl --home <service home> service run`"}
-    pid = (value.get("holder") or {}).get("pid")
+
+    def invalid(field: str) -> dict[str, Any]:
+        return {"outcome": "unavailable", "reason": "invalid status schema: " + field,
+                "provider_called": False}
+
+    if not isinstance(value, Mapping):
+        return invalid("status")
+    if value.get("schema") != STATUS_SCHEMA:
+        return invalid("schema")
+    state = value.get("state")
+    if not isinstance(state, str) or state not in {"serving", "draining", "closed"}:
+        return invalid("state")
+
+    holder = value.get("holder")
+    if not isinstance(holder, Mapping):
+        return invalid("holder")
+    pid = holder.get("pid")
+    if type(pid) is not int or pid <= 0:
+        return invalid("holder.pid")
+    if "owner_actor" in holder and not isinstance(holder["owner_actor"], str):
+        return invalid("holder.owner_actor")
+
+    heartbeat_value = value.get("heartbeat_at")
+    if not isinstance(heartbeat_value, str):
+        return invalid("heartbeat_at")
+    try:
+        heartbeat_at = datetime.fromisoformat(heartbeat_value)
+    except ValueError:
+        return invalid("heartbeat_at")
+    try:
+        heartbeat_timestamp = heartbeat_at.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return invalid("heartbeat_at")
+    heartbeat_seconds = value.get("heartbeat_seconds")
+    if (isinstance(heartbeat_seconds, bool) or
+            not isinstance(heartbeat_seconds, (int, float)) or
+            (isinstance(heartbeat_seconds, float) and not math.isfinite(heartbeat_seconds)) or
+            heartbeat_seconds <= 0):
+        return invalid("heartbeat_seconds")
+
+    if "in_flight" not in value:
+        if state != "closed":
+            return invalid("in_flight")
+        in_flight = {"lane_requests": [], "relays": []}
+    else:
+        in_flight = value["in_flight"]
+        if not isinstance(in_flight, Mapping):
+            return invalid("in_flight")
+    if not isinstance(in_flight.get("lane_requests"), list):
+        return invalid("in_flight.lane_requests")
+    if not isinstance(in_flight.get("relays"), list):
+        return invalid("in_flight.relays")
+    manager_turn_active = value.get("manager_turn_active", False)
+    if not isinstance(manager_turn_active, bool):
+        return invalid("manager_turn_active")
+
     alive = False
     try:
-        os.kill(int(pid), 0)
+        os.kill(pid, 0)
         alive = True
     except PermissionError:
         alive = True
-    except (ProcessLookupError, TypeError, ValueError):
+    except (ProcessLookupError, ValueError):
         alive = False
-    try:
-        age = time.time() - datetime.fromisoformat(value["heartbeat_at"]).timestamp()
-    except (KeyError, ValueError):
-        age = None
-    fresh = age is not None and age <= 3 * float(value.get("heartbeat_seconds") or 1) + 2
-    running = value.get("state") == "serving" and alive and fresh
-    draining = value.get("state") == "draining" and alive and fresh
-    busy = bool(value.get("manager_turn_active") or (value.get("in_flight") or {}).get("lane_requests")
-                or (value.get("in_flight") or {}).get("relays"))
-    outcome = "running" if running else "draining" if draining else "closed" if value.get("state") == "closed" else "stale"
+    except OverflowError:
+        return invalid("holder.pid")
+    age = time.time() - heartbeat_timestamp
+    fresh = age <= 3 * heartbeat_seconds + 2
+    running = state == "serving" and alive and fresh
+    draining = state == "draining" and alive and fresh
+    busy = bool(manager_turn_active or in_flight["lane_requests"] or in_flight["relays"])
+    outcome = "running" if running else "draining" if draining else "closed" if state == "closed" else "stale"
     return {**value, "outcome": outcome,
             "busy": busy if running or draining else False, "heartbeat_age_seconds": None if age is None else round(age, 2),
             "holder_alive": alive, "provider_called": False}
