@@ -10,6 +10,7 @@ from __future__ import annotations
 from hashlib import sha256
 from inspect import Parameter, signature
 import json
+from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol
 
 from .herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig, ProjectReadGrant, _json_value
@@ -1235,7 +1236,9 @@ class PortfolioOwnerBootstrap:
         app = ExecutionApplication(portfolio=runtime.portfolio,
             assignments=self.assignments.command_port, due_port=due_port,
             binding=self.binding, actor=self.owner_actor.actor, runtime=runtime,
-            manager_actor=manager_actor, reviewed_activation=activation, **kwargs)
+            manager_actor=manager_actor, reviewed_activation=activation,
+            direct_host_directory=(None if self.store.path == ":memory:" else
+                str(Path(self.store.path).resolve()) + ".native-host"), **kwargs)
         activation.setup_application = app
         return app
 

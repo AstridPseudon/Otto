@@ -1,7 +1,7 @@
 """Capacity follows processes; custody doesn't.
 
-A hold whose process group is provably gone (pgid plus start time) stops
-costing capacity but keeps its custody fence. A reused pid or pgid stays held.
+A hold whose recorded process group is provably empty stops costing capacity
+but keeps its custody fence. A live group stays held, even if its leader changes.
 """
 import json
 import os
@@ -110,6 +110,8 @@ class CapacityHoldTests(unittest.TestCase):
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
                 return
+            except PermissionError:
+                pass
             time.sleep(0.01)
 
     def test_dead_pgid_frees_capacity_keeps_fence(self):
@@ -182,13 +184,14 @@ class CapacityHoldTests(unittest.TestCase):
         self.assertEqual(host.reconcile_dead_holds(), [])
         self.assertEqual(len(host.capacity_holds()), 1)
 
-    def test_reused_pid_after_group_death_stays_held(self):
+    def test_empty_recorded_group_frees_slot_even_if_pid_is_live(self):
         host = self.host()
         self.hold(host)
         host._process_groups[self.schedule] = {"pid": os.getpid(), "pgid": 2 ** 22 + 7,
             "birth": [0, 0]}  # our own pid is alive with another start time; the pgid is empty
-        self.assertEqual(host.reconcile_dead_holds(), [])
-        self.assertEqual(len(host.capacity_holds()), 1)
+        self.assertEqual(host.reconcile_dead_holds(), [self.schedule])
+        self.assertEqual(len(host.capacity_holds()), 0)
+        self.assertIn(self.schedule, host._capacity_holds)
 
     def test_leader_gone_but_group_member_alive_stays_held(self):
         host = self.host()

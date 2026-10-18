@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import threading
 from typing import Any, Callable, Mapping, Sequence
 
 from herzchen.contracts import ResourceRef
@@ -25,7 +26,7 @@ from .manager_guide import resolve_required_instruction_adoption
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
 from herzchen.adapters.recovery_timing import stable_correlation_id, timing_from_receipt
-from .owner_completion import after_owner, collect_owner
+from .owner_completion import OwnerCompletion, after_owner, collect_owner
 
 _UNSPECIFIED_SESSION = object()
 
@@ -57,11 +58,13 @@ class ExecutionApplication:
                  binding: Any, actor: str, runtime: Any,
                  manager_actor: str | None = None,
                  reviewed_activation: Any = None,
+                 direct_host_directory: str | None = None,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.portfolio, self.assignments, self.due_port = portfolio, assignments, due_port
         self.binding, self.actor, self.runtime, self.clock = binding, actor, runtime, clock
         self.manager_actor = actor if manager_actor is None else _text(manager_actor, "manager_actor")
         self.reviewed_activation = reviewed_activation
+        self._direct_host_directory = direct_host_directory
         self.binding.authenticated_actor(self.manager_actor)
 
     def _now(self) -> str:
@@ -1298,6 +1301,36 @@ class ExecutionApplication:
                 return self._start_preparation_failure(due, exc)
             return host.admit_execution(self, due,
                 lambda: self._gated_start(schedule_id=schedule_id, settle=settle))
+        owner = ExecutionHost.current_registration_host()
+        if owner is not None:
+            due = self._read(schedule_id)
+            return owner.inline_execution(self, due,
+                lambda: self._gated_start(schedule_id=schedule_id, settle=settle))
+        # The built-in native transport needs a serialized owner for its pin.
+        # Injected bindings keep the direct path: a binding that launches a
+        # process must supply an owner, or its pin aborts before input.
+        if (self._direct_host_directory is not None
+                and getattr(self.runtime.adapter, "direct_native_host_required", False)):
+            direct = ExecutionHost(directory=self._direct_host_directory,
+                handler=lambda _request: None, bounded_transports=True)
+            direct.start()
+            try:
+                value = direct._owner_request(lambda: self.start(
+                    schedule_id=schedule_id, settle=settle))
+                if isinstance(value, OwnerCompletion):
+                    completed = threading.Event()
+                    result: dict[str, Any] = {}
+                    def capture(resolved: Any = None, error: BaseException | None = None) -> None:
+                        result["value"], result["error"] = resolved, error
+                        completed.set()
+                    value.then(capture, lambda error: capture(error=error))
+                    completed.wait()
+                    if result["error"] is not None:
+                        raise result["error"]
+                    return result["value"]
+                return value
+            finally:
+                direct.close()
         return self._gated_start(schedule_id=schedule_id, settle=settle)
 
     @staticmethod
@@ -1499,6 +1532,19 @@ class ExecutionApplication:
             return {**handle, "assignment_ref": due.assignment_ref, "due_version": due.version,
                     "outcome": "prepared", "next_action": "start this exact occurrence"}
         self._current(due.assignment_ref, due.generation)
+        from .execution_host import retained_pre_input_registration_failure
+        if retained_pre_input_registration_failure(due):
+            completed = replace(due, stop_state="completed", completion_state="failed",
+                in_flight_request=None, delivery_state="returned",
+                last_completed_request=due.in_flight_request, completed_at=self._now(),
+                last_result={"outcome": "failed", "delivery_state": "failed",
+                             "error": dict(result["error"])})
+            saved = self.due_port.save_due(schedule_id, completed.to_dict(),
+                request_id=due.invocation_identity + ":pre-input-registration-finalize",
+                expected_version=due.version)
+            return {**handle, "due_version": saved["version"], "outcome": "failed",
+                    "result": dict(result), "provider_called": True, "retry": False,
+                    "next_action": "inspect the failed launch; a new occurrence is required"}
         from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
         if retained_aborted_manager_capture(due, self.actor):
             # The original turn cannot be retried. This settles only its exact

@@ -102,6 +102,57 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
                     instruction='Read the project status and plan the next task.', model='claude-haiku-5-5',
                     reasoning='medium', profile='workspace-write', **extra)
 
+    def run_on_host(self, schedule_id, configure_host=None):
+        import threading
+        from otto.portfolio.execution_host import ExecutionHost
+
+        host = ExecutionHost(directory=Path(self.root) / "manager-owner-ipc",
+            handler=lambda _request: None, bounded_transports=True,
+            capacity_store=self.f.store)
+        host.start()
+        self.addCleanup(host.close)
+        if configure_host is not None:
+            configure_host(host)
+        completed = threading.Event()
+        observed = {}
+        launched = host._owner_request(lambda: self.app.start(schedule_id=schedule_id))
+        launched.then(lambda value: (observed.update(value), completed.set()),
+                      lambda error: (observed.update(raised=repr(error)), completed.set()))
+        completed.wait()
+        return observed, host
+
+    def test_initializer_pin_is_durable_and_empty_before_work_launch(self):
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        schedule = prepared['schedule_id']
+        original_factory = self.manager_t.process_factory
+        owner = []
+        observed = []
+
+        def factory(command, **kwargs):
+            if self.manager_t.processes:
+                initializer = self.manager_t.processes[0]
+                host = owner[0]
+                record = host._process_groups.get(schedule)
+                saved = json.loads((host.directory / "capacity-process-groups.json").read_text())
+                try:
+                    os.killpg(initializer.pid, 0)
+                except ProcessLookupError:
+                    empty = True
+                else:
+                    empty = False
+                observed.append((record, saved.get(schedule), empty))
+            return original_factory(command, **kwargs)
+
+        self.manager_t.process_factory = factory
+        result, host = self.run_on_host(schedule, configure_host=owner.append)
+        self.assertEqual(result['outcome'], 'succeeded', result.get('error'))
+        self.assertEqual(len(observed), 1)
+        memory, durable, empty = observed[0]
+        self.assertEqual(memory, durable)
+        self.assertEqual(memory['pid'], self.manager_t.processes[0].pid)
+        self.assertTrue(empty)
+        self.assertEqual(host._process_groups, {})
+
     def test_manager_role_is_declared_and_default_composition_stays_a_leaf(self):
         self.adapter.validate_owner_host_composition(role='manager', profile='workspace-write')
         self.assertEqual(self.adapter.capabilities()['manager']['state'], 'unverified')
@@ -144,7 +195,7 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
 
     def test_fresh_haiku_manager_is_admitted_with_manager_tools_and_registered_process(self):
         prepared = self.app.prepare_role(**self.role(fresh_manager=True))
-        result = self.app.start(schedule_id=prepared['schedule_id'])
+        result, host = self.run_on_host(prepared['schedule_id'])
         self.assertEqual(result['outcome'], 'succeeded', result)
         self.assertEqual(len(self.manager_t.calls), 2)
         self.assertEqual(self.worker_t.calls, [])
@@ -160,6 +211,190 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
         self.assertEqual(self.app.start(schedule_id=prepared['schedule_id'])['outcome'], 'replayed')
         self.assertEqual(len(self.manager_t.calls), 2)
 
+    def test_pin_write_failure_stops_initializer_before_input_and_releases_slot(self):
+        import threading
+        from otto.portfolio.execution_host import ExecutionHost
+
+        host = ExecutionHost(
+            directory=Path(self.root) / "pin-failure-ipc",
+            handler=lambda _request: None,
+            bounded_transports=True,
+            capacity_store=self.f.store,
+        )
+        host.start()
+        self.addCleanup(host.close)
+        (host.directory / "capacity-process-groups.json").mkdir()
+
+        input_marker = Path(self.root) / "native-input-received"
+        processes = []
+        model = (
+            "import pathlib,sys\n"
+            "line=sys.stdin.buffer.readline()\n"
+            "if line: pathlib.Path(sys.argv[1]).write_bytes(line)\n"
+        )
+
+        def factory(_command, **kwargs):
+            process = subprocess.Popen(
+                [sys.executable, "-c", model, str(input_marker)], **kwargs
+            )
+            processes.append(process)
+            return process
+
+        self.manager_t.process_factory = factory
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        launched = host._owner_request(
+            lambda: self.app.start(schedule_id=prepared["schedule_id"])
+        )
+        completed = threading.Event()
+        observed = {}
+
+        def capture(value):
+            observed.update(value)
+            completed.set()
+
+        def failed(error):
+            observed["raised"] = repr(error)
+            completed.set()
+
+        launched.then(capture, failed)
+        completed.wait()
+
+        self.assertEqual(observed.get("outcome"), "failed", observed)
+        self.assertEqual(len(processes), 1)
+        self.assertFalse(input_marker.exists())
+        self.assertIsNotNone(processes[0].poll())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(processes[0].pid, 0)
+
+        due = self.f.port.read_due(prepared["schedule_id"])
+        self.assertEqual((due["stop_state"], due["completion_state"]),
+                         ("completed", "failed"))
+        self.assertEqual(due["host_evidence"]["gateway_attempt"]["result"]["outcome"],
+                         "failed")
+        self.assertEqual(host._process_groups, {})
+        self.assertEqual(host.capacity_holds(), {})
+        self.assertEqual(host.capacity.snapshot()["pool"]["held_units"], 0)
+
+        restarted = ExecutionHost(
+            directory=host.directory,
+            handler=lambda _request: None,
+            bounded_transports=True,
+            capacity_store=self.f.store,
+        )
+        restarted.restore_execution(self.app, self.app._read(prepared["schedule_id"]))
+        self.assertEqual(restarted.capacity_holds(), {})
+        self.assertEqual(restarted.capacity.snapshot()["pool"]["held_units"], 0)
+
+    def test_work_pin_failure_keeps_initializer_record_and_releases_empty_slot(self):
+        from otto.portfolio import execution_host
+
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        schedule = prepared['schedule_id']
+        original_factory = self.manager_t.process_factory
+        work = []
+        collision = []
+        initializer_record_at_collision = []
+        input_marker = Path(self.root) / 'work-input-received'
+        model = ('import pathlib,sys\n'
+                 'line=sys.stdin.buffer.readline()\n'
+                 'if line: pathlib.Path(sys.argv[1]).write_bytes(line)\n')
+
+        def factory(command, **kwargs):
+            if self.manager_t.processes:
+                # The initializer's pin is already durable. The real writer's
+                # exclusive temp-file create now fails for the work pin.
+                prior = json.loads(collision[0].with_name('capacity-process-groups.json').read_text())
+                initializer_record_at_collision.append(prior[schedule]['pid'])
+                collision[0].touch(exist_ok=False)
+                process = subprocess.Popen([sys.executable, '-c', model, str(input_marker)], **kwargs)
+                work.append(process)
+                return process
+            return original_factory(command, **kwargs)
+
+        self.manager_t.process_factory = factory
+
+        def configure_host(host):
+            path = host.directory / '.capacity-process-groups.json.tmp'
+            collision.append(path)
+            self.addCleanup(path.unlink, missing_ok=True)
+
+        result, host = self.run_on_host(schedule, configure_host=configure_host)
+        saved = json.loads((host.directory / 'capacity-process-groups.json').read_text())
+        self.assertEqual(initializer_record_at_collision, [self.manager_t.processes[0].pid])
+        self.assertEqual(saved[schedule]['pid'], self.manager_t.processes[0].pid)
+        self.assertTrue(collision[0].is_file())
+        self.assertEqual(result['outcome'], 'failed', result.get('error'))
+        self.assertEqual(host._process_groups, {})
+        self.assertEqual(len(work), 1)
+        self.assertFalse(input_marker.exists())
+        self.assertIsNotNone(work[0].poll())
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(work[0].pid, 0)
+        due = self.f.port.read_due(schedule)
+        self.assertEqual((due['stop_state'], due['completion_state']), ('completed', 'failed'))
+        self.assertEqual(host.capacity_holds(), {})
+        collision[0].unlink()
+        restarted = execution_host.ExecutionHost(directory=host.directory,
+            handler=lambda _request: None, bounded_transports=True,
+            capacity_store=self.f.store)
+        restarted.restore_execution(self.app, self.app._read(schedule))
+        self.assertEqual(restarted.capacity_holds(), {})
+        self.assertEqual(restarted._process_groups, {})
+
+    def test_restore_settles_retained_pre_input_registration_failure(self):
+        from otto.portfolio.execution_host import ExecutionHost
+
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        schedule = prepared['schedule_id']
+        # Exercise the missing-owner registration failure without the direct
+        # launch host, leaving its exact Due for restore to settle.
+        self.app._direct_host_directory = None
+        result = self.app.start(schedule_id=schedule, settle=False)
+        self.assertEqual(result['outcome'], 'failed')
+        self.assertEqual(result['error']['code'],
+                         'claude_process_registration_failed_before_input')
+        self.assertEqual(self.f.port.read_due(schedule)['stop_state'], 'active')
+        host = ExecutionHost(directory=Path(self.root) / 'registration-restart-ipc',
+            handler=lambda _request: None, bounded_transports=True,
+            capacity_store=self.f.store)
+        host.restore_execution(self.app, self.app._read(schedule))
+        due = self.f.port.read_due(schedule)
+        self.assertEqual((due['stop_state'], due['completion_state']), ('completed', 'failed'))
+        self.assertEqual(host.capacity_holds(), {})
+
+    def test_retained_registration_failure_keeps_live_recorded_group_held(self):
+        import signal
+        from otto.portfolio.execution_host import ExecutionHost
+
+        prepared = self.app.prepare_role(**self.role(fresh_manager=True))
+        schedule = prepared['schedule_id']
+        self.app._direct_host_directory = None
+        result = self.app.start(schedule_id=schedule, settle=False)
+        self.assertEqual(result['error']['code'],
+                         'claude_process_registration_failed_before_input')
+        due = self.app._read(schedule)
+        host = ExecutionHost(directory=Path(self.root) / 'live-init-ipc',
+            handler=lambda _request: None, bounded_transports=True,
+            capacity_store=self.f.store)
+        host._capacity_holds[schedule] = host._execution_scope(self.app, due)
+        process = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()'], start_new_session=True)
+        try:
+            host.record_process_group(schedule, process.pid)
+            host.restore_execution(self.app, due)
+            self.assertEqual(self.f.port.read_due(schedule)['stop_state'], 'active')
+            self.assertIn(schedule, host.capacity_holds())
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            host.restore_execution(self.app, self.app._read(schedule))
+            settled = self.f.port.read_due(schedule)
+            self.assertEqual((settled['stop_state'], settled['completion_state']),
+                             ('completed', 'failed'))
+            self.assertEqual(host.capacity_holds(), {})
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+
     def test_child_exiting_before_stdin_keeps_unknown_with_exit_and_stderr(self):
         def exited_child(command, **kwargs):
             process = subprocess.Popen([sys.executable, '-c',
@@ -172,7 +407,7 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
                 r'child exited before stdin was accepted \(exit status 37\); stderr tail: early child failure'):
             self.worker_t.run('x' * 50_000)
 
-    def test_owner_launch_retains_early_child_exit_as_unknown_reason(self):
+    def test_owner_launch_refuses_to_pin_exited_child_before_input(self):
         def exited_child(command, **kwargs):
             process = subprocess.Popen([sys.executable, '-c',
                 "import sys; sys.stderr.write('early child failure\\n'); sys.exit(37)"], **kwargs)
@@ -181,13 +416,15 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
 
         self.manager_t.process_factory = exited_child
         prepared = self.app.prepare_role(**self.role(fresh_manager=True))
-        result = self.app.start(schedule_id=prepared['schedule_id'])
-        reason = 'child exited before stdin was accepted (exit status 37); stderr tail: early child failure'
-        self.assertEqual(result['outcome'], 'unknown', result)
-        self.assertEqual(result['result']['error']['message'], reason + '\n')
+        result, host = self.run_on_host(prepared['schedule_id'])
+        self.assertEqual(result['outcome'], 'failed', result.get('error'))
+        self.assertEqual(result['result']['error']['code'],
+                         'claude_process_registration_failed_before_input')
         due = self.f.port.read_due(prepared['schedule_id'])
         attempt = due['host_evidence']['gateway_attempt']
-        self.assertIn(reason, str(attempt))
+        self.assertEqual(attempt['result']['outcome'], 'failed')
+        self.assertEqual((due['stop_state'], due['completion_state']), ('completed', 'failed'))
+        self.assertEqual(host.capacity_holds(), {})
 
     def test_project_dispatch_projection_preserves_unknown_and_launched(self):
         from otto.hostctl.cli import _task_dispatch_status

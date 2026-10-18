@@ -124,6 +124,10 @@ class HerzchenCodexAdapter:
     owner_bound = True
     owner_transport_only = True
 
+    @property
+    def direct_native_host_required(self) -> bool:
+        return self.binding_factory is None
+
     def __init__(
         self,
         *,

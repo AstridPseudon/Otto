@@ -52,6 +52,10 @@ class ClaudeChildExitError(ClaudeBindingError):
             reason += "; stderr tail: " + stderr_tail
         super().__init__(reason)
 
+
+class ClaudeProcessRegistrationError(ClaudeBindingError):
+    """Registration failed before input, and custody proved the group gone."""
+
 # Otto's side of the Claude surface: the parser schema and tool surfaces are Otto's policy, supplied
 # to the product-neutral fleet host rather than defined by it. Tool surfaces per role profile. A worker
 # leaf reads and writes files only; a manager also runs commands (tests, git, the owner's installed
@@ -374,17 +378,28 @@ class ClaudeCliTransport:
         process = custody.process
         cleanup = None
         disposition = None
-        if on_process is not None and not initializer:
+        if on_process is not None:
             # Host registration of the owned native process (for example the
             # managed caller socket's peer ancestry). Failure stops the turn.
             try:
                 cleanup = on_process(process)
                 if not callable(cleanup):
                     raise ClaudeBindingError("native process registration must return its cleanup")
-            except BaseException:
-                custody.terminate()
-                process.wait(timeout=5)
-                raise
+            except BaseException as exc:
+                try:
+                    disposition = custody.terminate_before_input()
+                finally:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream and not stream.closed:
+                            stream.close()
+                if disposition.gone:
+                    raise ClaudeProcessRegistrationError(
+                        "native process registration failed before input; group proven gone"
+                    ) from exc
+                raise ClaudeBindingError(
+                    "native process registration failed before input; group disposition unknown: "
+                    + disposition.reason
+                ) from exc
         selector = selectors.DefaultSelector()
         stdout = bytearray(); stderr = bytearray(); offset = 0
         deadline = time.monotonic() + self.timeout_seconds
@@ -452,11 +467,11 @@ class ClaudeCliTransport:
             code = process.wait(timeout=max(.01, deadline - time.monotonic()))
             turn = parser.finish(code)
             disposition = custody.release()     # sweeps stragglers the CLI left in its tree
+            if not (disposition.gone or custody.proven_group_empty()):
+                raise ClaudeBindingError("owned process group is not proven empty; native terminal unproved")
             result = {**dict(turn.native), 'usage': turn.usage, 'usage_capture': turn.usage_capture, 'scope': proof,
                     'command': command, 'exit_status': code, 'stderr': stderr.decode('utf-8', errors='replace')[:4096],
                     'launcher': vars(self.pin), 'parser_schema': PARSER_SCHEMA}
-            if not disposition.gone:
-                result['custody'] = {'state': disposition.state, 'reason': disposition.reason}
             return result
         finally:
             selector.close()

@@ -12,6 +12,7 @@ from contextvars import ContextVar, copy_context
 import hashlib
 import os
 import queue
+import re
 from pathlib import Path
 import socket
 import threading
@@ -29,6 +30,19 @@ from .owner_completion import OwnerCompletion, after_owner
 from .ipc_retention import prune_answered_responses
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 from herzchen.fleet.draining import QueuedAdmissionDrain
+
+
+def retained_pre_input_registration_failure(due: Any) -> bool:
+    """The exact retained attempt proves registration failed before useful input."""
+    attempt = (due.host_evidence or {}).get("gateway_attempt")
+    if not isinstance(attempt, Mapping) or attempt.get("state") != "result":
+        return False
+    result = attempt.get("result")
+    return (isinstance(result, Mapping) and result.get("outcome") == "failed"
+            and result.get("delivery_state") == "failed"
+            and isinstance(result.get("error"), Mapping)
+            and result["error"].get("code") == "claude_process_registration_failed_before_input"
+            and not attempt.get("delivery_admission"))
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -70,15 +84,45 @@ def _host_boot_identity() -> str | None:
         if sys.platform.startswith("linux"):
             value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         elif sys.platform == "darwin":
-            value = subprocess.check_output(
-                ["/usr/sbin/sysctl", "-n", "kern.boottime"],
-                text=True, stderr=subprocess.DEVNULL, timeout=1,
-            ).strip()
+            # Read the kernel's timeval directly.  Starting `sysctl` here
+            # would cross the process boundary before native transport has
+            # been admitted and pinned.
+            import ctypes
+
+            class Timeval(ctypes.Structure):
+                _fields_ = [("seconds", ctypes.c_long), ("microseconds", ctypes.c_int32)]
+
+            value_out = Timeval()
+            value_size = ctypes.c_size_t(ctypes.sizeof(value_out))
+            sysctlbyname = ctypes.CDLL(None, use_errno=True).sysctlbyname
+            sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                                     ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p,
+                                     ctypes.c_size_t]
+            sysctlbyname.restype = ctypes.c_int
+            if sysctlbyname(b"kern.boottime", ctypes.byref(value_out),
+                            ctypes.byref(value_size), None, 0) != 0 \
+                    or value_size.value != ctypes.sizeof(value_out) \
+                    or not 0 <= value_out.microseconds < 1_000_000:
+                return None
+            value = "kern.boottime:%d:%d" % (value_out.seconds, value_out.microseconds)
         else:
             return None
     except (OSError, subprocess.SubprocessError):
         return None
     return value or None
+
+
+def _normalized_boot_identity(value: Any) -> Any:
+    """Compare canonical and legacy macOS `sysctl kern.boottime` values."""
+    if not isinstance(value, str):
+        return value
+    canonical = re.fullmatch(r"kern\.boottime:(-?\d+):(-?\d+)", value.strip())
+    if canonical:
+        return (int(canonical.group(1)), int(canonical.group(2)))
+    legacy = re.search(r"\bsec\s*=\s*(-?\d+)\s*,\s*usec\s*=\s*(-?\d+)", value)
+    if legacy:
+        return (int(legacy.group(1)), int(legacy.group(2)))
+    return value
 
 
 def _process_start_identity(pid: int) -> dict[str, Any]:
@@ -284,6 +328,16 @@ class ExecutionHost:
             return context[0]
         return None
 
+    @staticmethod
+    def current_registration_host() -> Any:
+        """The serialized owner that can durably pin this native launch."""
+        context = getattr(_DISPATCH_CONTEXT, "value", None)
+        if context is None:
+            return None
+        if context[1] != threading.get_ident():
+            raise RuntimeError("process registration must run on its owner")
+        return context[0]
+
     def _owned(self, operation: Callable[[], Any]) -> Any:
         previous = getattr(_DISPATCH_CONTEXT, "value", None)
         _DISPATCH_CONTEXT.value = (self, threading.get_ident(), True)
@@ -291,6 +345,36 @@ class ExecutionHost:
             return operation()
         finally:
             _DISPATCH_CONTEXT.value = previous
+
+    def inline_execution(self, app: Any, due: Any, operation: Callable[[], Any]) -> Any:
+        """Pin direct owner turns through this host's existing group ledger."""
+        if self.current_registration_host() is not self:
+            raise RuntimeError("inline execution requires its serialized owner")
+        schedule = due.schedule_id
+        new_hold = (due.stop_state == "active"
+                    and not (due.host_evidence or {}).get("gateway_attempt")
+                    and schedule not in self._capacity_holds)
+        if new_hold:
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.capacity.ensure_turn(schedule)
+            self._capacity_holds[schedule] = self._execution_scope(app, due)
+
+        def finish(value: Any = None, error: BaseException | None = None) -> Any:
+            current = app._read(schedule)
+            if (current.host_evidence or {}).get("gateway_attempt"):
+                self.restore_execution(app, current)
+            elif new_hold:
+                self._capacity_holds.pop(schedule, None)
+                self.capacity.release_turn(schedule)
+            if error is not None:
+                raise error
+            return value
+
+        try:
+            value = operation()
+        except BaseException as error:
+            return finish(error=error)
+        return after_owner(value, finish, lambda error: finish(error=error))
 
     @staticmethod
     def worker_facade_for_occurrence(
@@ -358,6 +442,17 @@ class ExecutionHost:
 
     def restore_execution(self, app: Any, due: Any) -> None:
         """Reconcile one known handle, never enumerate historical attempts."""
+        registration_failure = retained_pre_input_registration_failure(due)
+        previous = self._process_groups.get(due.schedule_id)
+        previous_gone = previous is None or self._group_state(previous) == "gone"
+        if due.stop_state == "active" and registration_failure and previous_gone:
+            try:
+                app._recover(schedule_id=due.schedule_id, execute=False)
+                due = app._read(due.schedule_id)
+            except Exception as exc:
+                self.failures["registration-settlement:" + due.schedule_id] = {
+                    "code": type(exc).__name__, "message": str(exc)}
+                # A failed Due CAS retains the custody fence and its slot.
         attempt = (due.host_evidence or {}).get("gateway_attempt")
         # UNKNOWN/stop/cancel alone do not prove native exit. The existing
         # exact owner custody disposition can release a terminal failed turn.
@@ -365,6 +460,9 @@ class ExecutionHost:
         if not released:
             from otto.agents.manager_capture_reconciliation import retained_aborted_manager_capture
             released = retained_aborted_manager_capture(due, app.actor)
+        if not released:
+            released = (due.stop_state == "completed" and due.completion_state == "failed"
+                        and registration_failure and previous_gone)
         if not released and (due.host_evidence or {}).get("role_preinitialization_custody_release"):
             from .worker_custody import retained_preinitialization_release
             try:
@@ -409,6 +507,8 @@ class ExecutionHost:
                 released = True
             except (ValueError, KeyError, TypeError, OSError):
                 pass  # Any changed/ambiguous terminal proof keeps custody.
+        if registration_failure and not previous_gone:
+            released = False  # A surviving initializer group still costs its slot.
         if attempt and not released:
             self._capacity_holds[due.schedule_id] = self._execution_scope(app, due)
             if self._reconcile_hold(due.schedule_id):
@@ -418,7 +518,8 @@ class ExecutionHost:
         else:
             if self._capacity_holds.pop(due.schedule_id, None) is not None:
                 self.capacity.settle_turn(due.schedule_id)  # a disposition ends custody of used capacity
-            self._forget_process_group(due.schedule_id)
+            self._forget_process_group(due.schedule_id,
+                allow_stale_gone=retained_pre_input_registration_failure(due))
 
     @staticmethod
     def _gone_worker_profile(outcome: str) -> tuple[str, str, str, str]:
@@ -732,9 +833,10 @@ class ExecutionHost:
             return {}
         return {key: row for key, row in value.items() if isinstance(row, dict)}
 
-    def _save_process_groups(self) -> None:
+    def _save_process_groups(self, groups: Mapping[str, Any] | None = None) -> None:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _atomic_json(self.directory / self._PROCESS_GROUPS, self._process_groups)
+        _atomic_json(self.directory / self._PROCESS_GROUPS,
+                     self._process_groups if groups is None else groups)
 
     def _terminate_recorded_process_groups(self) -> dict[str, bool]:
         """Best-effort owner lifecycle cleanup, fenced by each recorded birth identity."""
@@ -743,10 +845,18 @@ class ExecutionHost:
                     _process_start_identity(pid)['birth'])
                 for key, record in self._process_groups.items()}
 
-    def _forget_process_group(self, schedule_id: str) -> None:
+    def _forget_process_group(self, schedule_id: str, *, allow_stale_gone: bool = False) -> None:
         self._capacity_freed.discard(schedule_id)
-        if self._process_groups.pop(schedule_id, None) is not None:
-            self._save_process_groups()
+        record = self._process_groups.get(schedule_id)
+        if record is not None:
+            candidate = {key: value for key, value in self._process_groups.items()
+                         if key != schedule_id}
+            try:
+                self._save_process_groups(candidate)
+            except OSError:
+                if not (allow_stale_gone and self._group_state(record) == "gone"):
+                    raise
+            self._process_groups = candidate
 
     def record_process_group(self, schedule_id: str, pid: int) -> None:
         """Pin a live native process group (pgid plus start time) to its occurrence.
@@ -761,20 +871,20 @@ class ExecutionHost:
             pgid = os.getpgid(pid)
         except OSError as error:
             raise PermissionError("process is not live; nothing to pin") from error
-        self._process_groups[schedule_id] = {"pid": pid, "pgid": pgid, "birth": birth}
+        previous = self._process_groups.get(schedule_id)
+        if previous is not None and self._group_state(previous) != "gone":
+            raise RuntimeError("previous process group is not proven empty")
+        candidate = {**self._process_groups,
+                     schedule_id: {"pid": pid, "pgid": pgid, "birth": birth}}
+        self._save_process_groups(candidate)
+        self._process_groups = candidate
         if schedule_id in self._capacity_freed:
             self._capacity_freed.discard(schedule_id)
             self.capacity.ensure_turn(schedule_id, uncertain=True)  # the group is live again: it costs its slot
-        self._save_process_groups()
 
     @staticmethod
     def _group_state(record: Mapping[str, Any]) -> str:
-        """gone | alive | reused | unproven. Only gone may free capacity.
-
-        Gone needs both an empty process group and an absent pid. A pid that is
-        live with another start time is reused, a pgid that still has members is
-        alive, and anything unreadable is unproven; each of those stays held.
-        """
+        """gone | alive | unproven. An empty recorded group frees capacity."""
         pid, pgid, birth = record.get("pid"), record.get("pgid"), record.get("birth")
         if (type(pid) is not int or type(pgid) is not int or pid <= 0 or pgid <= 0
                 or not isinstance(birth, list) or not birth or any(type(v) is not int for v in birth)):
@@ -782,29 +892,13 @@ class ExecutionHost:
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
-            pass
+            return "gone"
         except PermissionError:
             return "alive"
         except OSError:
             return "unproven"
         else:
             return "alive"
-        try:
-            live = _process_start_identity(pid)
-        except (FileNotFoundError, ProcessLookupError):
-            return "gone"
-        except PermissionError:
-            # The native reader also reports an exiting process this way.
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return "gone"
-            except PermissionError:
-                return "alive"
-            return "alive"
-        except (OSError, ValueError, IndexError):
-            return "unproven"
-        return "alive" if list(live["birth"]) == birth else "reused"
 
     def _reconcile_hold(self, schedule_id: str) -> bool:
         record = self._process_groups.get(schedule_id)
@@ -1094,7 +1188,9 @@ class ExecutionHost:
                     raise RuntimeError("owner custody locator is incomplete")
                 recorded_identity = prior.get("process_start_identity")
                 boot = _host_boot_identity()
-                boot_matches = (boot is None or prior.get("boot_identity") in {None, boot})
+                boot_matches = (boot is None or prior.get("boot_identity") is None
+                                or _normalized_boot_identity(prior.get("boot_identity"))
+                                == _normalized_boot_identity(boot))
                 try:
                     live_identity = _process_start_identity(int(prior["pid"]))
                 except (FileNotFoundError, ProcessLookupError):

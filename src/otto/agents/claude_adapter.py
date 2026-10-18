@@ -419,8 +419,12 @@ def _compose_on_process(observer, authorization, pin):
 
     def on_process(process):
         cleanup = observer(process, dict(authorization)) if observer is not None else (lambda: None)
-        if callable(pin):
-            pin(process)
+        try:
+            if callable(pin):
+                pin(process)
+        except BaseException:
+            cleanup()
+            raise
         return cleanup
     return on_process
 
@@ -428,6 +432,7 @@ def _compose_on_process(observer, authorization, pin):
 class ClaudeWorkerAdapter:
     owner_transport_only = True
     owner_bound = True
+    direct_native_host_required = True
     require_host_context = True
     adapter_identity = IDENTITY
     # Worker invocations are finite leaves (no coordinating workers); the
@@ -601,10 +606,15 @@ class ClaudeWorkerAdapter:
             else:
                 init = ExecutionHost.external_call(lambda: transport.run(
                     'Initialize this session only. Do not use tools or do task work. Return READY.',
-                    initializer=True, on_init=on_thread, **usage_options))
+                    initializer=True, on_init=on_thread,
+                    on_process=_compose_on_process(None, {}, self.process_pin), **usage_options))
                 session = init['session_id']
                 if init['outcome'] != 'succeeded' or init['result'].get('result', '').strip() != 'READY' or init['tools']:
                     raise ClaudeBindingError('inert native initializer was not exact READY')
+                if callable(self.process_pin):
+                    gone = getattr(self.process_pin, 'previous_group_gone', None)
+                    if not callable(gone) or not gone():
+                        raise ClaudeBindingError('initializer process group is not proven empty')
             authorization = authorize(session, brief_digest)
             expected = {'status': 'authorized', 'physical_session_id': session,
                 'brief_sha256': brief_digest, 'logical_request_key': request['logical_request_key'],
@@ -684,6 +694,14 @@ class ClaudeWorkerAdapter:
                     'native_pins': native_pins},
                 'native_pins': native_pins, 'capabilities': self.capabilities()}
         except Exception as exc:
+            from .claude_cli import ClaudeProcessRegistrationError
+            if isinstance(exc, ClaudeProcessRegistrationError):
+                return {'outcome': 'failed', 'delivery_state': 'failed',
+                    'physical_session_id': session, 'useful_input_observed': False,
+                    'retry_allowed': False,
+                    'error': {'code': 'claude_process_registration_failed_before_input',
+                              'message': str(exc)},
+                    'registration_disposition': 'gone'}
             error = {'code': ('claude_child_exited_before_input' if isinstance(exc, ClaudeChildExitError)
                               else 'claude_qualification_or_capture_held'), 'message': str(exc)}
             result = {'outcome': 'unknown', 'delivery_state': 'unknown', 'physical_session_id': session,

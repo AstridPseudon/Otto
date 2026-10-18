@@ -31,8 +31,8 @@ from otto.portfolio.resource_drift import apply_resource_sync_action, select_res
 def _pin_process_group(adapter, schedule_id):
     """Install the pin-only hook that records a work process group for its occurrence.
 
-    The adapter calls ``adapter.process_pin(process)`` once for every native work
-    process it spawns, for every role, so a worker turn is pinned too. The hook is
+    The adapter calls ``adapter.process_pin(process)`` once for every native
+    initializer and work process it spawns, for every role. The hook is
     deliberately separate from the managed caller-socket observer
     (``native_process_observer``): workers are never registered as managed callers,
     and the observer is neither read nor wrapped here.
@@ -43,28 +43,24 @@ def _pin_process_group(adapter, schedule_id):
     the admitted transport wait is open. Installing it here, on the owner thread,
     is what gives ``owner_callback`` the context to wrap.
 
-    The pin only lets a later restart prove the group gone; a process that is
-    already gone or an unknown occurrence leaves the hold conservatively held.
-    A pin failure never breaks the launch: claude_cli kills a turn whose
-    on_process raises, so the hook swallows its own errors.
+    A pin failure aborts the launch before the transport writes input.
     """
     from otto.portfolio.execution_host import ExecutionHost
 
     def pin(process):
-        try:
-            host = ExecutionHost.current_bounded()
-            if host is not None:
-                host.record_process_group(schedule_id, process.pid)
-        except (RuntimeError, PermissionError, OSError):
-            pass
+        host = ExecutionHost.current_registration_host()
+        if host is None:
+            raise RuntimeError("serialized owner context is required for process registration")
+        host.record_process_group(schedule_id, process.pid)
     owned = ExecutionHost.owner_callback(pin)
-
-    def safe(process):
-        try:
-            owned(process)
-        except (RuntimeError, PermissionError, OSError):
-            pass
-    adapter.process_pin = safe
+    def previous_group_gone():
+        host = ExecutionHost.current_registration_host()
+        if host is None:
+            raise RuntimeError("serialized owner context is required for process registration")
+        record = host._process_groups.get(schedule_id)
+        return record is not None and host._group_state(record) == "gone"
+    owned.previous_group_gone = ExecutionHost.owner_callback(previous_group_gone)
+    adapter.process_pin = owned
 
 
 def _completed_worker_support_refs(result, verifier, authorization):
