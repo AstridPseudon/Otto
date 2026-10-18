@@ -1755,8 +1755,16 @@ def client_main(argv: Optional[Sequence[str]] = None) -> int:
                "error": {"code": "usage", "message": "name the owner portfolio with --portfolio P"}}, "json")
         return 2
     lane = owner_lane(host_config.otto_home(home))
+    if parsed.command == "save":
+        # Resolve the save file while still in the caller's working directory.
+        portfolio_args = ["save", str(Path(parsed.file).absolute()), "--actor", parsed.actor,
+                          "--format", parsed.format]
+        if parsed.request_id is not None:
+            portfolio_args.extend(("--request-id", parsed.request_id))
+    else:
+        portfolio_args = _absolute_directories(words)
     body = {"schema": lanes.REQUEST_SCHEMA, "command": "portfolio", "sub": None,
-            "args": {"portfolio": portfolio, "portfolio_args": _absolute_directories(words), "caller": "otto"}}
+            "args": {"portfolio": portfolio, "portfolio_args": portfolio_args, "caller": "otto"}}
     result = _await(lane, {"command": "portfolio-operation", "args": body}, 60.0)
     _emit(result, getattr(parsed, "format", "json"))
     return _exit_code(result)
