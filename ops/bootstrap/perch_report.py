@@ -1698,6 +1698,8 @@ def stage2_failures(raw, config):
             or edited_task.get("instructions") != "Canary dispatch C (post-admission edit)"
             or prereq_before.get("lifecycle") != "completed"
             or (c_before.get("dispatch") or {}).get("state") != "admitted"
+            or (c_before.get("dispatch") or {}).get("reason") != "readmission needed"
+            or "instructions" not in (c_before.get("dispatch") or {}).get("changed_fields", [])
             or c_before.get("lifecycle") == "completed"
             or (no_launch_owner.get("native_capacity") or {}).get("active_or_uncertain") != 0
             or (no_launch_owner.get("manager_turns") or {}).get("active") != 0

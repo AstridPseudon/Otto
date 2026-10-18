@@ -484,6 +484,18 @@ class ProjectOwnerService(OwnerService):
         policy = self.shared_host.capacity.policy
         active = {**self.shared_host.capacity_holds(), **{
             key: item['scope'] for key, item in self.shared_host._executions.items() if item['running']}}
+        hold_actions = []
+        for schedule_id, scope in sorted(self.shared_host._capacity_holds.items()):
+            project = scope.get('project')
+            hold_actions.append({
+                'schedule_id': schedule_id,
+                'project': project,
+                'role': scope.get('role'),
+                'settling_command': 'ottoctl portfolio complete-task --input-json <owner-authorized-settlement.json>',
+                'next_action': ('Inspect `ottoctl project status --project %s`, then settle the exact retained task result '
+                                'with the command above.' % project) if project else
+                               'Identify the held project and exact task, then use the command above to settle its retained result.',
+            })
         managers = [v for v in active.values() if v['role'] == 'manager']
         value.update(shared_project_owner=True,
             manager_turns={'active': len(managers), 'active_projects': sorted(v['project'] for v in managers),
@@ -492,6 +504,7 @@ class ProjectOwnerService(OwnerService):
             native_capacity={'active_or_uncertain': len(active), 'total_limit': policy.total_turn_units,
                              'worker_limit': policy.worker_units, 'manager_limit': policy.manager_units,
                              'heavy_limit': policy.heavy_headroom,
-                             'holds': sorted(self.shared_host._capacity_holds)},
+                             'holds': sorted(self.shared_host._capacity_holds),
+                             'hold_actions': hold_actions},
             store_open_count=1, notification_mode='receipt-inspection')
         return value

@@ -11,12 +11,33 @@ from unittest.mock import patch
 from otto.hostctl import config as host_config, lanes
 from otto.hostctl.owner import create_store, HostSession
 from otto.hostctl.project_service import ProjectOwnerService
+from otto.hostctl.cli import _task_dispatch_status
 from otto.hostctl.supervision import launchd_definition
 from otto.portfolio.execution_host import CapacityPolicy, ExecutionHost
 from tests import test_bounded_project_host as bounded_fixture
 
 
 class SharedHostAdmissionTests(unittest.TestCase):
+    def test_edited_admitted_task_status_names_readmission_and_changed_fields(self):
+        from herzchen.contracts import ResourceRef
+        from herzchen.domains.work.admission import authoring_stamp
+
+        ref = ResourceRef('owner', 'work.task', 'task-C', 'rev-edited')
+        admitted = {'kind': 'task', 'id': 'task-C', 'title': 'Reviewed', 'instructions': 'Old'}
+        current = {**admitted, 'instructions': 'Edited'}
+        current['metadata_namespaces'] = {'work.admission': authoring_stamp('rev-admitted', admitted, 'reviewer')}
+
+        class Store:
+            def get_revision(self, pin):
+                self.pin = pin
+                return SimpleNamespace(payload=admitted)
+
+        result = _task_dispatch_status({}, task_payload=current, task_ref=ref, store=Store())
+
+        self.assertEqual(result['state'], 'admitted')
+        self.assertEqual(result['reason'], 'readmission needed')
+        self.assertEqual(result['changed_fields'], ['instructions'])
+
     def test_status_reports_admitted_turn_limits(self):
         cases = (
             ("default", CapacityPolicy(), (8, 6, 6)),
@@ -62,6 +83,24 @@ class SharedHostAdmissionTests(unittest.TestCase):
                 self.assertFalse(policy.admits_turn("manager", workers, managers))
                 self.assertTrue(policy.admits_turn("worker", workers - 1, managers))
                 self.assertFalse(policy.admits_turn("worker", workers, managers))
+
+    def test_owner_status_gives_retained_hold_a_settling_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            config = {"home": str(home), "owner": {"actor": "owner"},
+                "store": {"authority": "hold-status", "domain_descriptor_digest": "digest"},
+                "hosts": {}, "max_active_manager_turns": 3}
+            policy = CapacityPolicy()
+            scope = {"role": "worker", "project": "project-A", "schedule_id": "schedule-A"}
+            host = SimpleNamespace(bounded_transports=True, capacity=SimpleNamespace(policy=policy),
+                capacity_holds=lambda: {}, _executions={}, _capacity_holds={"schedule-A": scope})
+            service = ProjectOwnerService(config, router=SimpleNamespace(host=host, store=object(), services={}))
+
+            action = service._status()["native_capacity"]["hold_actions"][0]
+
+            self.assertEqual(action["schedule_id"], "schedule-A")
+            self.assertIn("complete-task", action["settling_command"])
+            self.assertIn("project-A", action["next_action"])
 
     def test_host_admission_borrows_store_and_foreign_project_denied(self):
         with tempfile.TemporaryDirectory() as directory:
