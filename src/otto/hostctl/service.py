@@ -116,6 +116,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _relay_detail_required(token: str, relay: Mapping[str, Any], response: Path) -> dict[str, Any]:
+    manager_token = relay["manager_token"]
+    return {
+        "outcome": "unknown",
+        "retry": False,
+        "effects": "unknown",
+        "request_id": token,
+        "error": {"code": "ManagerReplyUnavailable",
+                  "message": "the retained manager reply is invalid, unsafe, or too large; effects are unknown"},
+        "relayed": {"from": "manager lane", "original_request_id": token,
+                    "manager_request_id": manager_token},
+        "retained_response": {"path": str(response), "request_id": manager_token},
+        "summary_availability": {"state": "detail-required", "path": str(response)},
+    }
+
+
 def read_status(path: Path) -> dict[str, Any]:
     """Interpret a published status file: running, stale (holder gone) or not running."""
     try:
@@ -385,13 +401,38 @@ class OwnerService:
         for token, relay in list(self.relays.items()):
             response = relay["ipc"] / ("response-" + relay["manager_token"] + ".json")
             try:
-                value = json.loads(response.read_text())
-            except (FileNotFoundError, ValueError):
+                try:
+                    value = lanes.read_private_json(response, max_bytes=lanes.LANE_RESPONSE_LIMIT)
+                except Exception:
+                    reply = _relay_detail_required(token, relay, response)
+                else:
+                    if value is None:
+                        continue
+                    try:
+                        reply = {**value, "request_id": token, "relayed": {
+                            "from": "manager lane", "original_request_id": token,
+                            "manager_request_id": relay["manager_token"], "command": relay.get("command")}}
+                        wire = (json.dumps(reply, indent=2, sort_keys=True, default=lanes._default) + "\n").encode("utf-8")
+                        if len(wire) > lanes.LANE_RESPONSE_LIMIT:
+                            reply = _relay_detail_required(token, relay, response)
+                    except Exception:
+                        reply = _relay_detail_required(token, relay, response)
+                # Validate the fallback too, then write directly so relay
+                # retirement is tied to the atomic host-lane response write.
+                wire = (json.dumps(reply, indent=2, sort_keys=True, default=lanes._default) + "\n").encode("utf-8")
+                if len(wire) > lanes.LANE_RESPONSE_LIMIT:
+                    continue
+                lanes.atomic_json(relay["lane"] / ("response-" + token + ".json"), reply)
+                self.relays.pop(token, None)
+                try:
+                    (relay["lane"] / ("pending-" + token + ".json")).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._publish()
+            except Exception:
+                # A damaged retained reply, failed lane write, or status
+                # publication failure must not stop later relays from polling.
                 continue
-            lanes.respond(relay["lane"], token, {**value, "relayed": {
-                "from": "manager lane", "manager_request_id": relay["manager_token"], "command": relay.get("command")}})
-            self.relays.pop(token, None)
-            self._publish()
 
     def _relay(self, journey: Any, request: Mapping[str, Any], *, token: str, lane: Path, who: str,
                grant_principal: Optional[str] = None) -> Any:
