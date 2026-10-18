@@ -114,15 +114,15 @@ def _prepare_recorded_provenance_checkout(fixture_root, *, loader_comment=None):
     pack_root = fixture_root / pack_relative
     pack_root.parent.mkdir(parents=True)
     shutil.copytree(
-        Path(__file__).parents[1] / "src/herzchen/packs/evidence_resource_pack",
+        Path(__file__).parent / "fixtures/managed_source_provenance/immutable_pack",
         pack_root,
     )
-    authoring_path = fixture_root / "src/herzchen/packs/authoring.py"
-    authoring_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(Path(__file__).parents[1] / "src/herzchen/packs/authoring.py", authoring_path)
+    loader_path_hint = fixture_root / "src/herzchen/packs/authoring.py"
+    loader_path_hint.parent.mkdir(parents=True, exist_ok=True)
+    loader_path_hint.write_text("# loader location hint\n", encoding="utf-8")
     if loader_comment is not None:
-        with authoring_path.open("a", encoding="utf-8") as stream:
-            stream.write(f"\n# {loader_comment}\n")
+        with loader_path_hint.open("a", encoding="utf-8") as stream:
+            stream.write(f"# {loader_comment}\n")
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "Pack Parity Fixture",
@@ -148,7 +148,7 @@ def _prepare_recorded_provenance_checkout(fixture_root, *, loader_comment=None):
         ["git", "rev-parse", "HEAD"], cwd=fixture_root, env=env,
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    return fixture_root, authoring_path, revision
+    return fixture_root, loader_path_hint, revision
 
 
 def _copy_installed_runtime_source(controller_root):
@@ -407,18 +407,17 @@ class EvidenceLifecycleTests(unittest.TestCase):
         fixture_dir = Path(__file__).parent / "fixtures" / "managed_source_provenance"
         recording = json.loads((fixture_dir / "recorded_source.json").read_text(encoding="utf-8"))
         recorded_source = recording["source"]
-        portable_fields = {
-            "pack_id": recorded_source["pack_id"],
-            "source_kind": recorded_source["source_kind"],
-            "source_tree_sha256": recorded_source["tree_sha256"],
-            "source_manifest_sha256": recorded_source["manifest_sha256"],
-        }
+        preimage_template = recording["source_inventory_preimage_template"]
+        self.assertEqual(
+            preimage_template,
+            json.dumps(json.loads(preimage_template), sort_keys=True, separators=(",", ":")),
+        )
         actual_records = []
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
             for index, comment in enumerate((None, "loader-only comment change")):
                 checkout = parent / f"checkout-{index}"
-                repo_root, copied_authoring, revision = _prepare_recorded_provenance_checkout(
+                repo_root, loader_path_hint, revision = _prepare_recorded_provenance_checkout(
                     checkout, loader_comment=comment
                 )
                 pack_root = repo_root / recorded_source["pack_root"]
@@ -431,27 +430,32 @@ class EvidenceLifecycleTests(unittest.TestCase):
                     "disabled": [],
                 }), encoding="utf-8")
                 self.assertEqual(revision, recorded_source["revision"])
-                with patch.object(authoring, "__file__", str(copied_authoring)):
+                with patch.object(authoring, "__file__", str(loader_path_hint)):
                     managed = read_managed_pack(
                         recorded_source["pack_id"], project_root=repo_root,
                         source_state_path=source_state_path,
                     )
                 actual = managed.source.to_dict()
                 expected = {
-                    **portable_fields,
+                    "pack_id": recorded_source["pack_id"],
+                    "source_kind": recorded_source["source_kind"],
                     "source_revision": recorded_source["revision"],
+                    "source_tree_sha256": recorded_source["tree_sha256"],
+                    "source_manifest_sha256": recorded_source["manifest_sha256"],
+                    "source_inventory_identity": hashlib.sha256(
+                        preimage_template.replace(
+                            json.dumps("<PACK_ROOT>"),
+                            json.dumps(str(pack_root.resolve())),
+                        ).encode("utf-8")
+                    ).hexdigest(),
                     "pack_root": str(pack_root.resolve()),
                     "manifest_path": str((pack_root / "pack.yaml").resolve()),
                 }
-                for field, value in expected.items():
-                    with self.subTest(field=field):
-                        self.assertEqual(actual[field], value)
-                self.assertEqual(set(actual), set(expected) | {"source_inventory_identity"})
-                self.assertRegex(actual["source_inventory_identity"], r"^[0-9a-f]{64}$")
+                self.assertEqual(actual, expected)
                 if index == 0:
-                    with copied_authoring.open("a", encoding="utf-8") as stream:
-                        stream.write("\n# loader-only comment change\n")
-                    with patch.object(authoring, "__file__", str(copied_authoring)):
+                    with loader_path_hint.open("a", encoding="utf-8") as stream:
+                        stream.write("# loader-only comment change\n")
+                    with patch.object(authoring, "__file__", str(loader_path_hint)):
                         after_comment = read_managed_pack(
                             recorded_source["pack_id"], project_root=repo_root,
                             source_state_path=source_state_path,
