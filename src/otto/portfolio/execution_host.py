@@ -2122,14 +2122,23 @@ class ExecutionHost:
                 self.owner_path.unlink()
                 self._owns_owner_file = False
 
-    def prepare_root_direction_adoption(self) -> Mapping[str, Any]:
+    def prepare_root_direction_adoption(self, *, project_ids: Any = None) -> Mapping[str, Any]:
         """Existing owner-lane boundary for a root-only direction/BASE change.
 
         Preserve every retained native job/UNKNOWN fence. The quiescent update
         closes future admission so runtime joins can be normally requalified.
         """
         with self._lock:
-            if self._executions or self._capacity_holds or self._external_waiting:
+            scope = None if project_ids is None else set(project_ids)
+            executions = self._executions
+            holds = self._capacity_holds
+            if scope is not None:
+                executions = {key: item for key, item in executions.items()
+                              if item.get('scope', {}).get('project') is None
+                              or item.get('scope', {}).get('project') in scope}
+                holds = {key: item for key, item in holds.items()
+                         if item.get('project') is None or item.get('project') in scope}
+            if executions or holds or self._external_waiting:
                 return {'outcome': 'held', 'reason': 'retained native obligations must settle before root direction adoption',
                         'retry': False, 'runtime_requalification_required': True}
             self._closing = True

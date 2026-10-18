@@ -80,7 +80,8 @@ class RootDirectionAuthoring:
         if host is not None:
             # Existing owner lane guarantees this is atomic with admissions.
             # Never close while a productive or uncertain native obligation exists.
-            boundary = host.prepare_root_direction_adoption()
+            boundary = host.prepare_root_direction_adoption(
+                project_ids={row['project_ref']['id'] for row in projects})
             if boundary['outcome'] != 'quiescent':
                 return {**boundary, 'provider_called': False, 'canonical_effect_recorded': False}
         with self.owner.store.transaction():

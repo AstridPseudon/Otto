@@ -128,6 +128,16 @@ class CapacityHoldTests(unittest.TestCase):
         # The fence is custody: process exit does not prove absence of a provider effect.
         self.assertIn(self.schedule, host._capacity_holds)
         self.assertEqual(host.prepare_root_direction_adoption()["outcome"], "held")
+        from otto.hostctl.project_service import ProjectOwnerService
+        config = {"home": str(self.directory), "owner": {"actor": "owner"},
+                  "store": {"authority": "capacity-hold-status", "domain_descriptor_digest": "digest"},
+                  "hosts": {}, "max_active_manager_turns": 3}
+        status = ProjectOwnerService(config,
+            router=SimpleNamespace(host=host, store=object(), services={}))._status()
+        action = next(row for row in status["native_capacity"]["hold_actions"]
+                      if row["schedule_id"] == self.schedule)
+        self.assertIn("complete-task", action["settling_command"])
+        self.assertEqual(action["project"], self.app._resources(self.app._read(self.schedule)).target["project_ref"]["id"])
 
         # Only an exact custody disposition releases the fence, and it takes the record with it.
         self.fixture.release()
@@ -135,6 +145,16 @@ class CapacityHoldTests(unittest.TestCase):
         self.assertNotIn(self.schedule, host._capacity_holds)
         self.assertEqual(len(host.capacity_holds()), before)
         self.assertEqual(host._process_groups, {})
+
+    def test_hold_in_another_project_does_not_block_root_direction_adoption(self):
+        host = self.host()
+        host._capacity_holds["project-A-worker"] = {
+            "role": "worker", "project": "project-A", "schedule_id": "project-A-worker",
+        }
+
+        result = host.prepare_root_direction_adoption(project_ids={"project-B"})
+
+        self.assertEqual(result["outcome"], "quiescent")
 
     def test_restart_with_dead_hold_lists_fence_and_returns_capacity(self):
         first = self.host()

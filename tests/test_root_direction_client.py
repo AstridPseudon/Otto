@@ -159,7 +159,7 @@ class RootDirectionClientTests(unittest.TestCase):
   read=self.read();content=self.intent()['request']['content']
   draft=self.client.call({'operation':'direction-draft','request_key':'draft','request':{'content':content,'expected_revision':read['assignment_direction']['latest_ref']['revision']}})
   self.assertFalse(draft['assignment_resources_refreshed']);self.assertEqual(self.read()['assignment_direction']['effective_ref'],self.oldpin.to_dict())
-  host=SimpleNamespace(prepare_root_direction_adoption=lambda:{'outcome':'held','reason':'retained native obligation','retry':False})
+  host=SimpleNamespace(prepare_root_direction_adoption=lambda **kwargs:{'outcome':'held','reason':'retained native obligation','retry':False})
   self.service.host=host;counts=self.f.store.consumer().snapshot_counts();result=self.client.call(self.intent())
   self.assertEqual(result['outcome'],'held');self.assertFalse(result['canonical_effect_recorded']);self.assertEqual(self.f.store.consumer().snapshot_counts(),counts)
 

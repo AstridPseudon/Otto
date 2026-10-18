@@ -557,7 +557,8 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                           "phase": megado.get("phase"), "repo": plan.get("repo"), "branch": plan.get("branch"),
                           "depends_on": len(task.payload.get("dependencies") or ()),
                           "required_assessment_scopes": required_scopes,
-                          "dispatch": _task_dispatch_status(task_view.get("observed") or {}, dues)})
+                          "dispatch": _task_dispatch_status(task_view.get("observed") or {}, dues,
+                              task_payload=task.payload, task_ref=task.ref, store=session.store)})
         observed = view.project.get("observed", {}) if hasattr(view, "project") else {}
         assignments = []
         for item in observed.get("assignments") or ():
@@ -600,7 +601,9 @@ def cmd_project_status(args: argparse.Namespace) -> Any:
                 "provider_called": False}
 
 
-def _task_dispatch_status(observed: Mapping[str, Any], schedules: Any = ()) -> dict[str, Any]:
+def _task_dispatch_status(observed: Mapping[str, Any], schedules: Any = (), *,
+                          task_payload: Mapping[str, Any] | None = None,
+                          task_ref: Any = None, store: Any = None) -> dict[str, Any]:
     """Project retained assignment, dispatch and worker lifecycle records."""
     assignments = observed.get("assignments") or ()
     assignment_refs = {item.get("ref", {}).get("id") for item in assignments
@@ -661,9 +664,20 @@ def _task_dispatch_status(observed: Mapping[str, Any], schedules: Any = ()) -> d
     if any((payload.get("status") or "dispatched") in {"dispatched", "launched"}
            for payload in dispatches):
         return {"state": "launched", "reason": None}
-    if assignments:
-        return {"state": "admitted", "reason": None}
-    return {"state": "admitted", "reason": None}
+    result = {"state": "admitted", "reason": None}
+    if isinstance(task_payload, Mapping):
+        from herzchen.domains.work.admission import stamp_of, reviewed_content_diff
+        from herzchen.contracts import ResourceRef
+        stamp = stamp_of(task_payload)
+        if stamp is not None and isinstance(task_ref, ResourceRef) and store is not None:
+            pin = ResourceRef(task_ref.authority, task_ref.kind, task_ref.id, stamp["revision"])
+            retained = store.get_revision(pin)
+            if retained is not None:
+                changed = reviewed_content_diff(retained.payload, task_payload)
+                if changed:
+                    result["reason"] = "readmission needed"
+                    result["changed_fields"] = sorted(changed)
+    return result
 
 
 def _reader_actor(session: HostSession) -> Any:
