@@ -117,6 +117,13 @@ log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase
 gitl() { git -C "$OTTO_REPO" "$@"; }
 
 # Cheap checks first, so an exit 4 or a D14 refusal costs seconds, not a sweep.
+# Root-level files need an explicit canon change first; a lab must not add one as a side effect.
+# Check only newly introduced paths so removing a stray root file can itself land.
+TOP_LEVEL_ADDITIONS="$(gitl diff --name-only --diff-filter=ACR "$BASE...$BRANCH" | awk 'index($0, "/") == 0')"
+if [ -n "$TOP_LEVEL_ADDITIONS" ]; then
+  fail "top-level file additions are not allowed: $(printf '%s' "$TOP_LEVEL_ADDITIONS" | tr '\n' ' ')"
+fi
+
 # placement (D14)
 read -r HZ_ADD HZ_DEL OT_ADD OT_DEL <<< "$(gitl diff --numstat "$BASE...$BRANCH" | awk '
   $1 ~ /^[0-9]+$/ { if ($3 ~ /^src\/herzchen\//) { ha += $1; hd += $2 } else if ($3 ~ /^src\/otto\//) { oa += $1; od += $2 } }

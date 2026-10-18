@@ -127,6 +127,21 @@ class LandGate(Scratch):
         super().setUp()
         self.start()
 
+    def test_top_level_file_addition_is_named_and_refused_before_sweep(self):
+        self.lab("T33", {"worker-note.md": "keep this out of canon\n"})
+        r = self.land("T33")
+        self.assertRefused(r, "T33", "top-level file additions are not allowed")
+        self.assertIn("worker-note.md", r.stdout + r.stderr + self.log("T33"))
+        self.assertNotIn("sweep:", self.log("T33"), "the full sweep started before the path refusal")
+
+    def test_src_and_tests_additions_remain_eligible_to_land(self):
+        self.lab("T34", {
+            "src/otto/extra.py": "def value():\n    return 7\n",
+            "tests/test_extra.py": "from otto.extra import value\n\n\ndef test_value():\n    assert value() == 7\n",
+        })
+        r = self.land("T34")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_passing_task_lands(self):
         self.lab("T1", {"src/otto/mod.py": "def f():\n    return 1\n\n\ndef g():\n    return 2\n",
                         "tests/test_mod.py": GOOD_TEST + "\n\ndef test_g():\n    assert mod.g() == 2\n"})
@@ -147,14 +162,14 @@ class LandGate(Scratch):
         self.assertIn("lines removed", log)
 
     def test_brief_check_ignores_text_after_closing_backtick(self):
-        self.lab("T29", {"note.txt": "x\n"})
+        self.lab("T29", {"src/otto/note.py": "NOTE = \"x\"\n"})
         brief = self.labs / "T29" / ".brief.md"
         brief.write_text(brief.read_text().rstrip() + " this trailing prose is not part of the command\n")
         r = self.land("T29")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_placeholder_in_brief_check_is_refused_before_sweep(self):
-        self.lab("T30", {"note.txt": "x\n"})
+        self.lab("T30", {"src/otto/note.py": "NOTE = \"x\"\n"})
         marker = self.tmp / "check-ran"
         check = "%s -c \"from pathlib import Path; Path('%s').write_text('ran')\"" % (sys.executable, marker)
         brief = self.labs / "T30" / ".brief.md"
@@ -168,7 +183,7 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "runs" / "T30" / "land.log").exists(), "the sweep began before placeholder validation")
 
     def test_temporary_service_owner_under_another_root_is_ignored(self):
-        self.lab("T26", {"note.txt": "x\n"})
+        self.lab("T26", {"src/otto/note.py": "NOTE = \"x\"\n"})
         home = self.tmp / "other-session" / "older-orphan-home"
         line = "424242 1 python service run --home %s\n" % home
         (self.tmp / "ps-listing.before").write_text(line)
@@ -178,13 +193,13 @@ class LandGate(Scratch):
         self.assertNotIn("424242", self.log("T26") + r.stdout + r.stderr)
 
     def test_a_live_owner_with_a_parent_is_not_an_orphan(self):
-        self.lab("T27", {"note.txt": "x\n"})
+        self.lab("T27", {"src/otto/note.py": "NOTE = \"x\"\n"})
         self.ps_listing.write_text("434343 4242 python service run --home %s\n" % (self.tmp / "live-home"))
         r = self.land("T27")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_temporary_service_owner_orphan_is_named(self):
-        self.lab("T25", {"note.txt": "x\n"})
+        self.lab("T25", {"src/otto/note.py": "NOTE = \"x\"\n"})
         marker = self.tmp / "landing-tmpdir"
         check = ("%s -c \"from pathlib import Path; import os; Path('%s').write_text(os.environ['TMPDIR'])\" && "
                  "%s -m pytest -q tests/test_herzchen_boundary.py") % (sys.executable, marker, sys.executable)
@@ -209,7 +224,7 @@ class LandGate(Scratch):
     def test_a_landing_stopped_by_a_signal_never_reports_landed(self):
         started = self.tmp / "check-started"
         check = "%s -c \"open('%s','w').close(); import time; time.sleep(600)\"" % (sys.executable, started)
-        self.lab("T10", {"note.txt": "x\n"})
+        self.lab("T10", {"src/otto/note.py": "NOTE = \"x\"\n"})
         proc = subprocess.Popen(["bash", str(BOOT / "land.sh"), "T10", "--check", check], env=self.env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         while not started.exists() and proc.poll() is None:  # wait for the check to start; only a hang fails
@@ -224,7 +239,7 @@ class LandGate(Scratch):
         self.assertFalse((self.ops / "land.lock").exists(), "the lock outlived the stopped landing")
 
     def test_a_failing_check_is_refused(self):
-        self.lab("T11", {"note.txt": "x\n"})
+        self.lab("T11", {"src/otto/note.py": "NOTE = \"x\"\n"})
         r = self.land("T11", "--check", "false")
         self.assertRefused(r, "T11", "the task's check failed: false")
 
@@ -444,7 +459,7 @@ class LandGate(Scratch):
 class RunTaskRoute(Scratch):
     def run_route(self, route, resume=False):
         task = "R" + route
-        self.lab(task, {"note.txt": "x\n"})
+        self.lab(task, {"src/otto/note.py": "NOTE = \"x\"\n"})
         argv = self.tmp / ("argv-" + route)
         stub = self.bin / "claude"
         stub.write_text('#!/bin/sh\nprintf "%%s\\n" "$@" > "%s.tmp"\nmv "%s.tmp" "%s"\n' % (argv, argv, argv))
@@ -564,7 +579,7 @@ class CheckPreexistingReds(Scratch):
 
     def test_a_red_canon_shares_does_not_refuse(self):
         self.canon_red()
-        self.lab("T12", {"note.txt": "x\n"})
+        self.lab("T12", {"src/otto/note.py": "NOTE = \"x\"\n"})
         self.brief("T12", "%s -m pytest -q tests/test_red.py" % sys.executable)
         r = self.land("T12")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -603,7 +618,7 @@ class CheckPreexistingReds(Scratch):
         self.commit(self.repo, "canon has only collection errors in the selected check")
         sh(["git", "push", "-q", "github", "canon/main:main"], cwd=self.repo, env=self.env)
         self.start()
-        self.lab("T17", {"note.txt": "x\n"})
+        self.lab("T17", {"src/otto/note.py": "NOTE = \"x\"\n"})
         self.brief("T17", "%s -m pytest -q tests/test_collection_a.py tests/test_collection_b.py" % sys.executable)
         r = self.land("T17")
         self.assertRefused(r, "T17", "did not complete a test run")
@@ -620,7 +635,7 @@ class RunTaskCodex(Scratch):
     def run_codex(self, route, resume=None):
         task = "C" + route
         if resume is None:
-            self.lab(task, {"note.txt": "x\n"})
+            self.lab(task, {"src/otto/note.py": "NOTE = \"x\"\n"})
         argv = self.tmp / ("codex-argv-" + route + ("-resume" if resume else ""))
         stub = self.bin / "codex"
         stub.write_text(
@@ -672,7 +687,7 @@ class RunTaskCodex(Scratch):
     def test_commit_when_the_lab_ignores_the_brief(self):
         # Real labs ignore .brief.md; naming it in `git add` made git refuse the whole add (16 Oct).
         task = "Cignored"
-        lab = self.lab(task, {".gitignore": ".brief.md\n", "note.txt": "x\n"})
+        lab = self.lab(task, {".gitignore": ".brief.md\n", "src/otto/note.py": "NOTE = \"x\"\n"})
         stub = self.bin / "codex"
         stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-ign"}\'\necho made > made.txt\n')
         stub.chmod(0o755)
@@ -686,7 +701,7 @@ class RunTaskCodex(Scratch):
         # The manager loop read run-task.sh's output through a pipe; a detached worker that kept it open
         # blocked the loop until the worker ended (16 Oct). Here the worker blocks until released.
         task = "Cpipe"
-        self.lab(task, {"note.txt": "x\n"})
+        self.lab(task, {"src/otto/note.py": "NOTE = \"x\"\n"})
         release = self.tmp / "release"
         stub = self.bin / "codex"
         stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-pipe"}\'\n'
@@ -723,7 +738,7 @@ class RunTaskCodex(Scratch):
     def test_program_default_host_file(self):
         (self.ops / "worker-host").write_text("codex\n")
         task = "Cdefault"
-        self.lab(task, {"note.txt": "x\n"})
+        self.lab(task, {"src/otto/note.py": "NOTE = \"x\"\n"})
         stub = self.bin / "codex"
         stub.write_text('#!/bin/sh\necho \'{"type":"thread.started","thread_id":"t-default"}\'\n')
         stub.chmod(0o755)
