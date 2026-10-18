@@ -39,7 +39,7 @@ class Scratch(unittest.TestCase):
         self.bin.mkdir()
         self.ops.mkdir()
         heavy = self.bin / "otto-heavy"
-        heavy.write_text('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
+        heavy.write_text('#!/bin/sh\nprintf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$1" "$2" "$3" "$4" "$5" >> "$OTTO_TEST_HEAVY_CALLS"\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n')
         heavy.chmod(0o755)
         self.ps_listing = self.tmp / "ps-listing"
         self.ps_listing.write_text("")
@@ -57,6 +57,7 @@ class Scratch(unittest.TestCase):
             OTTO_HEAVY=str(heavy), BASELINE_LAB=str(self.baseline), OTTO_PYTHON=sys.executable,
             OTTO_REMOTE="github", PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
             OTTO_TEST_PS_LISTING=str(self.ps_listing),
+            OTTO_TEST_HEAVY_CALLS=str(self.tmp / "heavy-calls"),
             GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
         )
         sh(["git", "init", "-q", "-b", "canon/main", str(self.repo)])
@@ -146,6 +147,51 @@ class LandGate(Scratch):
         self.assertIn("staging: skipped", log)
         self.assertIn("lines removed", log)
 
+    def test_entire_gate_uses_one_weight_two_heavy_lease(self):
+        self.lab("T33", {"note.txt": "x\n"})
+        r = self.land("T33")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = (self.tmp / "heavy-calls").read_text().splitlines()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual(calls[0].split("\t")[:4], ["--weight", "2", "--purpose", "T33 land gate"])
+        self.lab("T35", {"note.txt": "y\n"})
+        self.env["OTTO_GATE_JOBS"] = "3"
+        r = self.land("T35")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = (self.tmp / "heavy-calls").read_text().splitlines()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertEqual(calls[1].split("\t")[:4], ["--weight", "3", "--purpose", "T35 land gate"])
+
+    def test_lease_acquisition_failure_keeps_the_final_result_line(self):
+        self.lab("T36", {"note.txt": "x\n"})
+        (self.bin / "otto-heavy").write_text("#!/bin/sh\nexit 7\n")
+        r = self.land("T36")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.head(), self.base)
+        self.assertTrue((self.labs / "T36").exists())
+        self.assertTrue(r.stdout.strip().splitlines()[-1].startswith(
+            "LAND RESULT: refused heavy lease failed before the gate started (exit 7)"), r.stdout + r.stderr)
+
+    def test_sweep_stops_after_first_confirmed_new_file_and_reports_all_its_ids(self):
+        marker = self.tmp / "later-file-started"
+        first = ("from pathlib import Path\n"
+                 "def test_new_one():\n    assert False\n\n"
+                 "def test_new_two():\n    assert False\n")
+        later = ("from pathlib import Path\n"
+                 "Path(%r).write_text('started')\n"
+                 "def test_later():\n    assert True\n" % str(marker))
+        self.lab("T34", {"tests/test_a_new.py": first, "tests/test_z_later.py": later})
+        r = self.land("T34")
+        self.assertRefused(r, "T34", "tests/test_a_new.py::test_new_one")
+        diagnostic = self.log("T34") + r.stdout + r.stderr
+        self.assertIn("NEW failure: tests/test_a_new.py::test_new_one", diagnostic)
+        self.assertIn("tests/test_a_new.py::test_new_two", diagnostic)
+        result = r.stdout.strip().splitlines()[-1]
+        self.assertIn("tests/test_a_new.py::test_new_one", result)
+        self.assertIn("tests/test_a_new.py::test_new_two", result)
+        self.assertFalse(marker.exists(), "later sweep file ran after confirmed NEW failures")
+        self.assertEqual(sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip(), self.base)
+
     def test_brief_check_ignores_text_after_closing_backtick(self):
         self.lab("T29", {"note.txt": "x\n"})
         brief = self.labs / "T29" / ".brief.md"
@@ -221,6 +267,41 @@ class LandGate(Scratch):
         self.assertNotEqual(proc.returncode, 0, out + err)
         self.assertTrue(out.strip().splitlines()[-1].startswith("LAND RESULT: refused interrupted"), out + err)
         self.assertEqual(self.head(), self.base, "canon/main moved")
+        self.assertFalse((self.ops / "land.lock").exists(), "the lock outlived the stopped landing")
+
+    def test_outer_pid_signal_is_forwarded_to_the_leased_gate(self):
+        started = self.tmp / "check-started-pid-only"
+        check = "%s -c \"open('%s','w').close(); import time; time.sleep(600)\"" % (sys.executable, started)
+        self.lab("T37", {"note.txt": "x\n"})
+        heavy = self.bin / "otto-heavy"
+        heavy.write_text("#!/usr/bin/env python3\n"
+                         "import os, signal, subprocess, sys\n"
+                         "args = sys.argv[sys.argv.index('--') + 1:]\n"
+                         "child = subprocess.Popen(args, start_new_session=True)\n"
+                         "def stop(sig, frame):\n"
+                         "    try: os.killpg(child.pid, signal.SIGTERM)\n"
+                         "    except ProcessLookupError: pass\n"
+                         "signal.signal(signal.SIGTERM, stop)\n"
+                         "signal.signal(signal.SIGINT, stop)\n"
+                         "raise SystemExit(child.wait())\n")
+        heavy.chmod(0o755)
+        proc = subprocess.Popen(["bash", str(BOOT / "land.sh"), "T37", "--check", check], env=self.env,
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        while not started.exists() and proc.poll() is None:
+            pass
+        if proc.poll() is not None:
+            self.fail("land.sh ended before its check ran:\n" + "".join(proc.communicate()))
+        os.kill(proc.pid, signal.SIGTERM)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, err = proc.communicate()
+            self.fail("outer PID signal left the leased gate running:\n" + out + err)
+        self.assertNotEqual(proc.returncode, 0, out + err)
+        self.assertTrue(out.strip().splitlines()[-1].startswith("LAND RESULT: refused interrupted"), out + err)
+        self.assertEqual(self.head(), self.base, "canon/main moved")
+        self.assertTrue((self.labs / "T37").exists())
         self.assertFalse((self.ops / "land.lock").exists(), "the lock outlived the stopped landing")
 
     def test_a_failing_check_is_refused(self):
@@ -514,6 +595,7 @@ class BatchLandGate(Scratch):
         self.assertEqual(self.remote_head(), self.base)
         self.assertIn("tests/test_new_red.py::test_new", r.stdout + r.stderr)
         self.assertIn("tasks: B", r.stdout + r.stderr)
+        self.assertIn("tasks: B", r.stdout.strip().splitlines()[-1])
 
     def test_every_check_runs_on_the_candidate_and_red_check_names_source_task(self):
         for task, files in (("A", {"note-a.txt": "A\n"}),

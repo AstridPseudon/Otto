@@ -19,12 +19,19 @@ LOCKED=""
 LANDED=""
 LAND_TMPDIR=""
 LAND_CANDIDATE=""
+LEASE_PARENT_DONE=""
+LEASE_MARKER_DIR=""
+LEASE_PID=""
 die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
 finish() {
   local rc=$?
+  [ -z "$LEASE_MARKER_DIR" ] || rm -rf "$LEASE_MARKER_DIR"
   [ -z "$LAND_CANDIDATE" ] || git -C "$OTTO_REPO" worktree remove --force "$LAND_CANDIDATE" >/dev/null 2>&1 || true
   [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
   [ -z "$LAND_TMPDIR" ] || rm -rf "$LAND_TMPDIR"
+  # The leased child owns its result once it has started. If acquisition failed before that point,
+  # this parent emits the same final result line as every other refusal.
+  if [ -n "$LEASE_PARENT_DONE" ]; then return "$rc"; fi
   # "landed" means pushed, whatever the exit status: a run stopped by a signal can end with status 0,
   # and a cleanup failure after the push doesn't undo the landing.
   if [ -n "$LANDED" ]; then echo "LAND RESULT: landed $LANDED"; return; fi
@@ -36,9 +43,21 @@ finish() {
 }
 trap finish EXIT
 trap 'REASON="interrupted by a signal; canon/main unchanged unless the log says pushed"; exit 143' TERM INT HUP
+lease_signal() {
+  local sig="$1" forward_sig="$1"
+  [ "$sig" != HUP ] || forward_sig=TERM
+  REASON="interrupted by a signal; canon/main unchanged unless the log says pushed"
+  if [ -n "$LEASE_PID" ]; then
+    kill -"$forward_sig" "$LEASE_PID" 2>/dev/null || true
+    wait "$LEASE_PID" 2>/dev/null || true
+    [ -f "$LEASE_MARKER_DIR/started" ] && LEASE_PARENT_DONE=1
+  fi
+  exit 143
+}
 
 BATCH=""
 TASKS=()
+SCRIPT_ARGS=("$@")
 TITLE=""
 CHECK=""
 D19=""
@@ -67,6 +86,33 @@ else
   done
 fi
 TASK="${TASKS[0]}"
+if [ "${OTTO_LAND_LEASED:-}" != 1 ]; then
+  GATE_WEIGHT="${OTTO_GATE_JOBS:-2}"
+  case "$GATE_WEIGHT" in ''|*[!0-9]*) die "OTTO_GATE_JOBS must be a positive integer (got: $GATE_WEIGHT)" ;; esac
+  [ "$GATE_WEIGHT" -gt 0 ] || die "OTTO_GATE_JOBS must be a positive integer (got: $GATE_WEIGHT)"
+  LEASE_MARKER_DIR="$(mktemp -d /tmp/land-lease.XXXXXX)" || die "could not create a lease marker"
+  trap 'lease_signal TERM' TERM
+  trap 'lease_signal INT' INT
+  trap 'lease_signal HUP' HUP
+  "$HEAVY" --weight "$GATE_WEIGHT" --purpose "$TASK land gate" -- \
+      env OTTO_LAND_LEASED=1 OTTO_LAND_CHILD_MARKER="$LEASE_MARKER_DIR/started" \
+      bash "$0" "${SCRIPT_ARGS[@]}" &
+  LEASE_PID=$!
+  if wait "$LEASE_PID"; then
+    lease_rc=0
+  else
+    lease_rc=$?
+  fi
+  LEASE_PID=""
+  if [ -f "$LEASE_MARKER_DIR/started" ]; then
+    LEASE_PARENT_DONE=1
+  else
+    REASON="heavy lease failed before the gate started (exit $lease_rc)"
+    [ "$lease_rc" -ne 0 ] || lease_rc=1
+  fi
+  exit "$lease_rc"
+fi
+[ -z "${OTTO_LAND_CHILD_MARKER:-}" ] || : > "$OTTO_LAND_CHILD_MARKER"
 LAB="$LABS_DIR/$TASK"
 RUN="$RUNS_DIR/$TASK"
 BRANCH="lab/$TASK"
@@ -348,7 +394,6 @@ temp_owners > "$G/owners.before" || fail "could not inspect temporary service ow
 run_pytest() {  # DIR FILE OUT
   local rc=0
   ( cd "$1" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
-      "$HEAVY" --weight 1 --purpose "$TASK gate" -- \
       "$PY" -m pytest -q -rfE -p no:cacheprovider "$2" ) > "$3" 2>&1 || rc=$?
   echo "=== exit $rc" >> "$3"
 }
@@ -403,7 +448,6 @@ for i in "${ACCEPTED_INDEX[@]}"; do
   CHECK_RUN="$(check_script "$task_check")"
   check_failed=""
   ( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
-      "$HEAVY" --weight 1 --purpose "$check_task check" -- \
       bash -c "$CHECK_RUN" ) > "$check_out" 2>&1 || check_failed=1
   CHECK_SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$check_out" || true)"
   [ -z "$CHECK_SKIPPED" ] || fail "the task's check has no executed tests: $CHECK_SKIPPED (output: $check_out)"
@@ -537,12 +581,14 @@ PY
 }
 record_new() {  # ID
   local id="$1" f owners
+  FILE_NEW_IDS="$FILE_NEW_IDS$id"$'\n'
   if [ -n "$BATCH" ]; then
     f="${id%%::*}"
     owners="$(owners_of "$f")"
     log "NEW failure: $id (tasks: $owners)"
     NEW_FAILS="$NEW_FAILS$id [tasks: $owners]"$'\n'
   else
+    log "NEW failure: $id"
     NEW_FAILS="$NEW_FAILS$id"$'\n'
   fi
 }
@@ -551,6 +597,7 @@ record_new() {  # ID
 # they are pre-existing, as in the sweep, and go to canon-reds.txt for REDS. Anything else refuses
 # (16 Oct: canon's manager-loop red refused CHANGE, A4 and COMPOSEFLEET until the check was narrowed).
 NEW_FAILS=""
+FILE_NEW_IDS=""
 for i in "${!CHECK_FAILED_TASKS[@]}"; do
   check_task="${CHECK_FAILED_TASKS[$i]}"; check_out="${CHECK_FAILED_OUTS[$i]}"; task_check="${CHECK_FAILED_COMMANDS[$i]}"
   check_ids="$(ids_of "$check_out" check)"
@@ -577,9 +624,9 @@ for i in "${!CHECK_FAILED_TASKS[@]}"; do
   [ -z "$check_preexisting" ] || log "check passed except failures also red on BASE: ${check_preexisting# } (listed in ops/canon-reds.txt)"
 done
 
-# GATEPAR's bounded parallel run phase keeps each file's two runs in order. Judgment stays serial,
-# including BASE comparisons and isolated reproductions.
-GATE_JOBS="${OTTO_GATE_JOBS:-3}"
+# GATEPAR's bounded parallel waves preserve run order within each file. Judge each completed wave
+# in sweep order before scheduling another, so a confirmed new failure stops later waves cleanly.
+GATE_JOBS="${OTTO_GATE_JOBS:-2}"
 case "$GATE_JOBS" in ''|*[!0-9]*) fail "OTTO_GATE_JOBS must be a positive integer (got: $GATE_JOBS)" ;; esac
 [ "$GATE_JOBS" -gt 0 ] || fail "OTTO_GATE_JOBS must be a positive integer (got: $GATE_JOBS)"
 mkdir -p "$G/sweep"
@@ -593,19 +640,9 @@ run_sweep_file() {  # FILE
     run_pytest "$LAB" "$f" "$dir/run$n.txt"
   done
 }
-batch_pids=""; batch_count=0
-for f in $SWEEP; do
-  run_sweep_file "$f" &
-  batch_pids="${batch_pids:+$batch_pids }$!"
-  batch_count=$((batch_count + 1))
-  if [ "$batch_count" -ge "$GATE_JOBS" ]; then
-    for pid in $batch_pids; do wait "$pid" || fail "sweep run phase failed for a worker (pid $pid)"; done
-    batch_pids=""; batch_count=0
-  fi
-done
-for pid in $batch_pids; do wait "$pid" || fail "sweep run phase failed for a worker (pid $pid)"; done
-
-for f in $SWEEP; do
+judge_sweep_file() {  # FILE
+  local f="$1" first n out ids kept
+  FILE_NEW_IDS=""
   : > "$G/lab.ids"
   first=1
   # A file the passing check ran whole (named in it, with no -k or :: selection) has had its first run.
@@ -622,11 +659,12 @@ for f in $SWEEP; do
     log "sweep $f run $n/2: $(printf '%s' "$ids" | grep -c . || true) failing${kept:+ (output: $kept)}"
   done
   sort -u "$G/lab.ids" -o "$G/lab.ids"
-  [ -s "$G/lab.ids" ] || continue
+  [ -s "$G/lab.ids" ] || return 0
   if ! gitl cat-file -e "$BASE:$f" 2>/dev/null; then
     # a file the task added has no baseline: all its failures are new
     while IFS= read -r id; do record_new "$id"; done < "$G/lab.ids"
-    continue
+    STOP_NEW=1
+    return
   fi
   bo="$(baseline_out "$f")"
   ids_of "$bo" "$f" | sort -u > "$G/base.ids"
@@ -634,7 +672,31 @@ for f in $SWEEP; do
     if grep -qxF -- "$id" "$G/base.ids"; then log "pre-existing failure (also on BASE): $id"
     elif reproduces "$f" "$id"; then record_new "$id"; fi
   done < "$G/lab.ids"
+  if [ -n "$FILE_NEW_IDS" ]; then STOP_NEW=1; fi
+}
+STOP_NEW=""
+WAVE_FILES=(); WAVE_PIDS=(); WAVE_COUNT=0
+for f in $SWEEP; do
+  run_sweep_file "$f" &
+  WAVE_FILES+=("$f"); WAVE_PIDS+=("$!")
+  WAVE_COUNT=$((WAVE_COUNT + 1))
+  if [ "$WAVE_COUNT" -ge "$GATE_JOBS" ]; then
+    for pid in "${WAVE_PIDS[@]}"; do wait "$pid" || fail "sweep run phase failed for a worker (pid $pid)"; done
+    for wave_file in "${WAVE_FILES[@]}"; do
+      judge_sweep_file "$wave_file"
+      [ -z "$STOP_NEW" ] || break
+    done
+    WAVE_FILES=(); WAVE_PIDS=(); WAVE_COUNT=0
+    [ -z "$STOP_NEW" ] || break
+  fi
 done
+if [ "$WAVE_COUNT" -gt 0 ]; then
+  for pid in "${WAVE_PIDS[@]}"; do wait "$pid" || fail "sweep run phase failed for a worker (pid $pid)"; done
+  for wave_file in "${WAVE_FILES[@]}"; do
+    judge_sweep_file "$wave_file"
+    [ -z "$STOP_NEW" ] || break
+  done
+fi
 
 # Only an owner that appeared during this landing is its own: one left by something else (another
 # session, an earlier run) is logged, not held against this task.
