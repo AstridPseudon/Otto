@@ -42,6 +42,53 @@ class OperatingSetupTests(unittest.TestCase):
         return {"schema": "otto.operating-setup.v1", "mode": "manual", "roles": {"manager": schedule},
                 "advisor_policy": {"mode": "disabled", "reason": "Owner supervises this bounded run"}, "acceptance_tasks": []}
 
+    def test_corrective_completion_reader_uses_canonical_worker_hash_and_retained_manifest(self):
+        from otto.portfolio.attention_binding import ExternalAssignmentGuard, _digest
+
+        owner_authority = "owner"
+        project = {"authority": owner_authority, "kind": "work.project", "id": "p", "revision": "rev-1"}
+        original_task = {"authority": owner_authority, "kind": "work.task", "id": "t", "revision": "rev-1"}
+        completed_task = {**original_task, "revision": "rev-2"}
+        assignment = {"authority": owner_authority, "kind": "wrk.assignment", "id": "a", "revision": "rev-1"}
+        result_ref = {"authority": owner_authority, "kind": "wrk.result", "id": "r", "revision": "rev-1"}
+        source_digest = "a" * 64
+        brief = {"instruction_contract": {"source_inspection": {"manifest_sha256": source_digest}}}
+        scope = {"project_ref": project, "task_ref": original_task, "assignment_ref": assignment,
+            "generation": 1, "logical_request_key": "worker-run", "brief_sha256": _digest(brief)}
+        result_value = {"project_ref": project, "task_ref": original_task, "assignment_ref": assignment,
+            "generation": 1, "logical_request_key": "worker-run", "outcome": "succeeded",
+            "delivery_state": "done", "resource_evidence": {"brief": brief, "brief_sha256": _digest(brief)},
+            "task_bound_evidence": {"operation_result": {"output": {"source_verification": {
+                "manifest_sha256": source_digest}}}}}
+        completion = {"logical_request_key": "manager-finish", "task_ref": original_task,
+            "task_revision": "rev-1", "project_ref": project, "manager": "manager",
+            "disposition": "accepted-for-task", "result_ref": result_ref,
+            "evidence_refs": [result_ref], "evidence_hashes": {"wrk.result:r:rev-1": _digest(result_value)},
+            "source_set_digest": source_digest, "assignment_ref": assignment, "generation": 1}
+        proof = {"completed_task_ref": completed_task, "result_ref": result_ref,
+            "result_sha256": _digest(result_value), "completion_sha256": _digest(completion),
+            "source_set_digest": source_digest}
+        receipt = {"status": "committed", "operation": "work.revise", "logical_request_key": "manager-finish",
+            "target": original_task, "result_ref": completed_task}
+        result_record = SimpleNamespace(ref=ResourceRef.from_dict(result_ref), payload={
+            "record_type": "work.observation", "observation_kind": "result", "assignment": assignment,
+            "generation": 1, "value": result_value})
+        reader = SimpleNamespace(get_receipt=lambda _key: receipt, get_record=lambda _ref: result_record)
+        guard = object.__new__(ExternalAssignmentGuard)
+        guard._scope = scope
+        guard._terminalization = proof
+        guard._owner = SimpleNamespace(graph=SimpleNamespace(reader=reader),
+            owner_actor=SimpleNamespace(actor="manager"))
+        task = {"ref": completed_task, "lifecycle": "completed", "project_ref": project,
+            "payload": {"completion": completion}}
+        guard._validate_completed_task(task)
+
+        corrupt = {**completion, "evidence_hashes": {"wrk.result:r:rev-1": "0" * 64}}
+        corrupt_proof = {**proof, "completion_sha256": _digest(corrupt)}
+        guard._terminalization = corrupt_proof
+        with self.assertRaisesRegex(ValueError, "accepted source/brief evidence changed"):
+            guard._validate_completed_task({**task, "payload": {"completion": corrupt}})
+
     def test_unstarted_continuation_uses_completed_fresh_manager_admission(self):
         from copy import deepcopy
         from otto.portfolio.execution import _digest
@@ -787,13 +834,21 @@ class OperatingSetupTests(unittest.TestCase):
             reviewed = fixture.commands.review_task({"command": "review-task", "task": task_alias,
                 "request_key": "historical-review-" + task_alias, "candidate_ref": candidate,
                 "source_refs": [candidate], "inspection": {"observed": "Reviewed the exact task evidence"},
-                "finish": task_alias != "D01",
+                "finish": task_alias not in {"D01", "D02", "D03"},
                 "judgments": {criterion_alias: {"verdict": "PASS", "rationale": "Evidence satisfies the criterion",
                     "evidence_refs": [candidate] + ([proof_evidence] if proof_evidence else [])}}})
-            if task_alias == "D01":
-                # Exercise the canonical completion producer directly: the
-                # ordinary manager finish wrapper correctly holds WRK result
-                # candidates until native settlement is bound.
+            if task_alias in {"D01", "D02", "D03"}:
+                # Complete real accepted tasks with each supported request
+                # hash shape. Stored completion evidence must converge on the
+                # canonical ref-to-digest map for historical readers.
+                canonical_hashes = reviewed["evidence_hashes"]
+                if task_alias == "D01":
+                    completion_hashes = list(canonical_hashes.values())
+                elif task_alias == "D02":
+                    completion_hashes = {"evidence-" + str(index): digest
+                        for index, digest in enumerate(canonical_hashes.values())}
+                else:
+                    completion_hashes = canonical_hashes
                 completion = f.owner.assignments.command_port.complete(
                     ResourceRef.from_dict(state["task_refs"][task_alias]),
                     project=ResourceRef.from_dict(state["project_ref"]),
@@ -802,10 +857,23 @@ class OperatingSetupTests(unittest.TestCase):
                     expected_project_revision=state["project_ref"]["revision"],
                     expected_task_revision=state["task_refs"][task_alias]["revision"],
                     disposition="accepted", evidence_refs=reviewed["evidence_refs"],
-                    evidence_hashes=reviewed["evidence_hashes"], gate_refs=reviewed["gate_refs"],
+                    evidence_hashes=completion_hashes, gate_refs=reviewed["gate_refs"],
                     candidate_ref=reviewed["candidate_ref"],
-                    logical_request_key="historical-review-D01:finish", actor=f.actor)
+                    logical_request_key="historical-review-" + task_alias + ":finish", actor=f.actor)
+                replay = f.owner.assignments.command_port.complete(
+                    ResourceRef.from_dict(state["task_refs"][task_alias]),
+                    project=ResourceRef.from_dict(state["project_ref"]),
+                    assignment=ResourceRef.from_dict(state["assignment_ref"]),
+                    expected_generation=state["manager_generation"],
+                    expected_project_revision=state["project_ref"]["revision"],
+                    expected_task_revision=state["task_refs"][task_alias]["revision"],
+                    disposition="accepted", evidence_refs=reviewed["evidence_refs"],
+                    evidence_hashes=completion_hashes, gate_refs=reviewed["gate_refs"],
+                    candidate_ref=reviewed["candidate_ref"],
+                    logical_request_key="historical-review-" + task_alias + ":finish", actor=f.actor)
+                self.assertEqual(replay["outcome"], "replayed")
                 reviewed = {**reviewed, "completion": completion}
+                self.assertEqual(reviewed["completion"]["completion"]["evidence_hashes"], canonical_hashes)
             self.assertEqual(reviewed["completion"]["outcome"], "completed", reviewed)
             if task_alias == "D01":
                 self.assertEqual(reviewed["completion"]["completion"]["assessment_gate_check"]["evidence_verification"], "unknown")

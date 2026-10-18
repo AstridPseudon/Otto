@@ -755,6 +755,10 @@ class _ResponsibilityAssignmentsEngine:
                         expected_digest = _digest(retained.payload["value"])
                 if expected_digest is None or supplied_digests.get(evidence_ref) != expected_digest:
                     raise WorkValidationError("completion evidence digest does not match accepted evidence")
+            canonical_hashes = {
+                f"{ref.kind}:{ref.id}:{ref.revision or ''}": supplied_digests[ref]
+                for ref in evidence_values
+            }
 
             completion = {
                 "manager": selected_actor.actor,
@@ -766,7 +770,10 @@ class _ResponsibilityAssignmentsEngine:
                 "task_revision": expected_task_revision,
                 "disposition": disposition,
                 "evidence_refs": evidence_values,
-                "evidence_hashes": hash_values,
+                # Keep the accepted request's original shape in its envelope
+                # for idempotency matching; the stored completion uses the
+                # canonical ref-to-digest representation.
+                "evidence_hashes": canonical_hashes,
                 "gate_refs": gate_values,
                 "candidate_ref": request_payload["candidate_ref"],
                 "result_ref": request_payload["result_ref"],
