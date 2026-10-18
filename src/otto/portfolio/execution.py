@@ -522,12 +522,6 @@ class ExecutionApplication:
                     "error": {"code": type(exc).__name__, "message": str(exc)},
                     "next_action": "retry this exact assignment request to finish preparation"}
 
-    def assign_and_start(self, **request: Any) -> dict[str, Any]:
-        prepared = self.assign_worker(**request)
-        if prepared["outcome"] not in {"committed", "prepared"}:
-            return prepared
-        return self.start(schedule_id=prepared["schedule_id"])
-
     def prepare_role(self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
                      assignment_ref: Mapping[str, Any], generation: int, mandate_ref: Mapping[str, Any],
                      context_refs: tuple[Mapping[str, Any], ...] | None = None, request_key: str,

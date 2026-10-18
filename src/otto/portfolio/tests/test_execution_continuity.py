@@ -2,6 +2,7 @@
 otto.portfolio.tests.test_execution_continuity. Only disposable owners/providers
 and local child processes are used; installed servicing remains a host proof.
 """
+from tests.execution_helpers import start_worker
 import argparse
 import json
 from pathlib import Path
@@ -51,7 +52,7 @@ class OccurrenceContinuityTests(unittest.TestCase):
     def test_null_result_restart_recovers_exact_attempt_without_replay_then_stop(self):
         f = self.f
         f.provider.unknown = True
-        launched = f.app.assign_and_start(**f.request())
+        launched = start_worker(f.app, f.request())
         schedule = launched['schedule_id']
         due = f.port.read_due(schedule)
         due['host_evidence']['gateway_attempt']['result'] = None

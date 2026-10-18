@@ -1,4 +1,5 @@
 """Completion command coverage without Store access or provider execution."""
+from tests.execution_helpers import start_worker
 import contextlib
 import importlib.util
 import io
@@ -162,7 +163,7 @@ class CompletionCommandTests(unittest.TestCase):
         fixture.state["project_ref"] = f.project.ref.to_dict()
         f.app = fixture.owner.execution_application(due_port=f.port, adapter=adapter, clock=lambda: execution.NOW)
 
-        dispatched = f.app.assign_and_start(**f.request())
+        dispatched = start_worker(f.app, f.request())
         self.assertEqual(dispatched["outcome"], "succeeded", dispatched)
 
         decision_ref = fixture._accept_managed("manager-completion")

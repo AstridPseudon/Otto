@@ -1,4 +1,5 @@
 """Explicit continuation checks use the maintained owner and a fake provider."""
+from tests.execution_helpers import start_worker
 from datetime import timedelta
 from dataclasses import replace
 import json
@@ -364,7 +365,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
 
     def test_worker_result_wakes_same_manager_without_a_progress_report_or_worker_replay(self):
         f = self.fixture
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         before = f.port.read_due(worker["schedule_id"])
         reports = self.reports()
         calls = len(f.provider.calls)
@@ -391,7 +392,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
 
     def test_worker_result_waits_for_manager_settlement_without_preparing_or_provider(self):
         f = self.fixture
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         prior = f.app._read(self.anchor)
         f.port.save_due(self.anchor, replace(prior, stop_state="active", completion_state="none",
             in_flight_request="current-manager").to_dict(), request_id="fixture-manager-active", expected_version=prior.version)
@@ -410,7 +411,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
 
     def test_unknown_manager_blocks_even_an_existing_unattempted_worker_result_callback(self):
         f = self.fixture
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         prepared = f.app.continue_manager_from_worker(manager_schedule_id=self.anchor,
             worker_schedule_id=worker["schedule_id"], execute=False)
         callback = f.port.read_due(prepared["schedule_id"])
@@ -435,7 +436,7 @@ class ManagerServiceContinuationTests(unittest.TestCase):
             read_reports=self.reports, preserve_execution_binding=True)["continuation"]["schedule_id"]
         before = f.port.read_due(report_callback)
         reports = self.reports()
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         calls = len(f.provider.calls)
         prepared = f.app.continue_manager_from_worker(manager_schedule_id=report_callback,
             worker_schedule_id=worker["schedule_id"], execute=False)

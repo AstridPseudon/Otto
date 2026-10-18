@@ -1,4 +1,5 @@
 """D03 trusted-ingress contracts; no installed authentication claim."""
+from tests.execution_helpers import start_worker
 from dataclasses import replace
 from pathlib import Path
 from hashlib import sha256
@@ -154,7 +155,7 @@ class CallerContextTests(unittest.TestCase):
         # Legacy retained workers may lack the newly captured live admission.
         from otto.agents.herzchen_adapter import HerzchenCodexAdapter
         with patch.object(HerzchenCodexAdapter, "set_turn_started_callback", lambda self, callback: None):
-            result = self.f.app.assign_and_start(**self.f.request())
+            result = start_worker(self.f.app, self.f.request())
         self.assertEqual(result["outcome"], "succeeded", result)
         assignment = self.f.app.assignments.get(ResourceRef.from_dict(result["assignment_ref"]))
         due = self.f.app._read(result["schedule_id"])

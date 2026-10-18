@@ -71,7 +71,6 @@ from .advisor_delivery import (
 )
 from .manager_inventory import ManagerInventoryError, ManagerInventoryReader
 from .manager_handoff import ManagerHandoffError, compose_manager_handoff
-from .lifecycle import LifecycleIntegrationError, PortfolioLifecycleIntegration
 from .resource_drift import ResourceDriftError, apply_resource_sync_action, select_resource_sync_action
 from .orchestrator_placement import (
     ExplicitPeerRequired,
@@ -180,8 +179,6 @@ __all__ = [
     "AdvisorDeliveryLoop",
     "AdvisorDeliveryPorts",
     "ExactSessionDelivery",
-    "LifecycleIntegrationError",
-    "PortfolioLifecycleIntegration",
     "ResourceDriftError",
     "apply_resource_sync_action",
     "select_resource_sync_action",

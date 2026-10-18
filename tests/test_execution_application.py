@@ -3,6 +3,7 @@
 Only the external Codex binding and clock are substituted. Native transcript
 evidence is parsed by the real host parser, adapter, gateway and owner runtime.
 """
+from tests.execution_helpers import start_worker
 from datetime import datetime, timezone, timedelta
 import json
 import hashlib
@@ -165,7 +166,7 @@ class ExecutionApplicationTests(unittest.TestCase):
                     "forbidden_effects": ["owner_write", "publication", "package_adoption", "remote_push", "release", "deployment"]}})
 
     def test_assign_run_repair_publish_restart_and_same_request_duplicate(self):
-        result = self.app.assign_and_start(**self.request())
+        result = start_worker(self.app, self.request())
         self.assertEqual(result["outcome"], "succeeded", result)
         self.assertEqual(len(self.provider.calls), 1)
         events = self.store.list_events(stream="dispatch:" + result["assignment_ref"]["id"])
@@ -179,7 +180,7 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.store.close()
         self.store = Store.open(self.path, authority="execution-owner", expected_domains=tuple(sorted(self.domains, key=lambda d: d.domain_id)))
         self.compose()
-        duplicate = self.app.assign_and_start(**self.request())
+        duplicate = start_worker(self.app, self.request())
         self.assertEqual(duplicate["outcome"], "replayed")
         self.assertEqual(len(self.provider.calls), 1)
         replayed_events = self.store.list_events(stream="dispatch:" + duplicate["assignment_ref"]["id"])
@@ -209,7 +210,7 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertEqual(len(self.provider.calls), 1)
 
     def test_resume_launch_rechecks_and_records_worker_admission_revision(self):
-        first = self.app.assign_and_start(**self.request())
+        first = start_worker(self.app, self.request())
         self.assertEqual(first["outcome"], "succeeded", first)
         resumed = self.app.correct_worker(schedule_id=first["schedule_id"],
             request_key="admission-resume", instruction="Review the retained result and add one focused check.")
@@ -257,7 +258,7 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertEqual(self.provider.calls, [])
 
     def test_inspected_worker_result_closes_task_through_public_manager_acceptance(self):
-        result = self.app.assign_and_start(**self.request())
+        result = start_worker(self.app, self.request())
         self.assertEqual(result["outcome"], "succeeded", result.get("error"))
         observations = self.app.assignments.list_observations(ResourceRef.from_dict(result["assignment_ref"]), kind="result")
         manager, _guide, _mandate = self.role_handles("manager", "manager", "manager-session")
@@ -305,7 +306,7 @@ class ExecutionApplicationTests(unittest.TestCase):
 
     def test_unknown_provider_effect_is_durable_and_not_replayed(self):
         self.provider.unknown = True
-        result = self.app.assign_and_start(**self.request())
+        result = start_worker(self.app, self.request())
         self.assertNotEqual(result["outcome"], "succeeded")
         recovered = self.app.recover(schedule_id=result["schedule_id"], execute=True)
         self.assertNotEqual(recovered["outcome"], "succeeded")
@@ -316,7 +317,7 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "committed", result)
         changed = {**self.request(), "instructions": "Different task intent"}
         with self.assertRaisesRegex(ValueError, "changed worker input"):
-            self.app.assign_and_start(**changed)
+            start_worker(self.app, changed)
         self.assertEqual(self.provider.calls, [])
 
     def test_partial_preparation_reuses_committed_assignment_after_clock_failure(self):
@@ -330,13 +331,13 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertIn("mandate_ref", partial)
         self.assertEqual(self.provider.calls, [])
         self.compose()
-        repaired = self.app.assign_and_start(**self.request())
+        repaired = start_worker(self.app, self.request())
         self.assertEqual(repaired["outcome"], "succeeded", repaired.get("error"))
         self.assertEqual(repaired["assignment_ref"], partial["assignment_ref"])
         self.assertEqual(len(self.provider.calls), 1)
 
     def test_correction_resumes_exact_native_session_and_delivers_fresh_delta(self):
-        first = self.app.assign_and_start(**self.request())
+        first = start_worker(self.app, self.request())
         corrected = self.app.correct_worker(schedule_id=first["schedule_id"],
             request_key="correction-1", instruction="Add the missing boundary case and return fresh checks.")
         self.assertEqual(corrected["outcome"], "succeeded", corrected.get("error"))
@@ -354,7 +355,7 @@ class ExecutionApplicationTests(unittest.TestCase):
         def handle(request):
             if request["command"] == "status":
                 return {"outcome": "active", "occurrences": len(self.port.list_due())}
-            return self.app.assign_and_start(**self.request())
+            return start_worker(self.app, self.request())
         host = ExecutionHost(directory=directory, handler=handle, owner_path=directory / "owner.json")
         host.start()
         host.retain(name="useful-child", operation=lambda: results.append(handle({"command": "run"})))
@@ -377,11 +378,11 @@ class ExecutionApplicationTests(unittest.TestCase):
         self.assertFalse((directory / "owner.json").exists())
 
     def test_restarted_file_host_recovers_pending_same_request_without_provider_replay(self):
-        first = self.app.assign_and_start(**self.request())
+        first = start_worker(self.app, self.request())
         directory = Path(str(Path(self.temporary.name).resolve())) / "ipc"
         directory.mkdir()
         (directory / "request-abc123.json").write_text(json.dumps({"command": "run"}))
-        with ExecutionHost(directory=directory, handler=lambda _request: self.app.assign_and_start(**self.request())):
+        with ExecutionHost(directory=directory, handler=lambda _request: start_worker(self.app, self.request())):
             deadline = time.monotonic() + 5
             response = directory / "response-abc123.json"
             while not response.exists() and time.monotonic() < deadline:

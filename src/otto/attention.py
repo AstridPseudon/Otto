@@ -2178,45 +2178,6 @@ class DurableAttention:
                 "next_action": "inspect retained host readback before retry" if blocked
                     else "existing Due evaluation may continue"}
 
-    def validate_configuration(
-        self,
-        schedule_id: str,
-        *,
-        capability_evidence: Mapping[str, JSONValue],
-        context_evidence: Sequence[Mapping[str, JSONValue]] = (),
-        allowance_evidence: Optional[Mapping[str, JSONValue]] = None,
-        expected_version: Optional[int] = None,
-        project_ref: Optional[str] = None,
-        manager_ref: Optional[str] = None,
-        generation: Optional[int] = None,
-        lifecycle_owner: Optional[str] = None,
-    ) -> dict[str, JSONValue]:
-        """Validate one owner-record configuration without provider execution."""
-
-        _required_text(schedule_id, "schedule_id")
-        if expected_version is None:
-            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "expected_version_required", "message": "configuration validation requires an owner version"}, "automatic_action": False}
-        if lifecycle_owner is None:
-            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "owner_required", "message": "configuration validation requires the lifecycle owner"}, "automatic_action": False}
-        record = self._read(schedule_id)
-        if record is None:
-            return {"outcome": "unknown", "schedule_id": schedule_id, "automatic_action": False}
-        scope_error = self._scope_error(record, project_ref=project_ref, manager_ref=manager_ref, generation=generation, lifecycle_owner=lifecycle_owner)
-        if scope_error is not None:
-            return {"outcome": "rejected", "schedule_id": schedule_id, "error": scope_error, "automatic_action": False}
-        if expected_version != record.version:
-            return {"outcome": "rejected", "schedule_id": schedule_id, "error": {"code": "stale_version", "message": "configuration validation version is stale"}, "automatic_action": False}
-        result = validate_execution_configuration(
-            record,
-            capability_evidence=capability_evidence,
-            context_evidence=context_evidence,
-            allowance_evidence=allowance_evidence,
-        )
-        result["schedule_id"] = schedule_id
-        if result.get("outcome") == "configuration_supported":
-            result["owner"] = {"lifecycle_owner": record.lifecycle_owner, "version": record.version, "expected_version": expected_version, "generation": record.generation}
-        return result
-
     def resolve_recipient(
         self,
         schedule_id: str,

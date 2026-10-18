@@ -1,4 +1,5 @@
 """Real owner assessment commands through nested file IPC; native transport is fake."""
+from tests.execution_helpers import start_worker
 import hashlib
 import json
 import threading
@@ -26,7 +27,7 @@ class ManagerAssessmentIPCTests(unittest.TestCase):
         reentrant.ManagerReentrantIPCTests.setUp(self)
         f = self.fixture
         self.assignment = ResourceRef.from_dict(f.app._read(self.anchor).assignment_ref)
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         self.assertEqual(worker["outcome"], "succeeded", worker)
         self.candidate = f.app.assignments.list_observations(ResourceRef.from_dict(worker["assignment_ref"]), kind="result")[0]
         self.source = WorkGraph(f.store, actor=f.actor).create_task(f.project.ref,

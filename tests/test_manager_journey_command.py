@@ -1,4 +1,5 @@
 """Ordinary explicit judgment uses real assessment/completion/lifecycle APIs."""
+from tests.execution_helpers import start_worker
 import unittest
 import argparse
 import json
@@ -45,7 +46,7 @@ class ManagerJourneyCommandTests(unittest.TestCase):
         from otto.portfolio.occurrence_reads import exact_due, handle
         from otto.portfolio.manager_journey_client import command_result_summary
         f=self.application
-        worker=f.app.assign_and_start(**f.request())
+        worker=start_worker(f.app, f.request())
         self.assertEqual(worker['outcome'],'succeeded')
         due=f.port.read_due(worker['schedule_id'])
         self.fixture.state['workers']={'PA01':{'schedule_id':worker['schedule_id'],

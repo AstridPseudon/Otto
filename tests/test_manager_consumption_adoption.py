@@ -1,4 +1,5 @@
 """Ordinary consumption continuity; synthetic provider, real owner adoption history."""
+from tests.execution_helpers import start_worker
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -18,7 +19,7 @@ class ManagerConsumptionAdoptionTests(unittest.TestCase):
             instruction='Inspect this task', model='gpt-test', reasoning='high',
             profile='workspace-write', native_session_id='manager-session')
         self.assertEqual(f.app.start(schedule_id=prepared['schedule_id'])['outcome'], 'succeeded')
-        worker = f.app.assign_and_start(**f.request())
+        worker = start_worker(f.app, f.request())
         self.assertEqual(worker['outcome'], 'succeeded')
         callback = f.app.continue_manager_from_worker(manager_schedule_id=prepared['schedule_id'],
             worker_schedule_id=worker['schedule_id'], execute=True)
@@ -127,7 +128,7 @@ class PreparedManagerWorkerDeliveryTests(unittest.TestCase):
             reasoning='high', profile='workspace-write', native_session_id='manager-session')
         first = f.app.prepare_role(**args, request_key='settled-manager')
         self.assertEqual(f.app.start(schedule_id=first['schedule_id'])['outcome'], 'succeeded')
-        self.worker = f.app.assign_and_start(**f.request())
+        self.worker = start_worker(f.app, f.request())
         self.assertEqual(self.worker['outcome'], 'succeeded')
         self.prepared = f.app.prepare_role(**args, request_key='current-prepared-manager',
             binding_schedule_id=first['schedule_id'])

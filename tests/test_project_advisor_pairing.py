@@ -8,7 +8,6 @@ from otto.portfolio import (
 )
 from otto.portfolio.herzchen_binding import FiniteWorkOperations, HerzchenBindingConfig
 from otto.portfolio.intake import OttoPortfolio, PortfolioError
-from otto.portfolio.lifecycle import PortfolioLifecycleIntegration
 from otto.portfolio.resource_sync import role_resource_pins
 
 
@@ -138,34 +137,6 @@ class IntegrationTests(unittest.TestCase):
                 "parent": PROJECT, "manager": "manager-principal", "executor": "worker-principal",
                 "resources": {"project_advisor": [descriptor]},
             }, responsibility_ref=PROJECT)
-
-    def test_manager_question_routes_to_advisor_generation(self):
-        runtime = SimpleNamespace(
-            calls=[], hourly_resource_check=lambda **kwargs: kwargs,
-        )
-        runtime.invoke_role = lambda **kwargs: runtime.calls.append(kwargs) or kwargs
-        integration = object.__new__(PortfolioLifecycleIntegration)
-        integration._generation = 1
-        integration.manager_actor = "manager-principal"
-        integration.orchestrator_actor = "orchestrator-principal"
-        integration.role_runtimes = {"project_advisor": runtime}
-        integration.owner_operations = None
-        integration._projects = {"project-1": "active"}
-        integration._project_context = {"project-1": {
-            "project_ref": PROJECT, "task_ref": ref("work.task", "task-1"),
-            "role_bindings": {"project_advisor": {
-                "assignment_ref": ADVISOR,
-                "mandate_ref": ref("dat.content.document", "advisor-mandate"),
-                "schedule_id": "advisor-question", "generation": 2,
-            }},
-        }}
-        result = integration._deliver_role(actor="manager-principal", delivery={
-            "role": "project_advisor", "project_id": "project-1", "operation": "send",
-            "lifecycle": "resume", "packet_digest": "digest", "logical_request_key": "question-1",
-            "as_of": "2026-10-03T15:00:00Z", "request": {"question": "Next step?"},
-        })
-        self.assertEqual(result["expected_generation"], 2)
-        self.assertEqual(result["assignment_ref"], ADVISOR)
 
 
 class _PairReceipt:

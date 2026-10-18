@@ -1048,10 +1048,6 @@ class CanonicalRoleRuntime:
         if sessions[0] != sessions[1]:
             raise OwnerRoleRuntimeError("completed worker manager selector changed native identity")
 
-    def invoke_manager(self, **kwargs: Any) -> Any:
-        """Legacy owner route; not the post-bind authorization contract."""
-        return self._invoke(role="manager", **kwargs)
-
     def accept_role_result(
         self, *, role: str, project_ref: Mapping[str, Any], task_ref: Mapping[str, Any],
         assignment_ref: Mapping[str, Any], mandate_ref: Mapping[str, Any],
@@ -1487,10 +1483,6 @@ class CanonicalRoleRuntime:
             raise OwnerRoleRuntimeError("reconciled result was not accepted by the owner occurrence")
         return {"outcome": "reconciled", "attempt": reconciled,
                 "published_analytical_result": published, "manager_acceptance": accepted}
-
-    def invoke_orchestrator(self, **kwargs: Any) -> Any:
-        """Legacy owner route; not the post-bind authorization contract."""
-        return self._invoke(role="orchestrator", **kwargs)
 
     def invoke_role(self, *, role: str, mode: str, **kwargs: Any) -> Any:
         """Run a direct, owner-authorized route or hold an unsupported mode.
