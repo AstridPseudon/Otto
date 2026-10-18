@@ -3,7 +3,7 @@
 Heavy jobs (frame captures, renders, real-film journeys, full test suites) take slots from the
 machine's capacity; light work (edits, checks, show) takes none:
 
-    ottoctl heavy [--weight N] [--purpose TEXT] [--max-minutes N] [--no-wait] -- CMD [ARGS...]
+    ottoctl heavy [--weight N] [--purpose TEXT] [--max-minutes N] [--no-deadline] [--no-wait] -- CMD [ARGS...]
     ottoctl heavy status
 
 **Capacity** is a number of slots: ``$OTTO_HEAVY_CAPACITY``, else ``<dir>/capacity``, else one slot
@@ -311,7 +311,7 @@ def _describe(holders: list[dict]) -> str:
                      f"{h.get('started_at', '?')})" for h in holders) or "nobody (memory pressure)"
 
 
-def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wait: bool, owner: str) -> int:
+def run(command: list[str], *, weight: int, purpose: str, max_minutes: float | None, wait: bool, owner: str) -> int:
     if os.environ.get(LEASE_ENV):
         # Already inside a heavy job (e.g. a journey that renders frames): it holds slots; run straight through.
         return subprocess.call(command)
@@ -340,8 +340,9 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     def claim(backfill: bool) -> None:
         now = time.time()
         record.update(backfill=backfill, admitted_ns=time.time_ns(), waited_seconds=round(now - queued_at, 1),
-                      started_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
-                      expires_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now + max_minutes * 60)))
+                      started_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)))
+        if max_minutes is not None:
+            record["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now + max_minutes * 60))
         holder_file.write_text(json.dumps(record, indent=1))
         ticket.unlink(missing_ok=True)
 
@@ -393,7 +394,10 @@ def run(command: list[str], *, weight: int, purpose: str, max_minutes: float, wa
     previous_handlers = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         try:
-            code = child.wait(timeout=max_minutes * 60)
+            if max_minutes is None:
+                code = child.wait()
+            else:
+                code = child.wait(timeout=max_minutes * 60)
         except subprocess.TimeoutExpired:
             outcome, code = "timed_out", EXIT_TIMEOUT
             print(f"heavy: time ran out after {max_minutes:g} min; stopping the lease's processes", file=sys.stderr)
@@ -426,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(status(), indent=1))
         return 0
     if "--" not in argv:
-        print("usage: ottoctl heavy [--weight N] [--purpose TEXT] [--max-minutes N] [--no-wait] -- CMD [ARGS...]\n"
+        print("usage: ottoctl heavy [--weight N] [--purpose TEXT] [--max-minutes N] [--no-deadline] [--no-wait] -- CMD [ARGS...]\n"
               "       ottoctl heavy status", file=sys.stderr)
         return 2
     split = argv.index("--")
@@ -436,6 +440,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="slots this job takes (frame 1, journey or test suite 2, full render 3)")
     parser.add_argument("--purpose", help="what this heavy job is for (shown to whoever waits)")
     parser.add_argument("--max-minutes", type=float, default=60.0, help="stop everything after this long (default 60)")
+    parser.add_argument("--no-deadline", action="store_true", help="run until the command exits or is interrupted")
     parser.add_argument("--no-wait", action="store_true", help="exit 75 instead of waiting when there's no capacity")
     parser.add_argument("--owner", default=os.environ.get("OTTO_HEAVY_OWNER")
                         or f"{os.environ.get('USER', '?')} pid {os.getppid()} in {os.getcwd()}",
@@ -445,7 +450,8 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         parser.error("no command after --")
     return run(command, weight=args.weight, purpose=args.purpose or " ".join(command)[:120],
-               max_minutes=args.max_minutes, wait=not args.no_wait, owner=args.owner)
+               max_minutes=None if args.no_deadline else args.max_minutes,
+               wait=not args.no_wait, owner=args.owner)
 
 
 if __name__ == "__main__":

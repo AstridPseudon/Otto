@@ -121,6 +121,7 @@ class Scratch(unittest.TestCase):
 
     def start(self):
         self._base = self.head()
+        sh(["git", "push", "-q", "--force", "github", "canon/main:main"], cwd=self.repo, env=self.env)
 
 
 class LandGate(Scratch):
@@ -154,6 +155,7 @@ class LandGate(Scratch):
         calls = (self.tmp / "heavy-calls").read_text().splitlines()
         self.assertEqual(len(calls), 1, calls)
         self.assertEqual(calls[0].split("\t")[:4], ["--weight", "2", "--purpose", "T33 land gate"])
+        self.assertEqual(calls[0].split("\t")[4], "--no-deadline")
         self.lab("T35", {"note.txt": "y\n"})
         self.env["OTTO_GATE_JOBS"] = "3"
         r = self.land("T35")
@@ -161,6 +163,18 @@ class LandGate(Scratch):
         calls = (self.tmp / "heavy-calls").read_text().splitlines()
         self.assertEqual(len(calls), 2, calls)
         self.assertEqual(calls[1].split("\t")[:4], ["--weight", "3", "--purpose", "T35 land gate"])
+        self.assertEqual(calls[1].split("\t")[4], "--no-deadline")
+
+    def test_result_line_is_emitted_after_heavy_lease_releases(self):
+        self.lab("T38", {"note.txt": "x\n"})
+        heavy = self.bin / "otto-heavy"
+        heavy.write_text('#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\n"$@"\nrc=$?\necho LEASE RELEASED\nexit "$rc"\n')
+        heavy.chmod(0o755)
+        r = self.land("T38")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        output = r.stdout.strip().splitlines()
+        self.assertLess(output.index("LEASE RELEASED"), len(output) - 1)
+        self.assertTrue(output[-1].startswith("LAND RESULT: landed "), r.stdout)
 
     def test_lease_acquisition_failure_keeps_the_final_result_line(self):
         self.lab("T36", {"note.txt": "x\n"})
@@ -366,8 +380,9 @@ class LandGate(Scratch):
     def flaky_file(self, fail_on):
         """A test file whose Nth run in each tree (a counter per tree, kept outside it) fails when N is in
         fail_on[tree name]; the lab's tree is named after the task, BASE's is 'baseline'."""
-        return ("import pathlib\nfrom otto import mod\n\nFAIL = %r\nP = pathlib.Path(%r) / ('count-' + "
-                "pathlib.Path(__file__).resolve().parents[1].name)\n\n\ndef test_flaky():\n"
+        return ("import pathlib\nfrom otto import mod\n\nFAIL = %r\nTREE = pathlib.Path(__file__).resolve().parents[1].name\n"
+                "if TREE.startswith(('_land-', '_batch-')):\n    TREE = next(k for k in FAIL if k != 'baseline')\n"
+                "P = pathlib.Path(%r) / ('count-' + TREE)\n\n\ndef test_flaky():\n"
                 "    n = int(P.read_text()) if P.exists() else 0\n    P.write_text(str(n + 1))\n"
                 "    assert n not in FAIL.get(P.name[6:], ())\n" % (fail_on, str(self.tmp)))
 
@@ -481,11 +496,11 @@ class LandGate(Scratch):
                  "echo \"- staging tree sha $OTTO_STAGING_REF; canon/main x\" > \"$d/report.md\"\n"
                  "echo \"perch: stage 0 report at $d/report.md\"\n")
         self.lab("T8", {"src/otto/extra.py": "X = 1\n", "ops/bootstrap/staging.sh": "", "ops/bootstrap/perch.sh": perch})
-        sha = sh(["git", "rev-parse", "HEAD"], cwd=self.labs / "T8").stdout.strip()
         r = self.land("T8")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("staging: perch --fake passed on", self.log("T8"))
         report = (self.repo / "ops/perch/0/x/report.md").read_text()  # kept in the main checkout, not the lab
+        sha = self.head()
         self.assertIn("staging tree sha " + sha[:7], report)
 
     def test_staging_on_another_commit_is_refused(self):
@@ -532,10 +547,12 @@ class BatchLandGate(Scratch):
     def remote_head(self):
         return sh(["git", "--git-dir", str(self.remote), "rev-parse", "main"]).stdout.strip()
 
-    def test_batch_rejects_more_than_eight_tasks(self):
-        r = self.batch(*("T%d" % i for i in range(9)))
+    def test_batch_cap_is_forty_tasks(self):
+        r = self.batch(*("T%d" % i for i in range(41)))
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("one to eight tasks", r.stdout + r.stderr)
+        self.assertIn("one to forty tasks", r.stdout + r.stderr)
+        accepted = self.batch(*("T%d" % i for i in range(40)))
+        self.assertIn("no lab at", accepted.stdout + accepted.stderr)
         self.assertEqual(self.remote_head(), self.base)
 
     def test_green_three_task_batch_has_three_commits_and_one_push(self):
@@ -581,6 +598,134 @@ class BatchLandGate(Scratch):
         self.assertIn("NEW failure: tests/test_mod.py::test_f", r.stdout + r.stderr)
         self.assertIn("tasks: B", r.stdout + r.stderr)
         self.assertNotIn("tasks: A", r.stdout + r.stderr)
+
+    def test_multiline_ast_import_attributes_source_failure_to_task(self):
+        self.write(self.repo, "tests/test_mod.py",
+                   "from otto import (\n    mod,\n)\n\n\ndef test_f():\n    assert mod.f() == 1\n")
+        self.commit(self.repo, "make baseline import multiline")
+        sh(["git", "push", "-q", "--force", "github", "canon/main:main"], cwd=self.repo, env=self.env)
+        self.start()
+        self.lab("B", {"src/otto/mod.py": "def f():\n    return 2\n"})
+        r = self.batch("B")
+        self.assertRefused(r, "B", "tests/test_mod.py::test_f")
+        result = r.stdout.strip().splitlines()[-1]
+        self.assertIn("tasks: B", result)
+        self.assertNotIn("unattributed", result)
+
+    def test_batch_contained_task_still_runs_check_d19_and_gets_a_land_commit(self):
+        changed_test = GOOD_TEST.replace("== 1", "== 2")
+        lab_b = self.lab("B", {"src/otto/mod.py": "def f():\n    return 2\n", "tests/test_mod.py": changed_test})
+        lab_a = self.lab("A", {"note.txt": "A\n"})
+        sh(["git", "reset", "--hard", "lab/B"], cwd=lab_a, env=self.env)
+        markers = {}
+        marker = self.tmp / "contained-check-B"
+        markers["B"] = marker
+        command = ("%s -c \"from pathlib import Path; Path('%s').write_text('ran')\" && "
+                   "%s -m pytest -q tests/test_mod.py") % (sys.executable, marker, sys.executable)
+        (self.labs / "B" / ".brief.md").write_text("**Title:** Do B\nCheck command: `%s`\n" % command)
+        self.commit(lab_b, "set contained fixture check")
+        sh(["git", "reset", "--hard", "lab/B"], cwd=lab_a, env=self.env)
+        marker = self.tmp / "contained-check-A"
+        markers["A"] = marker
+        command = ("%s -c \"from pathlib import Path; Path('%s').write_text('ran')\" && "
+                   "%s -m pytest -q tests/test_mod.py") % (sys.executable, marker, sys.executable)
+        (self.labs / "A" / ".brief.md").write_text("**Title:** Do A\nCheck command: `%s`\n" % command)
+        self.commit(lab_a, "set contained fixture check")
+        self.ops.mkdir(exist_ok=True)
+        reviews = self.ops / "reviews"
+        reviews.mkdir()
+        for task in ("A", "B"):
+            (reviews / ("D19-%s.md" % task)).write_text("Decision: LAND\ntests/test_mod.py\n")
+        r = self.batch("A", "B")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for marker in markers.values():
+            self.assertTrue(marker.exists(), str(marker))
+        self.assertEqual(self.landed_tasks(), ["Land A: Do A", "Land B: Do B"])
+        self.assertIn("D19: review says LAND", self.log("A"))
+        self.assertIn("tested commit", self.log("A"))
+
+    def test_batch_checks_cannot_move_the_tested_candidate(self):
+        self.lab("A", {"note-a.txt": "A\n"})
+        self.lab("B", {"note-b.txt": "B\n"})
+        base = self.base
+        command = ("git reset --hard %s && %s -m pytest -q tests/test_herzchen_boundary.py") % (base, sys.executable)
+        (self.labs / "B" / ".brief.md").write_text("**Title:** Do B\nCheck command: `%s`\n" % command)
+        r = self.batch("A", "B")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("candidate HEAD changed during check B", r.stdout + r.stderr)
+        self.assertEqual(self.head(), self.base)
+        self.assertEqual(self.remote_head(), self.base)
+
+    def test_batch_check_cannot_modify_tracked_candidate_files(self):
+        lab_a = self.lab("A", {"note-a.txt": "A\n"})
+        lab_b = self.lab("B", {"note-b.txt": "B\n"})
+        later_marker = self.tmp / "later-check-ran"
+        check_a = ("%s -c \"from pathlib import Path; Path('note-a.txt').write_text('changed')\" && "
+                   "%s -m pytest -q tests/test_herzchen_boundary.py") % (sys.executable, sys.executable)
+        (lab_a / ".brief.md").write_text("**Title:** Do A\nCheck command: `%s`\n" % check_a)
+        self.commit(lab_a, "set candidate mutating check")
+        check_b = ("%s -c \"from pathlib import Path; Path('%s').write_text('ran')\" && "
+                   "%s -m pytest -q tests/test_herzchen_boundary.py") % (sys.executable, later_marker, sys.executable)
+        (lab_b / ".brief.md").write_text("**Title:** Do B\nCheck command: `%s`\n" % check_b)
+        self.commit(lab_b, "set later marker check")
+        r = self.batch("A", "B")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("candidate tracked files changed during check A", r.stdout + r.stderr)
+        self.assertFalse(later_marker.exists(), "later check started after the candidate became dirty")
+        self.assertEqual(self.head(), self.base)
+        self.assertEqual(self.remote_head(), self.base)
+
+    def test_sweep_uses_union_of_each_batch_tasks_own_changed_files(self):
+        lab_a = self.lab("A", {"src/otto/mod.py": "def f():\n    return 2\n"})
+        lab_b = self.lab("B", {"note.txt": "B\n"})
+        sh(["git", "reset", "--hard", "lab/A"], cwd=lab_b, env=self.env)
+        self.write(lab_b, "src/otto/mod.py", "def f():\n    return 1\n")
+        self.commit(lab_b, "B restores the source")
+        r = self.batch("B", "A")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("sweep tests/test_mod.py run 1/2", self.log("B"))
+        self.assertIn("sweep tests/test_mod.py run 2/2", self.log("B"))
+        self.assertEqual(self.landed_tasks(), ["Land B: Do B", "Land A: Do A"])
+
+    def test_push_happens_before_local_canon_moves(self):
+        observed = self.tmp / "canon-during-push"
+        hook = self.remote / "hooks/pre-receive"
+        hook.write_text('#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE\ngit -C "%s" rev-parse canon/main > "%s"\n' % (self.repo, observed))
+        hook.chmod(0o755)
+        self.lab("T39", {"note.txt": "x\n"})
+        r = self.land("T39")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(observed.read_text().strip(), self.base)
+        self.assertEqual(self.head(), self.remote_head())
+
+    def test_unknown_push_outcome_keeps_local_canon_and_next_landing_fetches_first(self):
+        self.lab("T40", {"note.txt": "first\n"})
+        real_git = shutil.which("git")
+        wrapper = self.bin / "git"
+        wrapper.write_text("#!/bin/sh\n"
+                           "case \"$*\" in\n"
+                           "  *push*--quiet*github*)\n"
+                           "    '%s' \"$@\"; exit 1 ;;\n"
+                           "  *ls-remote*github*refs/heads/main*) exit 1 ;;\n"
+                           "esac\nexec '%s' \"$@\"\n" % (real_git, real_git))
+        wrapper.chmod(0o755)
+        env = dict(self.env, PATH=str(self.bin) + os.pathsep + self.env["PATH"])
+        failed = sh(["bash", str(BOOT / "land.sh"), "T40"], env=env, check=False)
+        self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+        self.assertTrue(failed.stdout.strip().splitlines()[-1].startswith(
+            "LAND RESULT: unknown push outcome"), failed.stdout + failed.stderr)
+        self.assertEqual(self.head(), self.base)
+        self.assertNotEqual(self.remote_head(), self.base)
+
+        self.lab("T41", {"note.txt": "second\n"})
+        marker = self.tmp / "second-check-ran"
+        check = "%s -c \"from pathlib import Path; Path('%s').write_text('ran')\" && %s -m pytest -q tests/test_herzchen_boundary.py" % (sys.executable, marker, sys.executable)
+        (self.labs / "T41" / ".brief.md").write_text("**Title:** Do T41\nCheck command: `%s`\n" % check)
+        next_run = sh(["bash", str(BOOT / "land.sh"), "T41"], env=env, check=False)
+        self.assertNotEqual(next_run.returncode, 0, next_run.stdout + next_run.stderr)
+        self.assertIn("github main has commits canon/main lacks", next_run.stdout + next_run.stderr)
+        self.assertFalse(marker.exists(), "gate ran before fetching the remote")
+        self.assertEqual(self.head(), self.base)
 
     def test_added_failing_test_is_owned_by_its_task(self):
         self.lab("A", {"note-a.txt": "A\n"})

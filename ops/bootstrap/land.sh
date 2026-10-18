@@ -6,7 +6,7 @@
 # remove the lab and branch. One landing at a time. Every step is logged to
 # $RUNS_DIR/TASK/land.log. A gate failure before the merge leaves canon/main unchanged.
 #   land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]
-#   land.sh --batch TASK [TASK ...] [--d19 TASK=FILE]   (at most eight tasks)
+#   land.sh --batch TASK [TASK ...] [--d19 TASK=FILE]   (at most forty tasks)
 # The check is the brief's line "Check command: `...`" unless --check is given. The title
 # is the brief's "Title:" line unless --title is given, and falls back to TASK.
 # Exit 4: existing test expectations changed and no --d19 decision was given.
@@ -19,26 +19,33 @@ LOCKED=""
 LANDED=""
 LAND_TMPDIR=""
 LAND_CANDIDATE=""
-LEASE_PARENT_DONE=""
 LEASE_MARKER_DIR=""
 LEASE_PID=""
 die() { REASON="$*"; echo "error: $*" >&2; exit 1; }
 finish() {
   local rc=$?
-  [ -z "$LEASE_MARKER_DIR" ] || rm -rf "$LEASE_MARKER_DIR"
+  local result=""
   [ -z "$LAND_CANDIDATE" ] || git -C "$OTTO_REPO" worktree remove --force "$LAND_CANDIDATE" >/dev/null 2>&1 || true
   [ -z "$LOCKED" ] || rmdir "$OPS_DIR/land.lock" 2>/dev/null || true
   [ -z "$LAND_TMPDIR" ] || rm -rf "$LAND_TMPDIR"
-  # The leased child owns its result once it has started. If acquisition failed before that point,
-  # this parent emits the same final result line as every other refusal.
-  if [ -n "$LEASE_PARENT_DONE" ]; then return "$rc"; fi
-  # "landed" means pushed, whatever the exit status: a run stopped by a signal can end with status 0,
-  # and a cleanup failure after the push doesn't undo the landing.
-  if [ -n "$LANDED" ]; then echo "LAND RESULT: landed $LANDED"; return; fi
-  case "$rc" in
-    4) echo "LAND RESULT: d19" ;;
-    *) echo "LAND RESULT: refused ${REASON:-ended before the merge was pushed (exit $rc)}" ;;
-  esac
+  if [ "${OTTO_LAND_LEASED:-}" = 1 ] && [ -n "${OTTO_LAND_RESULT_FILE:-}" ]; then
+    if [ -n "$LANDED" ]; then result="LAND RESULT: landed $LANDED"
+    elif [ "$rc" = 4 ]; then result="LAND RESULT: d19"
+    elif [[ "$REASON" == unknown\ push\ outcome* ]]; then result="LAND RESULT: $REASON"
+    else result="LAND RESULT: refused ${REASON:-ended before the merge was pushed (exit $rc)}"; fi
+    printf '%s\n' "$result" > "$OTTO_LAND_RESULT_FILE"
+  elif [ -n "$LEASE_MARKER_DIR" ]; then
+    if [ -f "$LEASE_MARKER_DIR/result" ]; then cat "$LEASE_MARKER_DIR/result"
+    elif [ "$rc" = 4 ]; then echo "LAND RESULT: d19"
+    elif [[ "$REASON" == unknown\ push\ outcome* ]]; then echo "LAND RESULT: $REASON"
+    else echo "LAND RESULT: refused ${REASON:-heavy lease failed before the gate produced a result (exit $rc)}"; fi
+    rm -rf "$LEASE_MARKER_DIR"
+  else
+    if [ -n "$LANDED" ]; then echo "LAND RESULT: landed $LANDED"
+    elif [ "$rc" = 4 ]; then echo "LAND RESULT: d19"
+    elif [[ "$REASON" == unknown\ push\ outcome* ]]; then echo "LAND RESULT: $REASON"
+    else echo "LAND RESULT: refused ${REASON:-ended before the merge was pushed (exit $rc)}"; fi
+  fi
   return "$rc"
 }
 trap finish EXIT
@@ -50,7 +57,6 @@ lease_signal() {
   if [ -n "$LEASE_PID" ]; then
     kill -"$forward_sig" "$LEASE_PID" 2>/dev/null || true
     wait "$LEASE_PID" 2>/dev/null || true
-    [ -f "$LEASE_MARKER_DIR/started" ] && LEASE_PARENT_DONE=1
   fi
   exit 143
 }
@@ -71,7 +77,7 @@ if [ "${1:-}" = --batch ]; then
       *) valid_task "$1" || die "invalid batch task: $1"; TASKS+=("$1"); shift ;;
     esac
   done
-  [ "${#TASKS[@]}" -ge 1 ] && [ "${#TASKS[@]}" -le 8 ] || die "--batch needs one to eight tasks"
+  [ "${#TASKS[@]}" -ge 1 ] && [ "${#TASKS[@]}" -le 40 ] || die "--batch needs one to forty tasks"
   [ "$(printf '%s\n' "${TASKS[@]}" | sort -u | wc -l | tr -d ' ')" -eq "${#TASKS[@]}" ] || die "batch tasks must be distinct"
 else
   valid_task "${1:-}" || die "usage: land.sh TASK [--title TEXT] [--check CMD] [--d19 FILE]"
@@ -94,8 +100,9 @@ if [ "${OTTO_LAND_LEASED:-}" != 1 ]; then
   trap 'lease_signal TERM' TERM
   trap 'lease_signal INT' INT
   trap 'lease_signal HUP' HUP
-  "$HEAVY" --weight "$GATE_WEIGHT" --purpose "$TASK land gate" -- \
+  "$HEAVY" --weight "$GATE_WEIGHT" --purpose "$TASK land gate" --no-deadline -- \
       env OTTO_LAND_LEASED=1 OTTO_LAND_CHILD_MARKER="$LEASE_MARKER_DIR/started" \
+      OTTO_LAND_RESULT_FILE="$LEASE_MARKER_DIR/result" \
       bash "$0" "${SCRIPT_ARGS[@]}" &
   LEASE_PID=$!
   if wait "$LEASE_PID"; then
@@ -104,9 +111,7 @@ if [ "${OTTO_LAND_LEASED:-}" != 1 ]; then
     lease_rc=$?
   fi
   LEASE_PID=""
-  if [ -f "$LEASE_MARKER_DIR/started" ]; then
-    LEASE_PARENT_DONE=1
-  else
+  if [ ! -f "$LEASE_MARKER_DIR/started" ]; then
     REASON="heavy lease failed before the gate started (exit $lease_rc)"
     [ "$lease_rc" -ne 0 ] || lease_rc=1
   fi
@@ -195,14 +200,19 @@ fail() { REASON="$*"; log "FAIL: $*"; echo "gate failed: $* (log: $LOG)" >&2; ex
 
 BASE="$(git -C "$OTTO_REPO" rev-parse canon/main)"
 gitl() { git -C "$OTTO_REPO" "$@"; }
+if [ -n "$BATCH" ]; then log "land batch ${TASKS[*]}: BASE $BASE"
+else log "land $TASK: BASE $BASE"; fi
+gitl fetch --quiet "$GIT_REMOTE" || fail "cannot fetch $GIT_REMOTE"
+gitl merge-base --is-ancestor "$GIT_REMOTE/main" canon/main \
+  || fail "$GIT_REMOTE main has commits canon/main lacks; reconcile first"
 if [ -n "$BATCH" ]; then
-  log "land batch ${TASKS[*]}: BASE $BASE"
   # Pytest walks parent directories while choosing its root; a checkout under /tmp would cross
   # unrelated private entries there. Keep the candidate beside the labs and clean it in finish.
   LAND_CANDIDATE="$LABS_DIR/_batch-$$"
   gitl worktree add --detach --quiet "$LAND_CANDIDATE" "$BASE" || fail "cannot create batch candidate"
 else
-  log "land $TASK: BASE $BASE"
+  LAND_CANDIDATE="$LABS_DIR/_land-$$"
+  gitl worktree add --detach --quiet "$LAND_CANDIDATE" "$BASE" || fail "cannot create landing candidate"
 fi
 
 ACCEPTED=(); ACCEPTED_INDEX=()
@@ -227,7 +237,7 @@ for i in "${!TASKS[@]}"; do
     fi
     die "rebase onto canon/main conflicts; resume the worker's session with the conflict"
   fi
-  log "tested commit $(git -C "$LAB" rev-parse HEAD) (the lab tip after the rebase; the merge's tree)"
+  log "rebased task tip $(git -C "$LAB" rev-parse HEAD) (lab tip after rebasing onto canon/main)"
 
 # Cheap checks first, so an exit 4 or a D14 refusal costs seconds, not a sweep.
 # placement (D14)
@@ -328,9 +338,15 @@ fi
       fail "cannot merge $TASK into candidate (output: $RUN/merge-$TASK.log)"
     fi
     if [ "$(git -C "$LAND_CANDIDATE" rev-parse HEAD)" = "$before_merge" ]; then
-      log "DROP $TASK: its commit is already included in the batch candidate; task stays in its lab"
-      continue
+      task_tip="$(git -C "$LAB" rev-parse HEAD)"
+      tree="$(git -C "$LAND_CANDIDATE" rev-parse 'HEAD^{tree}')"
+      contained_commit="$(git -C "$LAND_CANDIDATE" commit-tree "$tree" -p "$before_merge" -p "$task_tip" -m "Land $TASK: $TITLE")"
+      git -C "$LAND_CANDIDATE" reset --hard "$contained_commit" >/dev/null
+      log "task $TASK is contained in the candidate tree; recorded its Land commit"
     fi
+  else
+    git -C "$LAND_CANDIDATE" merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge-$TASK.log" 2>&1 \
+      || fail "cannot merge $TASK into landing candidate (output: $RUN/merge-$TASK.log)"
   fi
   ACCEPTED+=("$TASK"); ACCEPTED_INDEX+=("$i")
 done
@@ -342,8 +358,9 @@ if [ -n "$BATCH" ]; then
   CHECK=""  # each check runs separately; the union sweep must run every selected file twice
   log "tested commit $DIFF_REF (ordered batch candidate: ${ACCEPTED[*]})"
 else
-  TASK="${TASKS[0]}"; LAB="$LABS_DIR/$TASK"; BRANCH="lab/$TASK"
-  CHECK="${CHECKS[0]}"; RUN="$RUNS_DIR/$TASK"; DIFF_REF="$BRANCH"
+  TASK="${TASKS[0]}"; LAB="$LAND_CANDIDATE"; BRANCH="lab/$TASK"
+  CHECK="${CHECKS[0]}"; RUN="$RUNS_DIR/$TASK"; DIFF_REF="$(git -C "$LAB" rev-parse HEAD)"
+  log "tested commit $DIFF_REF (single-task candidate: $TASK)"
 fi
 
 # ---- gate ----
@@ -449,6 +466,9 @@ for i in "${ACCEPTED_INDEX[@]}"; do
   check_failed=""
   ( cd "$LAB" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="src:tests:$HERE" PYTEST_ADDOPTS="-p otto_gate_exit --continue-on-collection-errors" \
       bash -c "$CHECK_RUN" ) > "$check_out" 2>&1 || check_failed=1
+  [ "$(git -C "$LAB" rev-parse HEAD)" = "$DIFF_REF" ] || fail "candidate HEAD changed during check $check_task"
+  [ -z "$(git -C "$LAB" status --porcelain --untracked-files=no)" ] \
+    || fail "candidate tracked files changed during check $check_task"
   CHECK_SKIPPED="$(grep -m1 '^otto-gate: all skipped in ' "$check_out" || true)"
   [ -z "$CHECK_SKIPPED" ] || fail "the task's check has no executed tests: $CHECK_SKIPPED (output: $check_out)"
   if grep -q -E 'no tests ran|Interrupted:' "$check_out" \
@@ -466,11 +486,12 @@ for i in "${ACCEPTED_INDEX[@]}"; do
 done
 
 # a. Sweep
-CHANGED_CODE="$(gitl diff --name-only "$BASE...$DIFF_REF" -- src ops)"
-TESTS_TOUCHED="$(gitl diff --name-only --diff-filter=ACMR "$BASE...$DIFF_REF" -- 'tests/test_*.py' || true)"
-TESTS_ADDED="$(gitl diff --name-only --diff-filter=A "$BASE...$DIFF_REF" -- 'tests/test_*.py' || true)"
+TASK_DIFFS="$(for i in "${ACCEPTED_INDEX[@]}"; do gitl diff --name-only "$BASE...lab/${TASKS[$i]}" -- src ops tests; done | sort -u)"
+CHANGED_CODE="$(printf '%s\n' "$TASK_DIFFS" | grep -E '^(src|ops)/' || true)"
+TESTS_TOUCHED="$(for i in "${ACCEPTED_INDEX[@]}"; do gitl diff --name-only --diff-filter=ACMR "$BASE...lab/${TASKS[$i]}" -- 'tests/test_*.py'; done | sort -u)"
+TESTS_ADDED="$(for i in "${ACCEPTED_INDEX[@]}"; do gitl diff --name-only --diff-filter=A "$BASE...lab/${TASKS[$i]}" -- 'tests/test_*.py'; done | sort -u)"
 SWEEP="$( { printf '%s\n' "$CHANGED_CODE" | "$PY" -I -c '
-import os, re, sys
+import ast, os, re, sys
 lab = sys.argv[1]
 src_mods = []
 ops_names = []
@@ -483,20 +504,25 @@ for line in sys.stdin.read().split():
         ops_names.append(leaf)
         if leaf.endswith(".py"):
             ops_names.append(leaf[:-3])
-pats = []
-for m in src_mods:
-    parent, _, leaf = m.rpartition(".")
-    pats.append(re.compile(r"^\s*(import\s+%s\b|from\s+%s\s+import\b)" % ((re.escape(m),) * 2), re.M))
-    if parent:
-        pats.append(re.compile(r"^\s*from\s+%s\s+import\b[^\n]*\b%s\b" % (re.escape(parent), re.escape(leaf)), re.M))
-for name in ops_names:
-    # Bootstrap tests often load scripts by filename or importlib module name rather than import.
-    pats.append(re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name)))
+pats = [re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name)) for name in ops_names]
 td = os.path.join(lab, "tests")
 for f in sorted(os.listdir(td)):
     if f.startswith("test_") and f.endswith(".py"):
         text = open(os.path.join(td, f), encoding="utf-8", errors="replace").read()
-        if any(p.search(text) for p in pats):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            tree = ast.Module(body=[], type_ignores=[])
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if base:
+                    imports.add(base)
+                    imports.update(base + "." + alias.name for alias in node.names if alias.name != "*")
+        if any(m in imports for m in src_mods) or any(p.search(text) for p in pats):
             print("tests/" + f)
 ' "$LAB"; printf '%s\n' "$TESTS_TOUCHED" tests/test_herzchen_boundary.py; } | grep . | sort -u)"
 log "sweep: $(echo "$SWEEP" | wc -l | tr -d ' ') test files from $(printf '%s\n' "$CHANGED_CODE" | grep -c . || true) changed files"
@@ -549,6 +575,7 @@ reproduces() {  # FILE ID
 # name every contributor; an unowned failure stays unattributed so the manager can split the batch.
 owners_of() {  # TEST FILE
   "$PY" - "$LAB/$1" "$1" "$G/task-files.tsv" <<'PY'
+import ast
 from pathlib import Path
 import re
 import sys
@@ -556,6 +583,19 @@ import sys
 test_path, relative, manifest = sys.argv[1:]
 source = Path(test_path).read_text(encoding="utf-8", errors="replace") if Path(test_path).is_file() else ""
 owners = []
+try:
+    tree = ast.parse(source)
+except SyntaxError:
+    tree = ast.Module(body=[], type_ignores=[])
+imports = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        imports.update(alias.name for alias in node.names)
+    elif isinstance(node, ast.ImportFrom):
+        base = node.module or ""
+        if base:
+            imports.add(base)
+            imports.update(base + "." + alias.name for alias in node.names if alias.name != "*")
 for row in Path(manifest).read_text().splitlines():
     task, path = row.split("\t", 1)
     match = path == relative
@@ -563,12 +603,7 @@ for row in Path(manifest).read_text().splitlines():
         module = path[4:-3].replace("/", ".")
         if module.endswith(".__init__"):
             module = module[:-9]
-        parent, _, leaf = module.rpartition(".")
-        patterns = [r"^\s*import\s+%s\b" % re.escape(module),
-                    r"^\s*from\s+%s\s+import\b" % re.escape(module)]
-        if parent:
-            patterns.append(r"^\s*from\s+%s\s+import\b[^\n]*\b%s\b" % (re.escape(parent), re.escape(leaf)))
-        match |= any(re.search(pattern, source, re.M) for pattern in patterns)
+        match |= module in imports
     elif path.startswith("ops/"):
         leaf = Path(path).name
         names = [leaf, leaf[:-3]] if leaf.endswith(".py") else [leaf]
@@ -742,47 +777,35 @@ if [ -f "$ST/staging.sh" ] && [ -f "$ST/perch.sh" ]; then
 else
   log "staging: skipped (STAGE/PERCH not landed)"
 fi
-if [ -n "$BATCH" ] && [ -n "$(git -C "$LAB" status --porcelain --untracked-files=no)" ]; then
-  fail "batch candidate changed during checks or staging; tested commit no longer matches its tree"
+if [ -n "$(git -C "$LAB" status --porcelain --untracked-files=no)" ]; then
+  fail "candidate changed during checks or staging; tested commit no longer matches its tree"
 fi
 
-# e. remote
-git -C "$OTTO_REPO" fetch --quiet "$GIT_REMOTE" || fail "cannot fetch $GIT_REMOTE"
-gitl merge-base --is-ancestor "$GIT_REMOTE/main" canon/main \
-  || fail "$GIT_REMOTE main has commits canon/main lacks; reconcile first"
-
-# f. merge and push
+# e. Publish the tested candidate before advancing local canon/main.
 [ "$(gitl rev-parse canon/main)" = "$BASE" ] \
   || fail "canon/main moved during the gate; run land.sh $TASK again"
-if [ -n "$BATCH" ]; then
-  gitl merge --ff-only "$DIFF_REF" > "$RUN/merge.log" 2>&1 \
-    || fail "candidate fast-forward failed; canon/main unchanged (see $RUN/merge.log)"
+CANDIDATE_SHA="$(git -C "$LAB" rev-parse HEAD)"
+if gitl push --quiet --force-with-lease="refs/heads/main:$BASE" "$GIT_REMOTE" \
+    "$CANDIDATE_SHA:refs/heads/main" >> "$RUN/merge.log" 2>&1; then
+  PUSH_CONFIRMED=1
 else
-  if ! gitl merge --no-ff -m "Land $TASK: $TITLE" "$BRANCH" > "$RUN/merge.log" 2>&1; then
-    gitl merge --abort 2>/dev/null || true
-    fail "merge failed; canon/main unchanged (see $RUN/merge.log)"
-  fi
-fi
-log "merged $(gitl rev-parse --short HEAD)"
-if ! gitl push --quiet "$GIT_REMOTE" canon/main:main >> "$RUN/merge.log" 2>&1; then
-  if [ -n "$BATCH" ]; then
-    # One ref push contains the entire accepted history. A failed push must not leave a local
-    # partial landing that a later command might accidentally publish.
-    if [ "$(gitl ls-remote "$GIT_REMOTE" refs/heads/main 2>/dev/null | awk '{print $1}')" = "$(gitl rev-parse HEAD)" ]; then
-      log "push response failed, but $GIT_REMOTE/main has the complete batch tip"
+  LS_REMOTE_OUT="$G/ls-remote.txt"
+  if gitl ls-remote "$GIT_REMOTE" refs/heads/main > "$LS_REMOTE_OUT" 2>>"$RUN/merge.log"; then
+    REMOTE_SHA="$(awk 'NR == 1 {print $1}' "$LS_REMOTE_OUT")"
+    if [ "$REMOTE_SHA" = "$CANDIDATE_SHA" ]; then
+      PUSH_CONFIRMED=1
+      log "push response failed, but $GIT_REMOTE/main has the complete candidate tip"
     else
-      gitl reset --hard "$BASE" >> "$RUN/merge.log" 2>&1 || true
-      fail "push to $GIT_REMOTE failed; batch canon/main restored to $BASE (see $RUN/merge.log)"
+      fail "push rejected for $GIT_REMOTE/main; local canon/main remains at $BASE (see $RUN/merge.log)"
     fi
   else
-  REASON="push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD)"
-  log "FAIL: push to $GIT_REMOTE failed; the local merge stays on canon/main (see $RUN/merge.log)"
-  echo "push to $GIT_REMOTE failed; local merge kept at $(gitl rev-parse --short HEAD) (log: $LOG)" >&2
-  exit 1
+    fail "unknown push outcome for $GIT_REMOTE/main; local canon/main remains at $BASE; fetch before retrying"
   fi
 fi
-log "pushed canon/main to $GIT_REMOTE/main"
-LANDED="$(gitl rev-parse --short HEAD)"
+log "pushed tested candidate $CANDIDATE_SHA to $GIT_REMOTE/main"
+gitl merge --ff-only "$CANDIDATE_SHA" > "$RUN/merge.log" 2>&1 \
+  || fail "remote accepted candidate but local canon/main could not fast-forward; reconcile before landing again"
+LANDED="$(gitl rev-parse canon/main)"
 
 # g. clean up and record
 if [ -n "$BATCH" ]; then

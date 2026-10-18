@@ -106,6 +106,20 @@ def test_runs_the_command_returns_its_exit_code_and_logs_machine_state(tmp_path)
     assert {"load_1m", "free_disk_gb"} <= set(record["machine_before"]) and "machine_after" in record
 
 
+def test_no_deadline_flag_runs_until_event_then_stops_on_signal(tmp_path):
+    marker = tmp_path / "started"
+    code = f"import pathlib, signal; pathlib.Path({str(marker)!r}).write_text('ready'); signal.pause()"
+    proc = heavy(tmp_path, "--no-deadline", "--purpose", "unbounded gate", "--", *py(code))
+    while not marker.exists() and proc.poll() is None:
+        time.sleep(0.05)
+    assert marker.exists(), proc.communicate()[1]
+    proc.send_signal(signal.SIGTERM)
+    _, err = proc.communicate()
+    assert proc.returncode == 143, err
+    record = json.loads((tmp_path / "state" / "heavy.log").read_text().splitlines()[-1])
+    assert record["purpose"] == "unbounded gate" and record["outcome"] == "interrupted"
+
+
 def test_when_capacity_is_full_the_next_job_waits_and_says_who_holds_it(tmp_path):
     marks, go = tmp_path / "marks", tmp_path / "go"
     first = heavy(tmp_path, "--purpose", "render A", "--", *_mark_then_wait(marks, "A", go))
