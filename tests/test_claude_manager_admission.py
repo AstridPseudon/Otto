@@ -346,8 +346,13 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
 
         prepared = self.app.prepare_role(**self.role(fresh_manager=True))
         schedule = prepared['schedule_id']
+        # Exercise the missing-owner registration failure without the direct
+        # launch host, leaving its exact Due for restore to settle.
+        self.app._direct_host_directory = None
         result = self.app.start(schedule_id=schedule, settle=False)
         self.assertEqual(result['outcome'], 'failed')
+        self.assertEqual(result['error']['code'],
+                         'claude_process_registration_failed_before_input')
         self.assertEqual(self.f.port.read_due(schedule)['stop_state'], 'active')
         host = ExecutionHost(directory=Path(self.root) / 'registration-restart-ipc',
             handler=lambda _request: None, bounded_transports=True,
@@ -363,7 +368,10 @@ class ClaudeManagerAdmissionTests(unittest.TestCase):
 
         prepared = self.app.prepare_role(**self.role(fresh_manager=True))
         schedule = prepared['schedule_id']
-        self.app.start(schedule_id=schedule, settle=False)
+        self.app._direct_host_directory = None
+        result = self.app.start(schedule_id=schedule, settle=False)
+        self.assertEqual(result['error']['code'],
+                         'claude_process_registration_failed_before_input')
         due = self.app._read(schedule)
         host = ExecutionHost(directory=Path(self.root) / 'live-init-ipc',
             handler=lambda _request: None, bounded_transports=True,

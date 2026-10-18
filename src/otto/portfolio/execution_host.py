@@ -297,6 +297,16 @@ class ExecutionHost:
             return context[0]
         return None
 
+    @staticmethod
+    def current_registration_host() -> Any:
+        """The serialized owner that can durably pin this native launch."""
+        context = getattr(_DISPATCH_CONTEXT, "value", None)
+        if context is None:
+            return None
+        if context[1] != threading.get_ident():
+            raise RuntimeError("process registration must run on its owner")
+        return context[0]
+
     def _owned(self, operation: Callable[[], Any]) -> Any:
         previous = getattr(_DISPATCH_CONTEXT, "value", None)
         _DISPATCH_CONTEXT.value = (self, threading.get_ident(), True)
@@ -304,6 +314,36 @@ class ExecutionHost:
             return operation()
         finally:
             _DISPATCH_CONTEXT.value = previous
+
+    def inline_execution(self, app: Any, due: Any, operation: Callable[[], Any]) -> Any:
+        """Pin direct owner turns through this host's existing group ledger."""
+        if self.current_registration_host() is not self:
+            raise RuntimeError("inline execution requires its serialized owner")
+        schedule = due.schedule_id
+        new_hold = (due.stop_state == "active"
+                    and not (due.host_evidence or {}).get("gateway_attempt")
+                    and schedule not in self._capacity_holds)
+        if new_hold:
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.capacity.ensure_turn(schedule)
+            self._capacity_holds[schedule] = self._execution_scope(app, due)
+
+        def finish(value: Any = None, error: BaseException | None = None) -> Any:
+            current = app._read(schedule)
+            if (current.host_evidence or {}).get("gateway_attempt"):
+                self.restore_execution(app, current)
+            elif new_hold:
+                self._capacity_holds.pop(schedule, None)
+                self.capacity.release_turn(schedule)
+            if error is not None:
+                raise error
+            return value
+
+        try:
+            value = operation()
+        except BaseException as error:
+            return finish(error=error)
+        return after_owner(value, finish, lambda error: finish(error=error))
 
     @staticmethod
     def worker_facade_for_occurrence(

@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import threading
 from typing import Any, Callable, Mapping, Sequence
 
 from herzchen.contracts import ResourceRef
@@ -25,7 +26,7 @@ from .manager_guide import resolve_required_instruction_adoption
 from .operating_brief import OperatingBrief
 from .resource_sync import normalize_instruction_contract
 from herzchen.adapters.recovery_timing import stable_correlation_id, timing_from_receipt
-from .owner_completion import after_owner, collect_owner
+from .owner_completion import OwnerCompletion, after_owner, collect_owner
 
 _UNSPECIFIED_SESSION = object()
 
@@ -57,11 +58,13 @@ class ExecutionApplication:
                  binding: Any, actor: str, runtime: Any,
                  manager_actor: str | None = None,
                  reviewed_activation: Any = None,
+                 direct_host_directory: str | None = None,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.portfolio, self.assignments, self.due_port = portfolio, assignments, due_port
         self.binding, self.actor, self.runtime, self.clock = binding, actor, runtime, clock
         self.manager_actor = actor if manager_actor is None else _text(manager_actor, "manager_actor")
         self.reviewed_activation = reviewed_activation
+        self._direct_host_directory = direct_host_directory
         self.binding.authenticated_actor(self.manager_actor)
 
     def _now(self) -> str:
@@ -1298,6 +1301,32 @@ class ExecutionApplication:
                 return self._start_preparation_failure(due, exc)
             return host.admit_execution(self, due,
                 lambda: self._gated_start(schedule_id=schedule_id, settle=settle))
+        owner = ExecutionHost.current_registration_host()
+        if owner is not None:
+            due = self._read(schedule_id)
+            return owner.inline_execution(self, due,
+                lambda: self._gated_start(schedule_id=schedule_id, settle=settle))
+        if self._direct_host_directory is not None:
+            direct = ExecutionHost(directory=self._direct_host_directory,
+                handler=lambda _request: None, bounded_transports=True)
+            direct.start()
+            try:
+                value = direct._owner_request(lambda: self.start(
+                    schedule_id=schedule_id, settle=settle))
+                if isinstance(value, OwnerCompletion):
+                    completed = threading.Event()
+                    result: dict[str, Any] = {}
+                    def capture(resolved: Any = None, error: BaseException | None = None) -> None:
+                        result["value"], result["error"] = resolved, error
+                        completed.set()
+                    value.then(capture, lambda error: capture(error=error))
+                    completed.wait()
+                    if result["error"] is not None:
+                        raise result["error"]
+                    return result["value"]
+                return value
+            finally:
+                direct.close()
         return self._gated_start(schedule_id=schedule_id, settle=settle)
 
     @staticmethod

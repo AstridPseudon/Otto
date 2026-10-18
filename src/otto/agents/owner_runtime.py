@@ -48,15 +48,15 @@ def _pin_process_group(adapter, schedule_id):
     from otto.portfolio.execution_host import ExecutionHost
 
     def pin(process):
-        host = ExecutionHost.current_bounded()
+        host = ExecutionHost.current_registration_host()
         if host is None:
-            raise RuntimeError("bounded owner context is required for process registration")
+            raise RuntimeError("serialized owner context is required for process registration")
         host.record_process_group(schedule_id, process.pid)
     owned = ExecutionHost.owner_callback(pin)
     def previous_group_gone():
-        host = ExecutionHost.current_bounded()
+        host = ExecutionHost.current_registration_host()
         if host is None:
-            raise RuntimeError("bounded owner context is required for process registration")
+            raise RuntimeError("serialized owner context is required for process registration")
         record = host._process_groups.get(schedule_id)
         return record is not None and host._group_state(record) == "gone"
     owned.previous_group_gone = ExecutionHost.owner_callback(previous_group_gone)
