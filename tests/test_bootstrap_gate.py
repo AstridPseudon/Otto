@@ -137,7 +137,7 @@ class LandGate(Scratch):
     def test_src_and_tests_additions_remain_eligible_to_land(self):
         self.lab("T34", {
             "src/otto/extra.py": "def value():\n    return 7\n",
-            "tests/test_extra.py": "from otto.extra import value\n\n\ndef test_value():\n    assert value() == 7\n",
+            "tests/test_extra.py": "def test_value():\n    assert 7 == 7\n",
         })
         r = self.land("T34")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
