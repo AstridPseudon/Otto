@@ -1538,6 +1538,11 @@ def _run_product_service_locked(config: Mapping[str, Any], *, emit: Callable[[Ma
     home = Path(config['home'])
     trace: dict[str, Any] = {'phases': [], 'store': {}}
     try:
+        from otto.agents.codex_host_reader import recover_app_server_custody
+        reader_custody = home / 'state' / 'codex-native' / 'reader-custody'
+        dispositions = recover_app_server_custody(str(reader_custody))
+        if any(not disposition.gone for disposition in dispositions.values()):
+            raise RuntimeError('Codex app-server cleanup remains uncertain')
         if requested_manager_limit is not None and not (
                 type(requested_manager_limit) is int and 1 <= requested_manager_limit <= capacity_policy(config).manager_units):
             # The pool sets the per-role limits; a flag may only ask for fewer.

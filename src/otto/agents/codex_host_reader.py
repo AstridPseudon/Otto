@@ -16,9 +16,10 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 
-from herzchen.fleet.custody import Custody
+from herzchen.fleet.custody import Custody, Disposition, resume_cleanup
 
 # Independently qualified initialize/thread-read stdio implementations. A new
 # version/path alone does not admit a binary; its exact digest must be qualified.
@@ -34,6 +35,27 @@ MAX_MESSAGES = 64
 
 class HostThreadReadError(ValueError):
     """A sanitized fail-closed metadata lookup failure; never includes a trace path."""
+
+
+def _custody_root() -> Path:
+    """Stable host state location shared by successive owner processes."""
+    configured = os.environ.get("XDG_STATE_HOME")
+    base = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / ".local" / "state"
+    return base / "otto" / "codex-host-reader-custody"
+
+
+def recover_app_server_custody(directory: str | None = None) -> dict[str, Disposition]:
+    """Resume cleanup of metadata readers left by a crashed owner.
+
+    The directory must be scoped to the owner whose exclusive lease has already
+    been acquired. Uncertain latches are retained by ``resume_cleanup`` for a
+    later retry. Call this at owner startup before admitting new work.
+    """
+    root = Path(directory) if directory is not None else _custody_root()
+    if not root.is_dir():
+        return {}
+    return {str(path): resume_cleanup(str(path))
+            for path in sorted(root.glob("app-server-*.latch")) if path.is_file()}
 
 
 def _fail(code: str) -> None:
@@ -175,7 +197,7 @@ class CodexAppServerThreadReader:
     trusted composition settings, never parameters from a task request.
     """
     def __init__(self, *, launcher: str, sessions_root: str | None = None,
-                 timeout_seconds: float = 15.0) -> None:
+                 timeout_seconds: float = 15.0, custody_directory: str | None = None) -> None:
         if not isinstance(launcher, str) or not Path(launcher).is_absolute():
             _fail("launcher_must_be_absolute")
         root = Path(sessions_root) if sessions_root is not None else Path.home() / ".codex" / "sessions"
@@ -183,7 +205,11 @@ class CodexAppServerThreadReader:
             _fail("sessions_root_must_be_absolute")
         if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (float, int)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30:
             _fail("invalid_finite_timeout")
+        custody_root = Path(custody_directory) if custody_directory is not None else _custody_root()
+        if not custody_root.is_absolute() or ".." in custody_root.parts:
+            _fail("custody_directory_must_be_absolute")
         self.launcher, self.sessions_root, self.timeout_seconds = launcher, root, timeout_seconds
+        self.custody_directory = custody_root
 
     def read_with_deadline(self, issued_session: str, deadline: float) -> dict[str, Any]:
         if isinstance(deadline, bool) or not isinstance(deadline, (float, int)) or not math.isfinite(deadline) or deadline <= time.monotonic():
@@ -213,10 +239,31 @@ class CodexAppServerThreadReader:
                     _fail("launcher_size_limit")
             if digest.hexdigest() not in SUPPORTED_CLI_SHA256:
                 _fail("unsupported_cli_identity")
+            self.custody_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            latch_path = self.custody_directory / ("app-server-%s.latch" % uuid.uuid4().hex)
             custody = Custody.launch([self.launcher, "app-server", "--listen", "stdio://"],
+                latch_path=str(latch_path),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd="/private/tmp", close_fds=True, bufsize=0)
             process = custody.process
+            # Do not send protocol input until the process identity and cleanup
+            # latch are durable. If persistence failed, retain fail-closed behavior.
+            try:
+                with latch_path.open(encoding="utf-8") as handle:
+                    record = json.load(handle)
+                leader_birth = custody.leader_birth
+                members = record.get("members", {})
+                durable_identity = (isinstance(leader_birth, str) and bool(leader_birth)
+                                    and record.get("leader_birth") == leader_birth
+                                    and members.get(str(process.pid)) == leader_birth)
+                durable = (record.get("identity_format") == "kernel-start-v1"
+                           and record.get("pgid") == process.pid
+                           and isinstance(members, dict)
+                           and durable_identity)
+            except (OSError, ValueError, TypeError, AttributeError):
+                durable = False
+            if not durable:
+                _fail("app_server_custody_not_durable")
             rpc = _StdioRPC(process, deadline)
             rpc.send({"id": 1, "method": "initialize", "params": {
                 "clientInfo": {"name": "otto-exact-session-reader", "version": "0.1"},
@@ -251,10 +298,17 @@ class CodexAppServerThreadReader:
                         raise HostThreadReadError("app_server_cleanup_failed") from None
                 finally:
                     if custody is not None:
-                        # Sweep leftovers after the reap; the disposition never changes the propagating error.
+                        # Sweep leftovers after the reap. An uncertain disposition
+                        # keeps its latch so the next owner can resume cleanup.
                         try:
-                            custody.release()
+                            disposition = custody.release()
+                            if not disposition.gone and not lookup_failed:
+                                raise HostThreadReadError("app_server_cleanup_failed") from None
+                        except HostThreadReadError:
+                            if not lookup_failed:
+                                raise
                         except Exception:
-                            pass
+                            if not lookup_failed:
+                                raise HostThreadReadError("app_server_cleanup_failed") from None
                     process.stdin.close()
                     process.stdout.close()

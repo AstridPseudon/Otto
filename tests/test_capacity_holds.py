@@ -184,6 +184,33 @@ class CapacityHoldTests(unittest.TestCase):
         self.assertEqual(host.reconcile_dead_holds(), [])
         self.assertEqual(len(host.capacity_holds()), 1)
 
+    def test_replacement_leader_with_stale_birth_stays_held_after_restart(self):
+        host = self.host()
+        self.hold(host)
+        process = subprocess.Popen(["sh", "-c", "sleep 60 & echo $! ; wait"],
+                                   start_new_session=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(self.reap, process)
+        self.addCleanup(process.stdout.close)
+        replacement_pid = int(process.stdout.readline())
+        self.assertGreater(replacement_pid, 0, "replacement member starts in the recorded group")
+        host.record_process_group(self.schedule, process.pid)
+
+        # The recorded leader is gone and its PID identity is stale, while the
+        # replacement process still occupies the recorded process group.
+        record = host._process_groups[self.schedule]
+        record["birth"] = [value + 1 for value in record["birth"]]
+        stale_birth = list(record["birth"])
+        host._save_process_groups(host._process_groups)
+        os.kill(process.pid, signal.SIGKILL)
+        process.wait()
+
+        restarted = self.host()
+        self.hold(restarted)
+        self.assertEqual(restarted._process_groups[self.schedule]["birth"], stale_birth)
+        self.assertEqual(restarted.reconcile_dead_holds(), [])
+        self.assertEqual(len(restarted.capacity_holds()), 1)
+
     def test_empty_recorded_group_frees_slot_even_if_pid_is_live(self):
         host = self.host()
         self.hold(host)

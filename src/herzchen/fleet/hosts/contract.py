@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 import os
 import re
 import subprocess
+import uuid
 from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
 from ..custody import Custody
@@ -199,6 +200,7 @@ class TurnResult:
     exit_status: Optional[int] = None
     error: Optional[str] = None
     plan: Optional["LaunchPlan"] = None
+    custody_latch: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.outcome not in OUTCOMES:
@@ -332,8 +334,53 @@ class HostKind(abc.ABC):
         return LaunchPlan(argv, self.build_stdin(spec), env, spec.workspace, fence, spec.session, spec.initializer)
 
 
+def host_custody_latch_dir(workspace: str) -> str:
+    """Stable workspace-local directory containing recoverable host-turn latches."""
+    _text(workspace, "workspace")
+    return os.path.join(os.path.realpath(workspace), ".otto-custody")
+
+
+def discover_host_custody_latches(workspace: str) -> tuple:
+    """List pending latches in a workspace. Resolve each with ``Custody.resume_cleanup(path)``."""
+    directory = host_custody_latch_dir(workspace)
+    try:
+        return tuple(os.path.join(directory, name) for name in sorted(os.listdir(directory))
+                     if name.endswith(".json") and os.path.isfile(os.path.join(directory, name)))
+    except FileNotFoundError:
+        return ()
+
+
+def _bounded_drain(process: Any, timeout: float = 1.0) -> bool:
+    """Reap a terminated leader without waiting indefinitely on descendants holding its pipes."""
+    try:
+        process.communicate(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.communicate(timeout=timeout)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for stream in (getattr(process, "stdin", None), getattr(process, "stdout", None),
+                   getattr(process, "stderr", None)):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    return False
+
+
 def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = None,
-             process_factory: Any = subprocess.Popen, timeout: float = 120.0) -> TurnResult:
+             process_factory: Any = subprocess.Popen, timeout: float = 120.0,
+             latch_path: Optional[str] = None, custody_dir: Optional[str] = None) -> TurnResult:
     """The whole loop for any harness: launch, feed the stream to the parser, finish.
 
     A parser error or a timeout never reads as success: the outcome is ``unknown`` and the turn is
@@ -342,34 +389,92 @@ def run_turn(host: HostKind, spec: TurnSpec, *, fence: Optional[WriteFence] = No
     plan = host.launch(spec, fence)
     parser = host.make_parser(spec)
     events: list = []
-    custody = Custody.launch(list(plan.command()), popen=process_factory, cwd=plan.cwd,
-                             env={**os.environ, **plan.env},
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if latch_path is None:
+        directory = custody_dir or host_custody_latch_dir(spec.workspace)
+        if not os.path.isabs(directory):
+            raise HostContractError("custody directory must be absolute")
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        latch_path = os.path.join(directory, "%s-%s.json" % (os.getpid(), uuid.uuid4().hex))
+    elif not isinstance(latch_path, str) or not os.path.isabs(latch_path):
+        raise HostContractError("custody latch path must be absolute")
+    try:
+        fd = os.open(latch_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except FileExistsError as exc:
+        raise HostContractError("custody latch path is already occupied") from exc
+    try:
+        custody = Custody.launch(list(plan.command()), latch_path=latch_path, popen=process_factory, cwd=plan.cwd,
+                                 env={**os.environ, **plan.env},
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except BaseException:
+        try:
+            os.unlink(latch_path)
+        except FileNotFoundError:
+            pass
+        raise
     process = custody.process
+    # Custody deliberately records write failures as doubt instead of raising. Do not send
+    # owner input until another owner can reconstruct the exact leader identity from disk.
+    registered = Custody.from_latch(latch_path)
+    if (custody.doubt is not None or not os.path.isfile(latch_path)
+            or registered.pgid != custody.pgid or not registered.leader_birth
+            or registered.known.get(custody.pgid) != custody.leader_birth):
+        disposition = custody.terminate_before_input()
+        drained = _bounded_drain(process)
+        detail = "host custody registration failed"
+        if not disposition.gone or not drained:
+            detail = "FAILEDFENCE: custody registration failed; %s; custody latch: %s" % (
+                disposition.reason or disposition.state if not disposition.gone else "process pipes remained open",
+                latch_path)
+        return TurnResult(None, None, "unknown", error=detail, plan=plan, custody_latch=latch_path)
     try:
         stdout, stderr = process.communicate(plan.stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
-        custody.terminate()
-        if process.poll() is None:
-            process.kill()      # our unreaped leader: a direct kill is safe even when the census is blind
-        process.communicate()
-        return TurnResult(None, None, "unknown", error="host process timed out", plan=plan)
-    custody.release()
+        disposition = custody.terminate()
+        drained = _bounded_drain(process)
+        error = "host process timed out"
+        if not disposition.gone or not drained:
+            reason = disposition.reason or disposition.state if not disposition.gone else "process pipes remained open"
+            error = "FAILEDFENCE: %s; custody latch: %s" % (reason, latch_path)
+        return TurnResult(None, None, "unknown", error=error, plan=plan, custody_latch=latch_path)
+    except (OSError, subprocess.SubprocessError) as exc:
+        disposition = custody.terminate()
+        drained = _bounded_drain(process)
+        error = "host process communication failed: %s" % type(exc).__name__
+        if not disposition.gone or not drained:
+            reason = disposition.reason or disposition.state if not disposition.gone else "process pipes remained open"
+            error = "FAILEDFENCE: %s; custody latch: %s" % (reason, latch_path)
+        return TurnResult(None, None, "unknown", error=error, plan=plan, custody_latch=latch_path)
+    try:
+        disposition = custody.release()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return TurnResult(None, None, "unknown", exit_status=process.returncode,
+                          error="FAILEDFENCE: cleanup failed (%s); custody latch: %s" %
+                                (type(exc).__name__, latch_path),
+                          plan=plan, custody_latch=latch_path)
     code = process.returncode
+    if not disposition.gone:
+        return TurnResult(None, None, "unknown", exit_status=code,
+                          error="FAILEDFENCE: %s; custody latch: %s" %
+                                (disposition.reason or disposition.state, latch_path),
+                          plan=plan, custody_latch=latch_path)
     try:
         for line in stdout.splitlines():
             events.extend(parser.feed(line))
         result = parser.finish(code)
     except HostContractError as exc:
-        return TurnResult(None, None, "unknown", events=tuple(events), exit_status=code, error=str(exc), plan=plan)
+        return TurnResult(None, None, "unknown", events=tuple(events), exit_status=code, error=str(exc), plan=plan,
+                          custody_latch=latch_path)
     return replace(result, events=tuple(events), exit_status=code, plan=plan,
-                   error=result.error or (stderr.decode("utf-8", "replace")[:512] if code else None))
+                   error=result.error or (stderr.decode("utf-8", "replace")[:512] if code else None),
+                   custody_latch=latch_path)
 
 
 def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationRequest, *,
                      authorize: Any, fence: Optional[WriteFence] = None,
                      process_factory: Any = subprocess.Popen, timeout: float = 120.0,
-                     launch: Any = None) -> Any:
+                     launch: Any = None, latch_path: Optional[str] = None,
+                     custody_dir: Optional[str] = None) -> Any:
     """Run one exact-session continuation; the owner rechecks the receipt and retry bound in ``authorize``."""
     if not isinstance(request, ContinuationRequest):
         raise HostContractError("request must be a ContinuationRequest")
@@ -393,7 +498,8 @@ def run_continuation(host: HostKind, spec: TurnSpec, request: ContinuationReques
         # Installed transports already own process custody and call this host's
         # launch plan. Do not create a second process through run_turn.
         return launch(resumed)
-    return run_turn(host, resumed, fence=fence, process_factory=process_factory, timeout=timeout)
+    return run_turn(host, resumed, fence=fence, process_factory=process_factory, timeout=timeout,
+                    latch_path=latch_path, custody_dir=custody_dir)
 
 
 class HostRegistry:

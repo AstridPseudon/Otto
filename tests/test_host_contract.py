@@ -570,6 +570,34 @@ def fake_host_class():
 class FakeHarness(Workspace):
     def setUp(self):
         super().setUp()
+        from herzchen.fleet import custody
+        original_launch = custody.Custody.launch.__func__
+        launched = {}
+
+        def launch(cls, argv, **kwargs):
+            process_factory = kwargs.pop("popen", None) or subprocess.Popen
+
+            def capture_factory(*args, **options):
+                process = process_factory(*args, **options)
+                launched["pid"] = process.pid
+                return process
+
+            def census_fn():
+                table = {}
+                parent = custody._kernel_proc(os.getpid())
+                if parent is not None:
+                    table[parent.pid] = parent
+                pid = launched.get("pid")
+                child = custody._kernel_proc(pid) if pid is not None else None
+                if child is not None:
+                    table[child.pid] = child
+                return table or None
+
+            return original_launch(cls, argv, popen=capture_factory, census_fn=census_fn, **kwargs)
+
+        self._custody_launch_patch = mock.patch.object(custody.Custody, "launch", classmethod(launch))
+        self._custody_launch_patch.start()
+        self.addCleanup(self._custody_launch_patch.stop)
         self.exe = str(Path(self.root, "fakecli"))
         Path(self.exe).write_text(FAKE_CLI.replace("@PYTHON@", sys.executable))
         os.chmod(self.exe, os.stat(self.exe).st_mode | stat.S_IXUSR)
@@ -621,6 +649,39 @@ class FakeHarness(Workspace):
         self.assertEqual(result.outcome, "failed")
         self.assertEqual(result.exit_status, 3)
 
+    def test_run_turn_keeps_a_recoverable_latch_when_cleanup_is_uncertain(self):
+        H = hosts()
+        from herzchen.fleet import custody
+        contract = importlib.import_module("herzchen.fleet.hosts.contract")
+        script = Path(self.root, "custodied")
+        script.write_text("#!%s\nimport sys\nsys.stdin.read()\nprint('SESSION s1')\nprint('DONE in=1 out=1')\n" % sys.executable)
+        os.chmod(script, 0o755)
+        latch = str(Path(self.state, "turn.json"))
+        spec = H.TurnSpec(executable=str(script), workspace=self.root, prompt="p", model="m", reasoning="low",
+                          profile="workspace-write")
+        uncertain = custody.Disposition(custody.UNCERTAIN, "test census unavailable")
+        with mock.patch.object(custody.Custody, "release", return_value=uncertain):
+            result = H.run_turn(fake_host_class()(), spec, latch_path=latch)
+        self.assertEqual(result.outcome, "unknown")
+        self.assertIn("FAILEDFENCE", result.error)
+        self.assertEqual(result.custody_latch, latch)
+        self.assertTrue(os.path.isfile(latch))
+
+    def test_default_latch_is_discoverable_for_owner_recovery(self):
+        H = hosts()
+        contract = importlib.import_module("herzchen.fleet.hosts.contract")
+        from herzchen.fleet import custody
+        script = Path(self.root, "default-custody")
+        script.write_text("#!%s\nimport sys\nsys.stdin.read()\n" % sys.executable)
+        os.chmod(script, 0o755)
+        spec = H.TurnSpec(executable=str(script), workspace=self.root, prompt="p", model="m", reasoning="low",
+                          profile="workspace-write")
+        uncertain = custody.Disposition(custody.UNCERTAIN, "test census unavailable")
+        with mock.patch.object(custody.Custody, "release", return_value=uncertain):
+            result = H.run_turn(fake_host_class()(), spec)
+        self.assertEqual(result.custody_latch, contract.discover_host_custody_latches(self.root)[0])
+        self.assertTrue(os.path.isfile(result.custody_latch))
+
     def test_a_host_that_skips_part_of_the_contract_cannot_register(self):
         H = hosts()
 
@@ -652,6 +713,37 @@ class FakeHarness(Workspace):
 # continued worker sessions
 # ---------------------------------------------------------------------------
 class ContinuationContract(Workspace):
+    def setUp(self):
+        super().setUp()
+        from herzchen.fleet import custody
+        original_launch = custody.Custody.launch.__func__
+        launched = {}
+
+        def launch(cls, argv, **kwargs):
+            process_factory = kwargs.pop("popen", None) or subprocess.Popen
+
+            def capture_factory(*args, **options):
+                process = process_factory(*args, **options)
+                launched["pid"] = process.pid
+                return process
+
+            def census_fn():
+                table = {}
+                parent = custody._kernel_proc(os.getpid())
+                if parent is not None:
+                    table[parent.pid] = parent
+                pid = launched.get("pid")
+                child = custody._kernel_proc(pid) if pid is not None else None
+                if child is not None:
+                    table[child.pid] = child
+                return table or None
+
+            return original_launch(cls, argv, popen=capture_factory, census_fn=census_fn, **kwargs)
+
+        self._custody_launch_patch = mock.patch.object(custody.Custody, "launch", classmethod(launch))
+        self._custody_launch_patch.start()
+        self.addCleanup(self._custody_launch_patch.stop)
+
     @staticmethod
     def _process(command, **kwargs):
         """Emit a native stream while the real contract owns process launch."""

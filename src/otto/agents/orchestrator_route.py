@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from otto.portfolio.resource_sync import (
@@ -129,6 +130,7 @@ def compose_owner_resource_herzchen_adapter(
     native_trace_path: str | None = None,
     trusted_thread_reader: Callable[[str], Mapping[str, Any]] | None = None,
     trusted_sessions_root: str | None = None,
+    trusted_custody_directory: str | None = None,
     requested_model: str = "gpt-5.6-luna",
     requested_reasoning: str = "high",
 ) -> HerzchenCodexAdapter:
@@ -143,8 +145,11 @@ def compose_owner_resource_herzchen_adapter(
     if not isinstance(host_context_path, str) or not host_context_path.strip():
         raise OrchestratorRouteError("host_context_path is required for the owner-resource host path")
     if trusted_thread_reader is None:
+        custody_directory = trusted_custody_directory or str(
+            Path(host_context_path).parent / "codex-reader-custody")
         trusted_thread_reader = CodexAppServerThreadReader(
             launcher=launcher, sessions_root=trusted_sessions_root,
+            custody_directory=custody_directory,
         )
     return HerzchenCodexAdapter(
         owner=owner,

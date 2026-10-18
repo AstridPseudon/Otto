@@ -98,7 +98,8 @@ def compose_codex(config: Mapping[str, Any], *, worktree: str, model: str, reaso
         owner=owner, source=source or worktree, worktree=worktree, launcher=launcher,
         requested_model=model, requested_reasoning=reasoning,
         host_context_path=str(root / (context_key + ".jsonl")),
-        trusted_thread_reader=CodexAppServerThreadReader(launcher=launcher),
+        trusted_thread_reader=CodexAppServerThreadReader(
+            launcher=launcher, custody_directory=str(root / "reader-custody")),
         require_host_context=True,
         native_caller_socket=native_caller_socket,
         native_process_observer=native_process_observer,
