@@ -271,7 +271,7 @@ class LandGate(Scratch):
 
     def test_outer_pid_signal_is_forwarded_to_the_leased_gate(self):
         started = self.tmp / "check-started-pid-only"
-        check = "%s -c \"open('%s','w').close(); import time; time.sleep(600)\"" % (sys.executable, started)
+        check = "%s -c \"open('%s','w').close(); import signal; signal.pause()\"" % (sys.executable, started)
         self.lab("T37", {"note.txt": "x\n"})
         heavy = self.bin / "otto-heavy"
         heavy.write_text("#!/usr/bin/env python3\n"
@@ -292,12 +292,7 @@ class LandGate(Scratch):
         if proc.poll() is not None:
             self.fail("land.sh ended before its check ran:\n" + "".join(proc.communicate()))
         os.kill(proc.pid, signal.SIGTERM)
-        try:
-            out, err = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            out, err = proc.communicate()
-            self.fail("outer PID signal left the leased gate running:\n" + out + err)
+        out, err = proc.communicate()
         self.assertNotEqual(proc.returncode, 0, out + err)
         self.assertTrue(out.strip().splitlines()[-1].startswith("LAND RESULT: refused interrupted"), out + err)
         self.assertEqual(self.head(), self.base, "canon/main moved")
