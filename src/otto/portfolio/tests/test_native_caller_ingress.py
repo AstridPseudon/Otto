@@ -13,13 +13,13 @@ from dataclasses import replace
 from otto.portfolio.execution_host import ExecutionHost
 from otto.portfolio.identity_context import HostIngress
 from otto.portfolio.native_caller_ingress import NativeProcessCallerIngress, process_identity
-from .test_caller_context import CallerContextTests
+from otto.portfolio.tests import test_caller_context as caller_context
 
 
 @unittest.skipUnless(sys.platform == "darwin", "macOS version-qualified kernel peer audit token required")
 class NativeCallerIngressTests(unittest.TestCase):
     def setUp(self):
-        self.c = CallerContextTests(); self.c.setUp(); self.addCleanup(self.c.doCleanups)
+        self.c = caller_context.CallerContextTests(); self.c.setUp(); self.addCleanup(self.c.doCleanups)
         self.bindings = {role: self.c.caller(role) for role in ("manager", "orchestrator")}
         self.root = Path(self.c.f.temporary.name)
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -99,6 +99,89 @@ class NativeCallerIngressTests(unittest.TestCase):
         value["value"] = operation(); completed.set(); thread.join(timeout=2)
         with self.host._lock: self.host._external_waiting = 0
         self.assertFalse(thread.is_alive()); self.assertEqual(result, {"outcome": "read"})
+
+    def test_concurrent_native_preparation_binds_on_owner_before_child_input(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+        from otto.agents.claude_adapter import ClaudeWorkerAdapter
+        from otto.portfolio.native_caller_ingress import managed_caller_binding
+
+        due = self.c.f.port.read_due(self.bindings["manager"].schedule_id)
+        authorization = due["host_evidence"]["gateway_attempt"]["delivery_authorization"]
+        server = SimpleNamespace(state={"schedule_id": due["schedule_id"], "workers": {}},
+            due_port=self.c.f.port, binding=self.c.f.binding)
+        owner_thread = threading.get_ident()
+        events = []
+        bindings_created = []
+        registered_bindings = {}
+        event_lock = threading.Lock()
+
+        def factory(retained):
+            # This assertion fails on the old worker-thread observer path,
+            # regardless of dictionary interleaving or child scheduling.
+            self.assertEqual(threading.get_ident(), owner_thread)
+            binding = managed_caller_binding(server, retained)
+            with event_lock:
+                bindings_created.append(binding)
+                events.append(("binding", id(binding)))
+            return binding
+
+        ingress = NativeProcessCallerIngress(factory)
+        host = ExecutionHost(directory=self.root / "prepared-commands", handler=lambda request: request,
+            bounded_transports=True)
+        host.directory.mkdir()
+        barrier = threading.Barrier(2)
+        adapter = ClaudeWorkerAdapter(owner="manager", source=str(self.root), worktree=str(self.root),
+            launcher_pin=SimpleNamespace(realpath=sys.executable), state_root=str(self.root),
+            requested_model="gpt-test", roles=("manager",), transport=object(), manager_transport=object(),
+            native_caller_socket=str(self.root / "caller.sock"), native_process_observer=ingress.observe)
+        stand_in = ("import json,sys; line=sys.stdin.readline(); "
+                    "print(json.dumps({'received':line.strip()}),flush=True)")
+
+        def run_workers(bound):
+            def worker(index):
+                barrier.wait(timeout=5)
+                prepare = getattr(bound, "_native_process_prepare", None)
+                callback = (prepare(dict(authorization)) if callable(prepare) else
+                    lambda process: bound.native_process_observer(process, dict(authorization)))
+                with event_lock: events.append(("transport", index))
+                process = subprocess.Popen([sys.executable, "-c", stand_in],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    cleanup = callback(process)
+                    try:
+                        self.assertTrue(ingress.live_occurrence(due["schedule_id"]))
+                        self.assertEqual(ingress._live[process.pid][2], self.bindings["manager"])
+                        with event_lock:
+                            registered_bindings[index] = id(ingress._live[process.pid][2])
+                            events.append(("input", index))
+                        output, errors = process.communicate("useful\n", timeout=5)
+                        self.assertEqual(process.returncode, 0, errors)
+                        self.assertEqual(json.loads(output), {"received": "useful"})
+                    finally:
+                        cleanup()
+                finally:
+                    if process.poll() is None: process.kill(); process.wait(timeout=5)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream and not stream.closed: stream.close()
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(worker, index) for index in range(2)]
+                for future in futures: future.result(timeout=10)
+
+        def owner_operation():
+            bound = adapter.bind_owner_authorization(lambda *args: {}, verifier=lambda *args: {},
+                role="manager", profile="workspace-write")
+            return ExecutionHost.external_call(lambda: run_workers(bound))
+
+        host._owned(owner_operation)
+        self.assertEqual([kind for kind, _ in events].count("binding"), 2)
+        self.assertEqual([kind for kind, _ in events].count("input"), 2)
+        self.assertEqual(len(set(registered_bindings.values())), 2)
+        for index in range(2):
+            self.assertLess(events.index(("binding", registered_bindings[index])),
+                events.index(("transport", index)))
+            self.assertLess(events.index(("transport", index)), events.index(("input", index)))
+        self.assertFalse(ingress.live_occurrence(due["schedule_id"]))
 
     def test_report_continuation_launch_binding_uses_exact_callback_before_locator_refresh(self):
         from types import SimpleNamespace

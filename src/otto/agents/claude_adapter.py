@@ -531,6 +531,15 @@ class ClaudeWorkerAdapter:
         bound._authorizer, bound._verifier, bound._completed_verifier = authorizer, verifier, completed_verifier
         bound._role = role
         bound._used = False
+        # This composition runs on the owner before gateway.adapter_transport
+        # moves the adapter to a worker. Capture its owner request path now.
+        if role == 'manager' and self.native_caller_socket is not None:
+            from otto.portfolio.execution_host import ExecutionHost
+            from otto.portfolio.native_caller_ingress import NativeProcessCallerIngress
+            bound.native_process_observer = ExecutionHost.owner_callback(self.native_process_observer)
+            ingress = getattr(self.native_process_observer, '__self__', None)
+            prepare = ingress.prepare if isinstance(ingress, NativeProcessCallerIngress) else None
+            bound._native_process_prepare = ExecutionHost.owner_callback(prepare)
         return bound
 
     def set_thread_started_callback(self, callback):
@@ -635,9 +644,11 @@ class ClaudeWorkerAdapter:
                 admitted = True
             observer = None
             if role == 'manager' and self.native_caller_socket is not None:
-                # Register the owned native process so the managed caller
-                # socket can authenticate its descendants (kernel peer PID).
-                observer = ExecutionHost.owner_callback(self.native_process_observer)
+                # Resolve the exact caller from owner state before useful work
+                # transport starts; register the resulting process before stdin.
+                prepare = getattr(self, '_native_process_prepare', None)
+                observer = (prepare(dict(authorization)) if prepare is not None
+                            else self.native_process_observer)
             on_process = _compose_on_process(observer, authorization, self.process_pin)
             if rework is not None:
                 from herzchen.fleet.hosts.claude import ClaudeHost

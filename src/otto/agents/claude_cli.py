@@ -481,7 +481,12 @@ class ClaudeCliTransport:
                 # Only this owned process tree; no provider-session deletion.
                 if process.poll() is None:
                     custody.terminate()
+                    if process.poll() is None:
+                        # A missing process census can leave the exact Popen
+                        # leader alive. Reap it before returning from transport.
+                        process.kill()
                     process.wait(timeout=5)
+                    custody.release()
                 else:
                     custody.release()
             for stream in (process.stdin, process.stdout, process.stderr):

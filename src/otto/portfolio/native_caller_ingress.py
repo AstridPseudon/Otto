@@ -96,20 +96,45 @@ class NativeProcessCallerIngress:
 
     def observe(self, process: Any, authorization: Any) -> Any:
         """Host-only Popen callback. Returns cleanup for this exact lifetime."""
-        if (not isinstance(authorization, dict) or authorization.get("status") != "authorized"
-                or not authorization.get("physical_session_id")):
-            raise PermissionError("only an owner-authorized native work launch can bind a caller")
+        identity = self._process_identity(process)
+        return self._register(process, identity, self._binding(authorization))
+
+    def prepare(self, authorization: Any) -> Any:
+        """Resolve one exact owner binding before starting the useful transport."""
+        binding = self._binding(authorization)
+        used = False
+        once = threading.Lock()
+
+        def observe_prepared(process: Any) -> Any:
+            nonlocal used
+            with once:
+                if used:
+                    raise PermissionError("prepared native caller binding was already used")
+                used = True
+            return self._register(process, self._process_identity(process), binding)
+
+        return observe_prepared
+
+    def _process_identity(self, process: Any) -> ProcessIdentity:
         identity = self.process_reader(process.pid)
         if identity.parent != os.getpid() or process.poll() is not None:
             raise PermissionError("native process was not created by this live owner")
+        return identity
+
+    def _binding(self, authorization: Any) -> Any:
+        if (not isinstance(authorization, dict) or authorization.get("status") != "authorized"
+                or not authorization.get("physical_session_id")):
+            raise PermissionError("only an owner-authorized native work launch can bind a caller")
         retained = json.loads(json.dumps(authorization, allow_nan=False))
-        # Called on the serialized owner via ExecutionHost.owner_callback.
-        # Capture the exact occurrence now; a later pending callback pointer
-        # must not change the original caller's admission identity.
+        # Capture the exact occurrence on the serialized owner. A later
+        # pending callback pointer cannot change this caller's identity.
         from .identity_context import HostCallerBinding
         binding = self.binding_factory(retained)
         if not isinstance(binding, HostCallerBinding):
             raise PermissionError("owner launch factory did not return a canonical caller binding")
+        return binding
+
+    def _register(self, process: Any, identity: ProcessIdentity, binding: Any) -> Any:
         with self._lock:
             if process.pid in self._live:
                 raise PermissionError("native process already has a caller binding")
