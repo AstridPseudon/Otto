@@ -30,6 +30,7 @@ from .owner_completion import OwnerCompletion, after_owner
 from .ipc_retention import prune_answered_responses
 from herzchen.fleet.capacity import CapacityPolicy, CapacityPool
 from herzchen.fleet.draining import QueuedAdmissionDrain
+from herzchen.fleet.file_ipc_receipts import FileReceiptFence
 
 
 def retained_pre_input_registration_failure(due: Any) -> bool:
@@ -284,6 +285,9 @@ class ExecutionHost:
         self._owns_owner_file = False
         self._threads: list[threading.Thread] = []
         self.failures: dict[str, dict[str, str]] = {}
+        self._file_receipts = FileReceiptFence(lock=self._lock, active=self._active_files,
+            failures=self.failures, write_json=_atomic_json,
+            legacy_claim_reasons=frozenset({"retained execution is queued or awaiting its original transport"}))
         if type(bounded_transports) is not bool:
             raise TypeError("bounded_transports must be an explicit owner choice")
         if capacity_policy is not None and not isinstance(capacity_policy, CapacityPolicy):
@@ -1680,38 +1684,51 @@ class ExecutionHost:
             claimed = False
             deferred = False
             try:
-                request = json.loads(path.read_text())
+                request, request_digest = self._file_receipts.read_request(path)
                 command = request.get("command")
-                if self._dispatch_held and command != "status":
-                    continue
                 if (command == "status") != status:
                     continue
+                pending = self.directory / ("pending-" + token + ".json")
+                if not self._file_receipts.reserve(token):
+                    continue
+                claimed = True
+                # A durable terminal response wins even when its status
+                # projection or the request cleanup failed afterward.
+                inspection = self._file_receipts.inspect(token, request_digest, pending, response)
+                if inspection.state == "terminal":
+                    self._file_receipts.finish_terminal(token, path, pending)
+                    continue
+                pending_state = inspection.pending
+                if inspection.state == "claimed":
+                    settled = self._file_receipts.settled_receipt(token, request_digest)
+                    if settled is not None:
+                        receipt = settled
+                    else:
+                        timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
+                        timing.observe("queued").observe("processing")
+                        timing.absent("native", reason="original_dispatch_settlement_unavailable")
+                        receipt = _timed_receipt(self._file_receipts.unknown_after_claim(token), timing)
+                    self._file_receipts.publish(token, request_digest, receipt, path, pending, response)
+                    continue
+                if self._dispatch_held and command != "status":
+                    continue
                 if command == "answer-session-result":
-                    pending_path = self.directory / ("pending-" + token + ".json")
-                    if pending_path.exists():
+                    if pending_state is not None:
                         try:
-                            retained_state = json.loads(pending_path.read_text())
-                            retry_after = retained_state.get("retry_after")
+                            retry_after = pending_state.get("retry_after")
                         except (OSError, ValueError, TypeError):
                             retry_after = None
                         if isinstance(retry_after, (int, float)) and retry_after > time.time():
                             continue
-                # The pump also sees its own outer request. It already owns
-                # that token; never describe it as a queued second dispatch.
-                with self._lock:
-                    if token in self._active_files:
-                        continue
                 capability = _nested_capability(request) if allowed is not None else "admitted"
                 if capability == "retained":
-                    pending = self.directory / ("pending-" + token + ".json")
                     if not pending.exists():
                         timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
                         timing.observe("queued").absent("processing", reason="owner_lane_retained")
                         timing.absent("native", reason="native_phase_not_started")
                         timing.absent("terminal", reason="terminal_response_not_yet_observed")
-                        _atomic_json(pending, {"outcome": "pending", "request_id": token,
-                            "request_retained": True, "provider_called": False, "effects_started": False,
-                            "retry": False, "response_path": str(response),
+                        self._file_receipts.write_pending(token, request_digest, pending, response,
+                            claimed=False, details={"provider_called": False, "effects_started": False,
                             "reason": "another native manager turn owns the command lane",
                             "correlation_id": timing.correlation_id,
                             "receipt_timing": timing.as_dict(),
@@ -1731,93 +1748,60 @@ class ExecutionHost:
                             continue
                     if self._closing and _starts_work(request):
                         continue
-                with self._lock:
-                    if token in self._active_files:
-                        continue
-                    self._active_files.add(token)
-                    claimed = True
-                if not response.exists():
-                    timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
-                    timing.observe("queued").observe("processing")
-                    timing.absent("native", reason="command_transport_has_no_native_phase")
-                    if capability == "held":
-                        result = {"outcome": "held", "reason": "operation is not admitted during the current native transport wait",
-                                  "command": command, "provider_called": False, "effects_started": False,
-                                  "retry": False, "request_retained": False,
-                                  "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
-                    else:
-                        if command in _REENTRANT_COMMANDS and not _starts_work(request):
-                            # This is transport progress, not an assertion that
-                            # effects are absent. Publish before synchronous
-                            # finite work so a child need not wait on itself.
-                            pending = self.directory / ("pending-" + token + ".json")
-                            _atomic_json(pending, {"outcome": "pending", "terminal": False,
-                                "request_id": token, "request_retained": True,
-                                "request_state": "processing", "response_path": str(response),
-                                "retry": False,
-                                "correlation_id": timing.correlation_id,
-                                "receipt_timing": {**timing.as_dict(), "phases": {
-                                    **timing.as_dict()["phases"],
-                                    "terminal": {"state": "absent", "observed_at": None,
-                                                  "reason": "terminal_response_not_yet_observed",
-                                                  "clock": "unavailable"},
-                                }, "gaps": [*timing.as_dict()["gaps"], {
-                                    "kind": "absent", "phase": "terminal",
-                                    "reason": "terminal_response_not_yet_observed"}]},
-                                "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
-                        from .identity_context import HostIngress
-                        result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
-                    if isinstance(result, OwnerCompletion):
-                        deferred = True
-                        _atomic_json(self.directory / ("pending-" + token + ".json"), {
-                            "outcome": "pending", "request_id": token, "request_retained": True,
-                            "response_path": str(response), "retry": False,
-                            "reason": "retained execution is queued or awaiting its original transport",
-                            "next_action": "Observe this exact retained handle; do not resend."})
+                timing = ReceiptTiming(stable_correlation_id(request, fallback=token))
+                timing.observe("queued").observe("processing")
+                timing.absent("native", reason="command_transport_has_no_native_phase")
+                # A durable claim precedes handler entry for every admitted
+                # file request, including synchronous reentrant commands.
+                self._file_receipts.write_pending(token, request_digest, pending, response,
+                    claimed=True, details={"terminal": False, "request_state": "processing",
+                    "correlation_id": timing.correlation_id,
+                    "receipt_timing": timing.as_dict(),
+                    "next_action": "The owner is processing this exact request. Observe its terminal response with command-status; do not resend or infer owner death."})
+                if capability == "held":
+                    result = {"outcome": "held", "reason": "operation is not admitted during the current native transport wait",
+                              "command": command, "provider_called": False, "effects_started": False,
+                              "retry": False, "request_retained": False,
+                              "next_action": "Return this held result to the manager; inspect owner status and wait for the current turn to settle before a new explicit intent. Do not resend or rerun tests while waiting."}
+                else:
+                    from .identity_context import HostIngress
+                    result = self._dispatch(request, ingress=HostIngress("file-ipc", path))
+                if isinstance(result, OwnerCompletion):
+                    deferred = True
 
-                        def complete(value: Any = None, error: BaseException | None = None,
-                                     *, token=token, response=response, path=path, timing=timing) -> None:
-                            try:
-                                if error is not None:
-                                    value = {"outcome": "error", "error": type(error).__name__,
-                                        "message": str(error), "retry": False,
-                                        "next_action": "reconcile the original occurrence before replay"}
-                                _atomic_json(response, _timed_receipt(value, timing))
-                                (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
-                                path.unlink(missing_ok=True)
-                            except Exception as exc:
-                                self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
-                            finally:
-                                with self._lock:
-                                    self._active_files.discard(token)
-                        after_owner(result, complete,
-                            lambda error, complete=complete: complete(error=error))
-                        continue
-                    if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result", "answer-session-result"} and result.get("outcome") == "pending"
-                            and result.get("provider_called") is False and result.get("effects_started") is False):
-                        pending = self.directory / ("pending-" + token + ".json")
-                        if command == "answer-session-result" or not pending.exists():
-                            retained = _timed_receipt(result, timing)
-                            value = {**retained, "request_id": token, "request_retained": True,
-                                "response_path": str(response),
-                                "next_action": ("The owner retains this exact answer continuation and rechecks its asking Due until settlement; do not resend it."
-                                    if command == "answer-session-result" else
-                                    "The owner retains this observed worker result until the same manager settles; do not resend it.")}
-                            if command == "answer-session-result":
-                                value["retry_after"] = time.time() + 0.5
-                            _atomic_json(pending, value)
-                        continue
-                    _atomic_json(response, _timed_receipt(result, timing))
-                (self.directory / ("pending-" + token + ".json")).unlink(missing_ok=True)
-                path.unlink(missing_ok=True)
+                    def complete(value: Any = None, error: BaseException | None = None,
+                                 *, token=token, request_digest=request_digest, response=response,
+                                 path=path, pending=pending, timing=timing) -> None:
+                        if error is not None:
+                            value = {"outcome": "error", "error": type(error).__name__,
+                                "message": str(error), "retry": False,
+                                "next_action": "reconcile the original occurrence before replay"}
+                        self._file_receipts.publish(token, request_digest, _timed_receipt(value, timing),
+                                                    path, pending, response)
+                    after_owner(result, complete,
+                        lambda error, complete=complete: complete(error=error))
+                    continue
+                if (command in {"manager-worker-result", "manager-help-result", "start-retained-child", "parent-child-result", "answer-session-result"} and result.get("outcome") == "pending"
+                        and result.get("provider_called") is False and result.get("effects_started") is False):
+                    retained = _timed_receipt(result, timing)
+                    value = {**retained,
+                        "next_action": ("The owner retains this exact answer continuation and rechecks its asking Due until settlement; do not resend it."
+                            if command == "answer-session-result" else
+                            "The owner retains this observed worker result until the same manager settles; do not resend it.")}
+                    if command == "answer-session-result":
+                        value["retry_after"] = time.time() + 0.5
+                    self._file_receipts.write_pending(token, request_digest, pending, response,
+                        claimed=False, details=value)
+                    continue
+                self._file_receipts.publish(token, request_digest, _timed_receipt(result, timing),
+                                            path, pending, response)
             except FileNotFoundError:
                 continue
             except Exception as exc:
                 self.failures[token] = {"code": type(exc).__name__, "message": str(exc)}
             finally:
                 if claimed and not deferred:
-                    with self._lock:
-                        self._active_files.discard(token)
+                    self._file_receipts.release(token)
                 if acquired:
                     self._command_lock.release()
 
