@@ -129,18 +129,6 @@ finish("Manager turn %d: done." % turn)
 BRIEF_T1 = "# Brief: T1\n\nBuild the first outcome. Proof: tests pass.\n"
 
 
-def _round_trip_task_revision(owner, task, actor, key):
-    historical = task
-    interim = owner.graph.revise(
-        historical.ref, title=historical.title + " interim",
-        base_revision=historical.ref.revision,
-        logical_request_key="testpatch-" + key + "-interim", actor=actor)
-    current = owner.graph.revise(
-        interim.ref, title=historical.title, base_revision=interim.ref.revision,
-        logical_request_key="testpatch-" + key + "-restore", actor=actor)
-    return historical, current
-
-
 class AssessmentHydrationCanaryTests(HostctlFixture):
     def setUp(self):
         # Keep the owner's Unix socket path below macOS's address limit.
@@ -156,6 +144,7 @@ class AssessmentHydrationCanaryTests(HostctlFixture):
         from herzchen.content import ContentDocument, ContentRevision
         from herzchen.contracts import ResourceRef, TransactionContext
         from herzchen.domains.assessment import AssessmentModule
+        from herzchen.domains.work.admission import NAMESPACE, authoring_stamp, task_content_matches
         from otto.portfolio.assessment import OttoAssessment
 
         self._ready()
@@ -168,8 +157,17 @@ class AssessmentHydrationCanaryTests(HostctlFixture):
             t1 = ResourceRef.from_dict(view.state["task_refs"]["T1"])
             t2 = ResourceRef.from_dict(view.state["task_refs"]["T2"])
             actor = view.owner.owner_actor
-            historical_t1, current_t1 = _round_trip_task_revision(
-                view.owner, view.owner.graph.current(t1), actor, "canary")
+            historical_t1 = view.owner.graph.current(t1)
+            historical_t1_ref = historical_t1.ref
+            current_t1 = view.owner.graph.revise(historical_t1.ref,
+                metadata_namespaces={NAMESPACE: authoring_stamp(
+                    historical_t1.ref.revision, historical_t1.payload, actor)},
+                base_revision=historical_t1.ref.revision,
+                logical_request_key="testpatch-canary-task-history", actor=actor)
+            self.assertNotEqual(current_t1.ref, historical_t1_ref)
+            self.assertTrue(task_content_matches(view.owner.graph.reader, historical_t1_ref,
+                current_t1.payload, current_ref=current_t1.ref),
+                "the retained task pin must be a real historical revision with matching content")
             assessment = OttoAssessment(
                 AssessmentModule(view.store, actor=actor), actor)
             t2_scope = assessment.coverage(t2)["scopes"][0]
@@ -211,7 +209,7 @@ class AssessmentHydrationCanaryTests(HostctlFixture):
             view.state["criterion_refs"] = {
                 "C01": criterion.to_dict()}
             retained_tasks = json.loads(json.dumps(view.state["task_refs"]))
-            retained_tasks["T1"] = historical_t1.ref.to_dict()
+            retained_tasks["T1"] = historical_t1_ref.to_dict()
             view.state["task_refs"] = retained_tasks
             with self.assertRaisesRegex(
                     RuntimeError, "does not bind current owner records"):
@@ -234,8 +232,10 @@ class WorkerWorkspaceCompositionTests(HostctlFixture):
 
         from herzchen.content import ContentDocument, ContentRevision
         from herzchen.contracts import ResourceRef, TransactionContext
+        from herzchen.domains.assessment import AssessmentModule
+        from herzchen.domains.work.admission import NAMESPACE, authoring_stamp, task_content_matches
+        from otto.portfolio.assessment import OttoAssessment
         from otto.portfolio.local_assessment_policy import LocalAssessmentPolicy
-
         run_path = Path(self.bundle) / "run.json"
         run = json.loads(run_path.read_text())
         run["assessment_accounting"] = {
@@ -253,30 +253,43 @@ class WorkerWorkspaceCompositionTests(HostctlFixture):
             original_task = view.owner.graph.current(
                 ResourceRef.from_dict(view.state["task_refs"]["T1"]))
             actor = view.owner.owner_actor
-            historical_task, expected_task = _round_trip_task_revision(
-                view.owner, original_task, actor, "positive")
-            assessment = view.owner.assessment(actor)
-            criterion = None
-            for scope_row in assessment.coverage(expected_task.ref)["scopes"]:
-                scope = assessment.get_scope(scope_row["ref"])
-                for candidate_ref in scope.criterion_refs:
-                    candidate = view.owner.graph.reader.get_identity(candidate_ref)
-                    definition = candidate.payload.get("definition") or {}
-                    if definition.get("source_alias") == "C01":
-                        criterion = candidate.ref
-            self.assertIsNotNone(criterion, "C01 must come from an independent owner scope record")
-
-            # Simulate a retained view pinned to the real prior task revision.
-            view.state["task_refs"]["T1"] = historical_task.ref.to_dict()
+            historical_task_ref = original_task.ref
+            manager_actor = view.owner.binding.authenticated_actor(view.state["manager"])
+            assessment = OttoAssessment(AssessmentModule(
+                view.store, actor=manager_actor,
+                payload_resolver=view.owner.evidence_payload_resolver), manager_actor)
+            scope_rows = assessment.coverage(original_task.ref)["scopes"]
+            registered_scopes = [assessment.get_scope(row["ref"]) for row in scope_rows
+                if assessment.get_scope(row["ref"]).protocol == "check-accepted"
+                and assessment.get_scope(row["ref"]).policy.get("required_for_completion") is True]
+            self.assertEqual(len(registered_scopes), 1)
+            self.assertEqual(len(registered_scopes[0].criterion_refs), 1)
+            criterion = registered_scopes[0].criterion_refs[0]
+            self.assertEqual(
+                (view.owner.graph.reader.get_identity(criterion).payload.get("definition") or {}).get("source_alias"),
+                "C01")
+            current_task = view.owner.graph.revise(original_task.ref,
+                metadata_namespaces={NAMESPACE: authoring_stamp(
+                    original_task.ref.revision, original_task.payload, view.owner.owner_actor)},
+                base_revision=original_task.ref.revision,
+                logical_request_key="testpatch-positive-task-history", actor=view.owner.owner_actor)
+            self.assertNotEqual(current_task.ref, historical_task_ref)
+            self.assertTrue(task_content_matches(view.owner.graph.reader, historical_task_ref,
+                current_task.payload, current_ref=current_task.ref))
+            expected_task = view.owner.graph.current(ResourceRef(
+                current_task.ref.authority, current_task.ref.kind, current_task.ref.id)).ref
+            self.assertEqual(view.state["task_refs"]["T1"], historical_task_ref.to_dict(),
+                "the test must begin with the retained historical task pin")
+            view.state["task_refs"]["T1"] = historical_task_ref.to_dict()
             view._hydrate_assessment_policy(project)
 
-            self.assertEqual(view.state["task_refs"]["T1"], expected_task.ref.to_dict())
-            self.assertEqual(view.state["criterion_refs"]["C01"], criterion.to_dict())
-            self.assertEqual(
-                LocalAssessmentPolicy.from_run_config(
-                    view.state["assessment_policy"], state=view.state).task_criterion_pairs,
-                ((expected_task.ref, criterion),),
-            )
+            expected_criterion = criterion
+            self.assertEqual(view.state["task_refs"]["T1"], expected_task.to_dict())
+            self.assertEqual(view.state["criterion_refs"]["C01"], expected_criterion.to_dict())
+            parsed = LocalAssessmentPolicy
+            self.assertEqual(parsed.from_run_config(view.state["assessment_policy"],
+                                                    state=view.state).task_criterion_pairs,
+                             ((expected_task, expected_criterion),))
             self.assertEqual(view.state["assessment_policy"]["scope_mode"], "check-accepted")
             self.assertIsNone(view.assert_assessment_policy_current())
             trusted = json.loads(json.dumps(view.state))

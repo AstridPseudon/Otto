@@ -405,28 +405,27 @@ def test_worker_facade_check_is_feedback_and_done_lands_only_its_bound_lab_and_l
         landing_factory=lambda **_kwargs: bound_landing, repository_path=line, checkpoint=checkpoint)
     fleet = registry._pairs[("repo-a", "main")][0]
     lab = fleet.get(task.ref.id)
+    (lab.path / "one.txt").write_text("worker change\n")
     from herzchen.contracts import ResourceRef
     from herzchen.domains.work.admission import NAMESPACE, authoring_stamp
-    other_link = next(ResourceRef.from_dict(ref) for ref in project.payload["tasks"]
-                      if ResourceRef.from_dict(ref).id != task.ref.id)
-    other_task = registry.owner.graph.current(other_link)
-    other_task = registry.owner.graph.revise(
-        other_task.ref, fields={**other_task.payload.get("fields", {}),
-                                "check": {"argv": ["/usr/bin/true"]}},
+    second_task = next(registry.owner.graph.current(ResourceRef.from_dict(raw))
+        for raw in project.payload["tasks"]
+        if registry.owner.graph.current(ResourceRef.from_dict(raw)).payload.get("alias") == "T2")
+    second_task = registry.owner.graph.revise(second_task.ref,
+        fields={"check": {"argv": ["/usr/bin/true"]}}, base_revision=second_task.ref.revision,
+        logical_request_key="fleet-test-second-task-check", actor=registry.owner.owner_actor)
+    second_task = registry.owner.graph.revise(second_task.ref,
         metadata_namespaces={"otto.plan": {"repo": "repo-a", "branch": "main"}},
-        base_revision=other_task.ref.revision,
-        logical_request_key="fleet-test-second-task-plan",
+        base_revision=second_task.ref.revision, logical_request_key="fleet-test-second-task-plan",
         actor=registry.owner.owner_actor)
-    other_stamp = authoring_stamp(
-        other_task.ref.revision, other_task.payload, registry.owner.owner_actor)
-    other_task = registry.owner.graph.revise(
-        other_task.ref, metadata_namespaces={NAMESPACE: other_stamp},
-        base_revision=other_task.ref.revision,
-        logical_request_key="fleet-test-second-task-admission",
+    second_task = registry.owner.graph.revise(second_task.ref,
+        metadata_namespaces={NAMESPACE: authoring_stamp(
+            second_task.ref.revision, second_task.payload, registry.owner.owner_actor)},
+        base_revision=second_task.ref.revision, logical_request_key="fleet-test-second-task-admission",
         actor=registry.owner.owner_actor)
-    other_lab = registry.prepare_worker_lab(project.ref, other_task.ref)["lab"]
-    (other_lab.path / "two.txt").write_text("unbound worker change\n")
-    (lab.path / "one.txt").write_text("worker change\n")
+    second_context = registry.prepare_worker_lab(project.ref, second_task.ref)
+    second_lab = second_context["lab"]
+    (second_lab.path / "two.txt").write_text("other task output\n")
     runner = DirtyAwareRunner()
     task_projection = {"id": task.ref.id, "revision": task.ref.revision,
                        "current_revision": task.ref.revision, "payload": task.payload}

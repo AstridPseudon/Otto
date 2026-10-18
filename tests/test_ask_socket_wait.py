@@ -118,21 +118,23 @@ def test_active_otto_wait_is_released_with_owner_down_event_on_drain():
         result = service._wait_for_answer(request, context)
         assert result["outcome"] == "owner_down"
         assert result["owner_event"]["type"] == "owner-down"
-        assert isinstance(result["cursor"], str) and result["cursor"]
-
         from herzchen.kernel import EventCursorReader, EventFilter
-        continuation = owner.owner.assignments.append_report(
-            assignment.ref, {"schema": "testpatch.report.v1", "sequence": "after-drain"},
-            expected_generation=1, logical_request_key="ask-wait-after-drain",
-            actor=owner.actor)
-        report_filter = EventFilter(event_types=("work.report.appended",))
-        page = EventCursorReader(owner.store).page(
-            stream, cursor=result["cursor"], event_filter=report_filter)
-        assert [event.subject for event in page.events] == [continuation.ref]
-        assert first_report.ref not in [event.subject for event in page.events]
-        next_page = EventCursorReader(owner.store).page(
-            stream, cursor=page.cursor, event_filter=report_filter)
-        assert next_page.events == (), "continuation replayed an already consumed report"
+        stream = "report:" + assignment.ref.id
+        event_filter = EventFilter(event_types=("work.report.appended",))
+        continuation = {"schema": "test.ask-wait-continuation.v1", "marker": "after-drain"}
+        owner.app.assignments.append_report(assignment.ref, continuation,
+            expected_generation=1, logical_request_key="ask-wait-after-drain-report", actor=owner.actor)
+        reader = EventCursorReader(owner.store)
+        page = reader.page(stream, cursor=result["cursor"], event_filter=event_filter)
+        assert page.complete
+        assert len(page.events) == 1
+        event = page.events[0]
+        assert event.event_type == "work.report.appended"
+        assert event.subject != first_report.ref
+        report = owner.store.get_record(event.subject)
+        assert report.payload["value"] == continuation
+        resumed = reader.page(stream, cursor=page.cursor, event_filter=event_filter)
+        assert resumed.complete and resumed.events == (), "continued page replayed the consumed report"
 
         host.draining = False
         foreign_context = {**context, "principal": "foreign-principal"}
