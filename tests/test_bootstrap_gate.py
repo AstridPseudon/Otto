@@ -228,6 +228,24 @@ class LandGate(Scratch):
         r = self.land("T11", "--check", "false")
         self.assertRefused(r, "T11", "the task's check failed: false")
 
+    def test_all_skipped_check_and_swept_file_are_refused_with_reason(self):
+        reason = "GATESKIP fixture deliberately unavailable"
+        source = ("import pytest\n\n"
+                  "def test_needs_fixture():\n"
+                  "    pytest.skip(%r)\n" % reason)
+
+        self.lab("T31", {"tests/test_skip_only.py": source})
+        check = "%s -m pytest -q tests/test_skip_only.py" % sys.executable
+        checked = self.land("T31", "--check", check)
+        self.assertRefused(checked, "T31", reason)
+        self.assertIn("tests/test_skip_only.py", self.log("T31"))
+        self.assertNotIn("sweep:", self.log("T31"))
+
+        self.lab("T32", {"tests/test_skip_only.py": source})
+        swept = self.land("T32")
+        self.assertRefused(swept, "T32", reason)
+        self.assertIn("sweep tests/test_skip_only.py", self.log("T32"))
+
     def test_subfailed_check_failure_is_reported_by_id(self):
         source = ("def test_new_failure(subtests):\n"
                   "    with subtests.test(fault='new'):\n"

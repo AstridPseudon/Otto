@@ -2279,6 +2279,12 @@ class ManagerJourneyService:
                 "kind": "configuration", "message": str(exc)},
                 "provider_called": False, "effects_started": False, "retry": False,
                 "next_action": "Owner must reconcile the single adopted run declaration, preserving both original files and configuration semantics; then recover the identical request/key."}
+        operation = config.get("worker_operation_profiles", {}).get(task, "implementation")
+        if operation not in {"implementation", "coordinating_implementation", "cold_manager_operation"}:
+            return {"outcome": "error", "error": "worker_operation_profile",
+                "message": "worker task operation profile is unsupported; owner must correct run policy before submission",
+                "provider_called": False, "effects_started": False, "retry": False,
+                "next_action": "Correct the owner run policy before submitting this worker."}
         from .worker_occurrences import parent_for_caller, check_allowance
         from .occurrence_reads import lookup, handle, digest
         caller = _CALLER.get()
