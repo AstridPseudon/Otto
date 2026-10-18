@@ -105,13 +105,24 @@ def _copy_native_pack_tree(destination):
     return target_root
 
 
-def _prepare_recorded_provenance_checkout():
-    """Materialize the checked-in pack at its recorded root with a fixed Git commit."""
-    fixture_root = Path(__file__).parent / "fixtures" / "managed_source_provenance" / "checkout"
-    git_dir = fixture_root / ".git"
-    if git_dir.exists():
-        import shutil
-        shutil.rmtree(git_dir)
+def _prepare_recorded_provenance_checkout(fixture_root, *, loader_comment=None):
+    """Materialize recorded pack bytes in one disposable, independently rooted checkout."""
+    import shutil
+
+    fixture_root = Path(fixture_root)
+    pack_relative = Path("src/herzchen/packs/evidence_resource_pack")
+    pack_root = fixture_root / pack_relative
+    pack_root.parent.mkdir(parents=True)
+    shutil.copytree(
+        Path(__file__).parent / "fixtures/managed_source_provenance/immutable_pack",
+        pack_root,
+    )
+    loader_path_hint = fixture_root / "src/herzchen/packs/authoring.py"
+    loader_path_hint.parent.mkdir(parents=True, exist_ok=True)
+    loader_path_hint.write_text("# loader location hint\n", encoding="utf-8")
+    if loader_comment is not None:
+        with loader_path_hint.open("a", encoding="utf-8") as stream:
+            stream.write(f"# {loader_comment}\n")
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "Pack Parity Fixture",
@@ -121,13 +132,11 @@ def _prepare_recorded_provenance_checkout():
         "GIT_COMMITTER_EMAIL": "pack-parity@example.invalid",
         "GIT_COMMITTER_DATE": "2020-01-02T03:04:05+00:00",
     }
-    authoring_path = fixture_root / "src/herzchen/packs/authoring.py"
-    import shutil
-    shutil.copy2(Path(__file__).parents[1] / "src/herzchen/packs/authoring.py", authoring_path)
     subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=fixture_root, env=env, check=True)
+    exclude = fixture_root / ".git/info/exclude"
+    exclude.write_text("/src/herzchen/packs/authoring.py\n", encoding="utf-8")
     subprocess.run(
-        ["git", "add", "src/herzchen/packs/authoring.py",
-         "src/herzchen/packs/evidence_resource_pack"],
+        ["git", "add", "src/herzchen/packs/evidence_resource_pack"],
         cwd=fixture_root, env=env, check=True,
     )
     subprocess.run(
@@ -139,7 +148,7 @@ def _prepare_recorded_provenance_checkout():
         ["git", "rev-parse", "HEAD"], cwd=fixture_root, env=env,
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    return fixture_root, authoring_path, revision
+    return fixture_root, loader_path_hint, revision
 
 
 def _copy_installed_runtime_source(controller_root):
@@ -398,48 +407,98 @@ class EvidenceLifecycleTests(unittest.TestCase):
         fixture_dir = Path(__file__).parent / "fixtures" / "managed_source_provenance"
         recording = json.loads((fixture_dir / "recorded_source.json").read_text(encoding="utf-8"))
         recorded_source = recording["source"]
-        fixture_root = fixture_dir / recording["fixture_root"] / "checkout"
-        pack_root = fixture_root / recorded_source["pack_root"]
+        preimage_template = recording["source_inventory_preimage_template"]
+        self.assertEqual(
+            preimage_template,
+            json.dumps(json.loads(preimage_template), sort_keys=True, separators=(",", ":")),
+        )
+        actual_records = []
         with tempfile.TemporaryDirectory() as temporary:
-            source_state_path = Path(temporary) / "pack-sources.json"
-            state_record = {
-                **recorded_source,
-                "pack_root": str(pack_root.resolve()),
-            }
-            source_state_path.write_text(json.dumps({
-                "version": 1,
-                "active": {recorded_source["pack_id"]: state_record},
-                "cached": {},
-                "disabled": [],
-            }), encoding="utf-8")
-            repo_root, copied_authoring, revision = _prepare_recorded_provenance_checkout()
-            expected_revision = recorded_source["revision"]
-            self.assertEqual(revision, expected_revision)
-            expected = {
-                "pack_id": recorded_source["pack_id"],
-                "source_kind": recorded_source["source_kind"],
-                "source_revision": recorded_source["revision"],
-                "source_tree_sha256": recorded_source["tree_sha256"],
-                "source_manifest_sha256": recorded_source["manifest_sha256"],
-                "source_inventory_identity": recording["source_inventory_identity"],
-                "pack_root": str(pack_root.resolve()),
-                "manifest_path": str((fixture_root / recording["manifest_path"]).resolve()),
-            }
-            try:
-                with patch.object(authoring, "__file__", str(copied_authoring)):
+            parent = Path(temporary)
+            for index, comment in enumerate((None, "loader-only comment change")):
+                checkout = parent / f"checkout-{index}"
+                repo_root, loader_path_hint, revision = _prepare_recorded_provenance_checkout(
+                    checkout, loader_comment=comment
+                )
+                pack_root = repo_root / recorded_source["pack_root"]
+                source_state_path = parent / f"pack-sources-{index}.json"
+                state_record = {**recorded_source, "pack_root": str(pack_root.resolve())}
+                source_state_path.write_text(json.dumps({
+                    "version": 1,
+                    "active": {recorded_source["pack_id"]: state_record},
+                    "cached": {},
+                    "disabled": [],
+                }), encoding="utf-8")
+                self.assertEqual(revision, recorded_source["revision"])
+                with patch.object(authoring, "__file__", str(loader_path_hint)):
                     managed = read_managed_pack(
                         recorded_source["pack_id"], project_root=repo_root,
                         source_state_path=source_state_path,
                     )
                 actual = managed.source.to_dict()
-                self.assertEqual(set(actual), set(expected))
-                for field, value in expected.items():
-                    with self.subTest(field=field):
-                        self.assertEqual(actual[field], value)
-            finally:
-                import shutil
-                shutil.rmtree(repo_root / ".git", ignore_errors=True)
-                copied_authoring.unlink(missing_ok=True)
+                expected = {
+                    "pack_id": recorded_source["pack_id"],
+                    "source_kind": recorded_source["source_kind"],
+                    "source_revision": recorded_source["revision"],
+                    "source_tree_sha256": recorded_source["tree_sha256"],
+                    "source_manifest_sha256": recorded_source["manifest_sha256"],
+                    "source_inventory_identity": hashlib.sha256(
+                        preimage_template.replace(
+                            json.dumps("<PACK_ROOT>"),
+                            json.dumps(str(pack_root.resolve())),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "pack_root": str(pack_root.resolve()),
+                    "manifest_path": str((pack_root / "pack.yaml").resolve()),
+                }
+                self.assertEqual(actual, expected)
+                if index == 0:
+                    with loader_path_hint.open("a", encoding="utf-8") as stream:
+                        stream.write("# loader-only comment change\n")
+                    with patch.object(authoring, "__file__", str(loader_path_hint)):
+                        after_comment = read_managed_pack(
+                            recorded_source["pack_id"], project_root=repo_root,
+                            source_state_path=source_state_path,
+                        )
+                    self.assertEqual(actual, after_comment.source.to_dict())
+                actual_records.append(actual)
+
+        self.assertNotEqual(actual_records[0]["pack_root"], actual_records[1]["pack_root"])
+        self.assertNotEqual(
+            actual_records[0]["source_inventory_identity"],
+            actual_records[1]["source_inventory_identity"],
+        )
+        for field in ("source_revision", "source_tree_sha256", "source_manifest_sha256"):
+            self.assertEqual(actual_records[0][field], actual_records[1][field])
+
+    def test_recorded_provenance_checkout_cleanup_after_setup_and_assertion_failures(self):
+        fixture_dir = Path(__file__).parent / "fixtures" / "managed_source_provenance"
+        recording = json.loads((fixture_dir / "recorded_source.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temporary:
+            failed_setup = Path(temporary) / "failed-setup"
+            run_git = subprocess.run
+
+            def fail_after_repository_setup(command, *args, **kwargs):
+                if command[:2] == ["git", "add"]:
+                    raise OSError("forced setup failure after repository initialization")
+                return run_git(command, *args, **kwargs)
+
+            with self.assertRaises(OSError):
+                with tempfile.TemporaryDirectory(dir=temporary) as checkout:
+                    failed_setup = Path(checkout)
+                    with patch("subprocess.run", side_effect=fail_after_repository_setup):
+                        _prepare_recorded_provenance_checkout(failed_setup)
+            self.assertFalse(failed_setup.exists())
+
+            failed_assertion = Path(temporary) / "failed-assertion"
+            with self.assertRaises(AssertionError):
+                with tempfile.TemporaryDirectory(dir=temporary) as checkout:
+                    failed_assertion = Path(checkout)
+                    _prepare_recorded_provenance_checkout(failed_assertion)
+                    self.assertEqual(recording["source"]["pack_id"], "forced assertion failure")
+            self.assertFalse(failed_assertion.exists())
+
+        self.assertFalse((fixture_dir / "checkout").exists())
 
     def test_native_loader_refuses_tampered_manifest_and_tree(self):
         from herzchen.packs import authoring

@@ -1,6 +1,5 @@
 {
-  "astrid_commit": "f42eaa6d",
-  "fixture_root": ".",
+  "astrid_commit": "f42eaa6db62d989fc869da7219d76493e932869c",
   "manifest_path": "src/herzchen/packs/evidence_resource_pack/pack.yaml",
   "recorded_by": "astrid.core.pack.source_setup.active_source_inventory",
   "source": {
@@ -9,9 +8,9 @@
     "pack_root": "src/herzchen/packs/evidence_resource_pack",
     "pack_subpath": "src/herzchen/packs/evidence_resource_pack",
     "repository": "https://example.invalid/packparity.git",
-    "revision": "a66f185400fb07640f492ae3ed61b213246a8a04",
+    "revision": "97cfaebc280e24ebffa9fc727bd1af327521fbe0",
     "source_kind": "managed",
     "tree_sha256": "0aa7039eed5eb5a9806a348bdbd6239286c50e29e0b3f5f7d97a3308ce8a9155"
   },
-  "source_inventory_identity": "750dd90b6f62769d08764a8b8f446c0a078b59447eb09aef16bc2c12a2156fa7"
+  "source_inventory_preimage_template": "[{\"manifest_sha256\":\"ca177262ed1eb1c23f664bd20e970d315151f1aaef7ca9ddd76157147075cb94\",\"pack_id\":\"evidence\",\"pack_root\":\"<PACK_ROOT>\",\"pack_subpath\":\"src/herzchen/packs/evidence_resource_pack\",\"repository\":\"https://example.invalid/packparity.git\",\"revision\":\"97cfaebc280e24ebffa9fc727bd1af327521fbe0\",\"source_kind\":\"managed\",\"tree_sha256\":\"0aa7039eed5eb5a9806a348bdbd6239286c50e29e0b3f5f7d97a3308ce8a9155\"}]"
 }
