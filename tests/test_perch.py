@@ -316,6 +316,7 @@ def clean_stage2_raw(root):
         (raw / ("stage2-fds-" + label + ".txt")).write_text(
             "COMMAND PID USER FD TYPE\n" + "".join("python 123 user %d txt\n" % n for n in range(5)),
             encoding="utf-8")
+    write_stage2_disturbance_evidence(raw)
     return raw
 
 
@@ -348,6 +349,199 @@ def patch(raw, name, fn):
     value = json.loads(path.read_text(encoding="utf-8"))
     fn(value)
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+STAGE2_DISTURBANCES = ("restart", "refused-landing", "queued-landings", "overlapping-activation",
+                       "failed-launch", "operator-denial")
+DISTURBANCE_INVARIANTS = ("disturbance-owner-custody", "disturbance-project-continuity",
+                          "disturbance-store-retention", "disturbance-capacity-accounting",
+                          "disturbance-fence", "disturbance-progress")
+
+
+def write_stage2_disturbance_evidence(raw):
+    """Direct product-shaped status and Store snapshots for every disturbance step."""
+    raw = Path(raw)
+    owner = {"outcome": "running", "state": "serving", "holder": {"pid": 501}, "generation": 4,
+             "native_capacity": {"active_or_uncertain": 1, "holds": []},
+             "manager_turns": {"active": 0}, "attached_projects": [{"project_id": "perch-stage2"}]}
+    project_ref = {"authority": "owner", "kind": "work.project", "id": "perch-stage2",
+                   "revision": "rev-primary"}
+    lifecycle = {"A": "completed", "D": "pending", "E": "pending", "F": "completed",
+                 "G": "completed", "H": "pending", "I": "pending"}
+    dispatch_state = {"A": "landed", "D": "launched", "E": "failed", "F": "landed",
+                      "G": "landed", "H": "failed", "I": "admitted"}
+    project_tasks = [{"id": alias, "task_ref": {"authority": "owner", "kind": "work.task",
+                      "id": "task-" + alias, "revision": "rev-" + alias},
+                      "lifecycle": lifecycle[alias], "dispatch": {"state": dispatch_state[alias]}}
+                     for alias in ("A", "D", "E", "F", "G", "H", "I")]
+    next(row for row in project_tasks if row["id"] == "H").pop("task_ref")
+    assignments = [{"assignment_id": "assignment-" + alias} for alias in lifecycle]
+    schedules = [{"schedule_id": "schedule-" + alias} for alias in lifecycle]
+    store = {"integrity": "ok", "rows": {"work": 3, "dispatch": 3}}
+    second_ref = {"authority": "owner", "kind": "work.project", "id": "perch-disturb-second",
+                  "revision": "rev-second"}
+    for step in STAGE2_DISTURBANCES:
+        before_owner, after_owner = dict(owner), dict(owner)
+        before_owner["holder"] = dict(owner["holder"])
+        after_owner["holder"] = dict(owner["holder"])
+        if step == "restart":
+            after_owner["generation"] += 1
+            after_owner["holder"]["pid"] += 1
+        before_owner["native_capacity"] = dict(owner["native_capacity"])
+        after_owner["native_capacity"] = dict(owner["native_capacity"])
+        if step == "restart":
+            before_owner["native_capacity"]["holds"] = ["schedule-D"]
+            after_owner["native_capacity"]["holds"] = ["schedule-D"]
+        before_owner["manager_turns"] = dict(owner["manager_turns"])
+        after_owner["manager_turns"] = dict(owner["manager_turns"])
+        before_owner["attached_projects"] = list(owner["attached_projects"])
+        after_owner["attached_projects"] = list(owner["attached_projects"])
+        before_project = {"outcome": "read", "project_ref": dict(project_ref),
+                          "tasks": json.loads(json.dumps(project_tasks)),
+                          "assignments": json.loads(json.dumps(assignments)),
+                          "schedules": json.loads(json.dumps(schedules))}
+        after_project = {"outcome": "read", "project_ref": dict(project_ref),
+                         "tasks": json.loads(json.dumps(project_tasks)),
+                         "assignments": json.loads(json.dumps(assignments)),
+                         "schedules": json.loads(json.dumps(schedules))}
+        if step == "operator-denial":
+            before_project["project_ref"] = dict(second_ref)
+            after_project["project_ref"] = dict(second_ref)
+        if step == "overlapping-activation":
+            after_owner["attached_projects"].append({"project_id": second_ref["id"]})
+            (raw / ("stage2-disturb-%s-second-project.json" % step)).write_text(
+                json.dumps({"outcome": "read", "project_ref": second_ref, "tasks": [],
+                            "assignments": [], "schedules": []}), encoding="utf-8")
+        if step == "refused-landing":
+            (raw / ("stage2-disturb-%s-after-next-project.json" % step)).write_text(
+                json.dumps({"outcome": "read", "project_ref": project_ref,
+                            "tasks": [{"id": "F", "lifecycle": "completed",
+                                       "dispatch": {"state": "landed"}}]}), encoding="utf-8")
+        if step == "failed-launch":
+            failed = next(row for row in after_project["tasks"] if row["id"] == "H")
+            failed["dispatch"]["state"] = "failed"
+            failed["dispatch"]["reason"] = "native Claude error result retained"
+            failed["lifecycle"] = "failed"
+        elif step == "refused-landing":
+            next(row for row in after_project["tasks"] if row["id"] == "E")["dispatch"]["state"] = "unknown"
+        elif step == "queued-landings":
+            next(row for row in after_project["tasks"] if row["id"] == "G")["lifecycle"] = "completed"
+        (raw / ("stage2-disturb-%s-before-owner.json" % step)).write_text(json.dumps(before_owner), encoding="utf-8")
+        (raw / ("stage2-disturb-%s-after-owner.json" % step)).write_text(json.dumps(after_owner), encoding="utf-8")
+        (raw / ("stage2-disturb-%s-before-project.json" % step)).write_text(json.dumps(before_project), encoding="utf-8")
+        (raw / ("stage2-disturb-%s-after-project.json" % step)).write_text(json.dumps(after_project), encoding="utf-8")
+        (raw / ("stage2-disturb-%s-before-store.json" % step)).write_text(json.dumps(store), encoding="utf-8")
+        (raw / ("stage2-disturb-%s-after-store.json" % step)).write_text(json.dumps(store), encoding="utf-8")
+        action = {"command": "product disturbance", "rc": 0}
+        if step == "restart":
+            action["response"] = "staging restart completed successfully"
+        elif step == "refused-landing":
+            action["responses"] = [{"ok": False, "error": "landing_refused", "message": "merge conflict"}]
+        elif step == "queued-landings":
+            action["responses"] = [{"ok": True, "result": "completed", "tool": "done"},
+                                    {"ok": False, "error": "landing_refused", "tool": "done"}]
+        elif step == "overlapping-activation":
+            action["response"] = {"outcome": "prepared", "activation": {"project_ref": second_ref}}
+        elif step == "failed-launch":
+            action.update(outcome="read", tasks=json.loads(json.dumps(after_project["tasks"])))
+        elif step == "operator-denial":
+            action["response"] = {"outcome": "rejected", "error": {"code": "presence_declined"}}
+        (raw / ("stage2-disturb-%s-action.json" % step)).write_text(json.dumps(action), encoding="utf-8")
+    (raw / "stage2-disturb-operator-denial-admission.jsonl").write_text(
+        json.dumps({"task": "task-I", "task_ref": {"id": "task-I"}, "prover_result": "declined"}) + "\n", encoding="utf-8")
+    activation = json.loads((raw / "stage2-activation.json").read_text(encoding="utf-8"))
+    activation["activation"]["steps"]["tasks"]["task_refs"]["G"] = {
+        "authority": "owner", "kind": "work.task", "id": "task-G", "revision": "rev-G"}
+    activation["activation"]["steps"]["tasks"]["task_refs"]["F"] = {
+        "authority": "owner", "kind": "work.task", "id": "task-F", "revision": "rev-F"}
+    activation["activation"]["steps"]["tasks"]["task_refs"]["D"] = {
+        "authority": "owner", "kind": "work.task", "id": "task-D", "revision": "rev-D"}
+    activation["activation"]["steps"]["tasks"]["task_refs"]["E"] = {
+        "authority": "owner", "kind": "work.task", "id": "task-E", "revision": "rev-E"}
+    activation["activation"]["steps"]["tasks"]["task_refs"]["H"] = {
+        "authority": "owner", "kind": "work.task", "id": "task-H", "revision": "rev-H"}
+    activation["activation"]["steps"]["tasks"]["task_refs"]["I"] = {
+        "authority": "owner", "kind": "work.task", "id": "task-I", "revision": "rev-I"}
+    (raw / "stage2-disturb-activation.json").write_text(json.dumps(activation), encoding="utf-8")
+    store_events_path = raw / "stage2-store-events.json"
+    store_events = json.loads(store_events_path.read_text(encoding="utf-8"))
+    store_events["tasks"]["task-G"] = "G"
+    store_events["tasks"]["task-E"] = "E"
+    store_events["tasks"]["task-H"] = "H"
+    store_events["tasks"]["task-F"] = "F"
+    store_events["assignments"]["assignment-G"] = "task-G"
+    store_events["assignments"]["assignment-E"] = "task-E"
+    store_events["assignments"]["assignment-H"] = "task-H"
+    store_events["assignments"]["assignment-F"] = "task-F"
+    manager = "perch-disturb-manager"
+    generation = 4
+    disturbance_refs = {}
+    for alias in ("F", "G"):
+        candidate = {"authority": "owner", "kind": "wrk.result", "id": "result-" + alias,
+                     "revision": "rev-result-" + alias}
+        gate = {"authority": "owner", "kind": "assessment.decision", "id": "decision-" + alias,
+                "revision": "rev-decision-" + alias}
+        disturbance_refs[alias] = (candidate, gate)
+        store_events["decisions"][gate["id"]] = {
+            "ref": gate,
+            "payload": {"disposition": "accept", "candidate_ref": candidate, "evidence_refs": [candidate]}}
+        started_at, completed_at = (("10:00:21Z", "10:00:22Z") if alias == "G"
+                                    else ("10:00:17Z", "10:00:18Z"))
+        store_events["manager_turns"].append({"recipient": manager, "generation": generation,
+            "schedule_id": "manager-" + alias, "native_turn_started": True,
+            "recorded_at": "2026-10-17T" + started_at})
+        store_events["events"].append({"task_id": "task-" + alias, "alias": alias,
+            "assignment_id": None, "event_type": "work.revised", "stream": "work:task-" + alias,
+            "recorded_at": "2026-10-17T" + completed_at, "actor": {"actor": manager},
+            "subject": {"kind": "work.task", "id": "task-" + alias},
+            "effects": {"completion": {"disposition": "accepted", "manager": manager,
+                "generation": generation,
+                "logical_request_key": "journey:perch-stage2-review-" + alias + ":finish",
+                "candidate_ref": candidate, "gate_refs": [gate], "evidence_refs": [candidate],
+                "assessment_gate_check": {"evidence_verification": "verified", "blockers": [],
+                    "accepted_decision_refs": [gate]}}}, "value": None})
+    store_events["events"].extend([
+        {"task_id": "task-H", "alias": "H", "assignment_id": "assignment-H",
+         "event_type": "work.assignment.dispatched", "stream": "dispatch:assignment-H",
+         "recorded_at": "2026-10-17T10:00:30Z", "subject": {"kind": "work.assignment", "id": "assignment-H"},
+         "effects": {}, "value": {"task_ref": {"id": "task-H"}, "assignment_id": "assignment-H"}},
+        {"task_id": "task-E", "alias": "E", "assignment_id": "assignment-E",
+         "event_type": "work.assignment.dispatched", "stream": "dispatch:assignment-E",
+         "recorded_at": "2026-10-17T10:00:10Z", "subject": {"kind": "work.assignment", "id": "assignment-E"},
+         "effects": {}, "value": {"task_ref": {"id": "task-E"}, "assignment_id": "assignment-E"}},
+        {"task_id": "task-G", "alias": "G", "assignment_id": "assignment-G",
+         "event_type": "work.result.appended", "stream": "result:assignment-G",
+         "recorded_at": "2026-10-17T10:00:20Z", "subject": {"kind": "wrk.result", "id": "result-G"},
+         "effects": {}, "value": {"lab_commit": "commit-G", "task_ref": {"id": "task-G"},
+                                    "assignment_id": "assignment-G"}},
+    ])
+    store_events_path.write_text(json.dumps(store_events), encoding="utf-8")
+    due = {"outcome": "read", "schedules": [{"schedule_id": "schedule-D",
+            "assignment_ref": {"authority": "owner", "kind": "work.assignment", "id": "assignment-D",
+                                "revision": "rev-assignment-D"},
+            "task_ref": {"authority": "owner", "kind": "work.task", "id": "task-D", "revision": "rev-D"},
+            "target": {"task_ref": {"authority": "owner", "kind": "work.task", "id": "task-D",
+                                     "revision": "rev-D"}},
+            "host_state": "active", "stop_state": "active", "completion_state": "none",
+            "host_evidence": {"observed": True}}]}
+    (raw / "stage2-disturb-restart-before-dues.json").write_text(json.dumps(due), encoding="utf-8")
+    (raw / "stage2-disturb-restart-after-dues.json").write_text(json.dumps(due), encoding="utf-8")
+    failure_due = {"outcome": "read", "schedules": [{"schedule_id": "schedule-H",
+        "assignment_ref": {"authority": "owner", "kind": "work.assignment", "id": "assignment-H",
+                            "revision": "rev-assignment-H"},
+        "target": {"task_ref": {"authority": "owner", "kind": "work.task", "id": "task-H",
+                                 "revision": "rev-H"}},
+        "host_evidence": {"gateway_attempt": {"result": {
+            "outcome": "failed", "error": {"code": "claude_native_failure"},
+            "native_failure": {"is_error": True}}}}}]}
+    (raw / "stage2-disturb-failed-launch-after-dues.json").write_text(
+        json.dumps(failure_due), encoding="utf-8")
+    return raw
+
+
+def clean_stage2_disturbance_evidence(raw):
+    """A full stage-2 fixture with the disturbance product observations included."""
+    return clean_stage2_raw(raw)
 
 
 SEEDED_FAULTS = {
@@ -556,6 +750,25 @@ class AssertionKindTests(unittest.TestCase):
         self.assertEqual(run["assessment_accounting"]["scope_mode"], "check-accepted")
         review = (out / "reviews" / "plan-review.md").read_text(encoding="utf-8")
         self.assertIn("plan is approved", review)
+        second = self.tmp / "stage2-second-project"
+        subprocess.run([sys.executable, "-I", str(BOOTSTRAP / "perch_report.py"), "stage2-bundle",
+                        "--project", str(BOOTSTRAP / "canary" / "project.json"), "--out", str(second),
+                        "--run-id", "perch-disturb-second", "--tasks", "D,E,F,G,H,I"], check=True)
+        second_tasklist = (second / "tasklist.md").read_text(encoding="utf-8")
+        self.assertIn("# Tasklist: perch-disturb-second", second_tasklist)
+        for alias in ("D", "E", "F", "G", "H", "I"):
+            self.assertIn("| %s | toy | canon/main |" % alias, second_tasklist)
+        self.assertNotIn("| A | toy | canon/main |", second_tasklist)
+        registration = self.tmp / "second-registration.json"
+        registration.write_text(json.dumps({"project_ref": {"authority": "owner", "kind": "work.project",
+                                      "id": "perch-disturb-second", "revision": "rev-9"}}), encoding="utf-8")
+        saved = self.tmp / "second-plan-save.json"
+        perch_report.cmd_stage2_plan_save(Namespace(project=str(BOOTSTRAP / "canary" / "project.json"),
+            registration=str(registration), out=str(saved), tasks="D,E,F,G,H,I",
+            project_title="perch-disturb-second"))
+        plan = json.loads(saved.read_text(encoding="utf-8"))
+        self.assertEqual(plan["project"]["title"], "perch-disturb-second")
+        self.assertEqual([task["id"] for task in plan["tasks"]], ["D", "E", "F", "G", "H", "I"])
 
     def test_stage_two_review_ref_is_the_stored_document_revision(self):
         raw = clean_stage2_raw(self.tmp / "stage2-review")
@@ -590,7 +803,8 @@ class AssertionKindTests(unittest.TestCase):
                               "id": "perch-stage2", "revision": "rev-3"}}), encoding="utf-8")
         out = self.tmp / "plan-save.json"
         perch_report.cmd_stage2_plan_save(Namespace(project=str(BOOTSTRAP / "canary" / "project.json"),
-                                                    registration=str(registration), out=str(out)))
+                                                    registration=str(registration), out=str(out),
+                                                    tasks=None, project_title=""))
         saved = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual([task["id"] for task in saved["tasks"]], ["A", "B", "C"])
         self.assertEqual([task["dependencies"] for task in saved["tasks"]], [[], [], ["B"]])
@@ -639,6 +853,171 @@ class AssertionKindTests(unittest.TestCase):
         # assertion must turn red when project commands target owner home.
         seeded = match.group().replace('"$CANARY_DIR/client"', '"$STAGE_ROOT/home"')
         self.assertNotEqual(home_argument(seeded), "/staging/perch-canary/test/client")
+
+    def test_stage_two_disturbance_capture_reads_product_owner_project_and_store(self):
+        """Disturbance evidence comes from direct product reads around the action."""
+        import re
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        capture = re.search(r"(?ms)^stage2_disturb_capture\(\) \{[^\n]*\n.*?^\}\n", shell)
+        action = re.search(r"(?ms)^stage2_disturb_action\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(capture)
+        self.assertIsNotNone(action)
+        self.assertIn('cold_client service status', capture.group())
+        self.assertIn('stage2_host_client --host "$host" project status --project "$project"', capture.group())
+        self.assertIn('"$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store"', capture.group())
+        self.assertIn('"$prefix-owner.json"', capture.group())
+        self.assertIn('"$prefix-project.json"', capture.group())
+        self.assertIn('"$prefix-store.json"', capture.group())
+        self.assertIn('"command": command, "rc": int(rc), "response": response', action.group())
+
+    def test_stage_two_declares_each_disturbance_journey(self):
+        import re
+        shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
+        keys = ("restart", "refused-landing", "queued-landings", "overlapping-activation",
+                "failed-launch", "operator-denial")
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertIn("stage2_disturb_" + key.replace("-", "_") + "()", shell)
+        start = shell.index("      admit-and-dispatch)")
+        end = shell.index("      landing-conflict)", start)
+        scenario = shell[start:end]
+        self.assertIn("stage2_run_disturbances \"$host\"", scenario)
+        self.assertIn("stage2_disturb_restart_task \"$host\"", scenario)
+        self.assertIn("stage2_dispatch_tasks", scenario)
+        disturbance_run = re.search(r"(?ms)^stage2_run_disturbances\(\) \{[^\n]*\n.*?^\}\n", shell)
+        restart_run = re.search(r"(?ms)^stage2_disturb_restart_task\(\) \{[^\n]*\n.*?^\}\n", shell)
+        capacity_turn = re.search(r"(?ms)^stage2_capacity_turn\(\) \{[^\n]*\n.*?^\}\n", shell)
+        finish_c = re.search(r"(?ms)^stage2_finish_C\(\) \{[^\n]*\n.*?^\}\n", shell)
+        dispatch = re.search(r"(?ms)^stage2_dispatch_tasks\(\) \{[^\n]*\n.*?^\}\n", shell)
+        self.assertIsNotNone(disturbance_run)
+        self.assertIsNotNone(restart_run)
+        self.assertIsNotNone(capacity_turn)
+        self.assertIsNotNone(finish_c)
+        self.assertIsNotNone(dispatch)
+        for key in ("operator-denial", "refused-landing", "queued-landings", "failed-launch"):
+            with self.subTest(stage2_product_path=key):
+                self.assertIn("stage2_disturb_" + key.replace("-", "_") + " ", disturbance_run.group())
+        self.assertIn("stage2_disturb_restart \"$host\"", restart_run.group())
+        self.assertIn("stage2_disturb_overlapping_activation", capacity_turn.group())
+        self.assertIn("stage2_capacity_turn", finish_c.group())
+        self.assertIn("stage2_finish_C && stage2_dispatch_tasks", scenario)
+        for key in keys:
+            name = "stage2_disturb_" + key.replace("-", "_")
+            helper = re.search(r"(?ms)^" + name + r"\(\) \{[^\n]*\n.*?^\}\n", shell)
+            self.assertIsNotNone(helper)
+            with self.subTest(no_timed_wait=name):
+                self.assertNotRegex(helper.group(), r"(?m)^\s*sleep\s")
+
+    def test_fake_worker_disturbance_modes_submit_through_worker_tool_and_keep_response_trace(self):
+        """Exercise the fake worker's real disturbance dispatcher with a stubbed socket call."""
+        import contextlib
+        spec = importlib.util.spec_from_file_location("perch_fake_claude_disturb", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        canary = self.tmp / "perch-canary" / "2-test"
+        worker_lab = canary / "canon.otto-labs" / "branch-key" / "task-A"
+        worker_lab.mkdir(parents=True)
+        toy = worker_lab / "toy"
+        toy.mkdir()
+        check_file = toy / "mathx.py"
+        check_file.write_text("def add(a, b): return a + b\n", encoding="utf-8")
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(worker_lab)
+            for mode in ("double-done", "check-failure"):
+                with self.subTest(mode=mode):
+                    (canary / ".perch-disturb-A.json").write_text(
+                        json.dumps({"mode": mode, "marker_dir": str(canary)}), encoding="utf-8")
+                    calls = []
+                    def stub_tool(args, tool, tool_args=None):
+                        calls.append((tool, tool_args, check_file.read_text(encoding="utf-8")))
+                        return {"ok": True, "sequence": len(calls)}
+                    def stub_pair(args, requests):
+                        calls.extend((tool, tool_args, check_file.read_text(encoding="utf-8"))
+                                     for tool, tool_args in requests)
+                        return [{"ok": True, "sequence": index + 1} for index in range(len(requests))]
+                    patches = [mock_patch.object(launcher, "worker_tool", stub_tool)]
+                    if mode == "double-done":
+                        patches.append(mock_patch.object(launcher, "worker_tool_pair", stub_pair))
+                    with patches[0], (patches[1] if len(patches) > 1 else contextlib.nullcontext()):
+                        self.assertTrue(launcher.apply_disturbance([], "A", mode))
+                    self.assertEqual([name for name, _, _ in calls], ["done", "done"])
+                    if mode == "check-failure":
+                        self.assertIn("invalid python", calls[0][2])
+                        self.assertNotIn("invalid python", calls[1][2])
+                    self.assertNotIn("invalid python", check_file.read_text(encoding="utf-8"))
+                    trace = json.loads((canary / ".perch-disturb-A-trace.json").read_text(encoding="utf-8"))
+                    self.assertEqual(trace["mode"], mode)
+                    self.assertEqual(trace["responses"], [{"ok": True, "sequence": 1},
+                                                           {"ok": True, "sequence": 2}])
+        finally:
+            os.chdir(original_cwd)
+
+    def test_fake_worker_failed_launch_mode_returns_launcher_failure(self):
+        import contextlib
+        import io
+        spec = importlib.util.spec_from_file_location("perch_fake_claude_failed_launch", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        canary = self.tmp / "perch-canary" / "2-test"
+        worker_lab = canary / "canon.otto-labs" / "branch-key" / "task-C"
+        worker_lab.mkdir(parents=True)
+        marker = canary / ".perch-disturb-C.json"
+        marker.write_text(json.dumps({"mode": "failed-launch", "marker_dir": str(canary)}), encoding="utf-8")
+        frame = {"message": {"content": [{"text": stage2_worker_prompt("C")}]}}
+        output = io.StringIO()
+        errors = io.StringIO()
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(worker_lab)
+            with mock_patch.object(sys, "argv", ["perch-fake-claude", "--model", "claude-haiku-5-5",
+                                                 "--tools", "Read,Write"]), \
+                    mock_patch.object(sys, "stdin", io.StringIO(json.dumps(frame) + "\n")), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                self.assertEqual(launcher.main(), 1)
+        finally:
+            os.chdir(original_cwd)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(events[-1]["subtype"], "error_during_execution")
+        self.assertFalse(marker.exists())
+        self.assertIn("launcher failure", errors.getvalue())
+
+    def test_fake_worker_conflict_mode_records_one_refused_done_after_canon_edit(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_claude_conflict", BOOTSTRAP / "perch_fake_claude.py")
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        canary = self.tmp / "perch-canary" / "2-test"
+        worker_lab = canary / "canon.otto-labs" / "branch-key" / "task-E"
+        worker_lab.mkdir(parents=True)
+        canon_file = canary / "canon" / "toy" / "perch_disturb_slot.py"
+        lab_file = worker_lab / "toy" / "perch_disturb_slot.py"
+        canon_file.parent.mkdir(parents=True)
+        lab_file.parent.mkdir(parents=True)
+        canon_file.write_text("PERCH_DISTURB_SLOT = 'base'\n", encoding="utf-8")
+        lab_file.write_text(canon_file.read_text(encoding="utf-8"), encoding="utf-8")
+        (canary / ".perch-disturb-E.json").write_text(
+            json.dumps({"mode": "conflict", "marker_dir": str(canary)}), encoding="utf-8")
+        calls = []
+        def hold_worker(marker):
+            self.assertIn("PERCH_DISTURB_SLOT = 'worker'", lab_file.read_text(encoding="utf-8"))
+            Path(marker).write_text(str(os.getpid()) + "\n", encoding="utf-8")
+            canon_file.write_text("PERCH_DISTURB_SLOT = 'operator'\n", encoding="utf-8")
+        def refused_done(args, tool, tool_args=None):
+            calls.append((tool, tool_args))
+            return {"ok": False, "error": "landing_refused", "reason": "merge conflict"}
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(worker_lab)
+            with mock_patch.object(launcher, "await_release", hold_worker), \
+                    mock_patch.object(launcher, "worker_tool", refused_done):
+                self.assertTrue(launcher.apply_disturbance([], "E", "conflict"))
+        finally:
+            os.chdir(original_cwd)
+        self.assertEqual([tool for tool, _ in calls], ["done"])
+        self.assertEqual(canon_file.read_text(encoding="utf-8"), "PERCH_DISTURB_SLOT = 'operator'\n")
+        trace = json.loads((canary / ".perch-disturb-E-trace.json").read_text(encoding="utf-8"))
+        self.assertEqual(trace["responses"], [{"ok": False, "error": "landing_refused",
+                                               "reason": "merge conflict"}])
 
     def test_stage_two_repo_is_mapped_before_owner_composition(self):
         source = (BOOTSTRAP / "staging.sh").read_text(encoding="utf-8")
@@ -1022,6 +1401,63 @@ class AssertionKindTests(unittest.TestCase):
                 expected = ({"admitted-ready-dependency-order", "unadmitted-revision-refused",
                              "metadata-only-write-runnable"} if fault == "admit_order" else {target})
                 self.assertEqual({name for name, status in got.items() if status == "fail"}, expected, got)
+
+    def test_stage_two_disturbance_invariants_cover_all_six_product_observation_steps(self):
+        raw = clean_stage2_disturbance_evidence(self.tmp / "stage2-disturbance-green")
+        result = {row["name"]: row["status"] for row in perch_report.assertions(raw)}
+        self.assertEqual({name: result.get(name) for name in DISTURBANCE_INVARIANTS},
+                         {name: "pass" for name in DISTURBANCE_INVARIANTS}, result)
+        for step in STAGE2_DISTURBANCES:
+            for side in ("before", "after"):
+                for source in ("owner", "project", "store"):
+                    self.assertTrue((raw / ("stage2-disturb-%s-%s-%s.json" % (step, side, source))).is_file())
+            self.assertTrue((raw / ("stage2-disturb-%s-action.json" % step)).is_file())
+        self.assertTrue((raw / "stage2-disturb-overlapping-activation-second-project.json").is_file())
+        self.assertTrue((raw / "stage2-disturb-refused-landing-after-next-project.json").is_file())
+        self.assertTrue((raw / "stage2-disturb-operator-denial-admission.jsonl").is_file())
+
+    def test_each_stage_two_disturbance_has_six_named_invariant_regressions(self):
+        """A doctored product observation in each step turns one named invariant red."""
+        cases = {
+            "restart": ("disturbance-owner-custody", "after-owner",
+                        lambda value: value.update(generation=4)),
+            "refused-landing": ("disturbance-fence", "action",
+                                lambda value: value.update(responses=[{"ok": True, "result": "unexpected"}])),
+            "queued-landings": ("disturbance-progress", "after-project",
+                                lambda value: next(row for row in value["tasks"] if row["id"] == "G").update(
+                                    lifecycle="pending", dispatch={"state": "admitted"})),
+            "overlapping-activation": ("disturbance-project-continuity", "after-project",
+                                       lambda value: value["project_ref"].update(id="wrong-project")),
+            "failed-launch": ("disturbance-project-continuity", "before-project",
+                              lambda value: next(row for row in value["tasks"] if row["id"] == "D")
+                              ["task_ref"].update(id="wrong-task")),
+            "operator-denial": ("disturbance-capacity-accounting", "after-owner",
+                                lambda value: value["native_capacity"].pop("holds")),
+        }
+        self.assertEqual(set(cases), set(STAGE2_DISTURBANCES))
+        for step, (target, suffix, mutate) in cases.items():
+            with self.subTest(invariant=target, step=step):
+                raw = clean_stage2_disturbance_evidence(self.tmp / ("disturb-defect-" + step))
+                patch(raw, "stage2-disturb-%s-%s.json" % (step, suffix), mutate)
+                result = {row["name"]: row["status"] for row in perch_report.assertions(raw)}
+                self.assertEqual({name for name in DISTURBANCE_INVARIANTS if result.get(name) == "fail"},
+                                 {target}, result)
+
+    def test_stage_two_second_project_identity_and_absence_are_reported(self):
+        raw = clean_stage2_disturbance_evidence(self.tmp / "disturb-second-identity")
+        second_file = "stage2-disturb-overlapping-activation-second-project.json"
+        patch(raw, second_file, lambda value: value["project_ref"].update(id="perch-stage2"))
+        patch(raw, "stage2-disturb-overlapping-activation-action.json",
+              lambda value: value["response"]["activation"]["project_ref"].update(id="perch-stage2"))
+        got = statuses(raw)
+        self.assertEqual({name for name in DISTURBANCE_INVARIANTS if got[name] == "fail"},
+                         {"disturbance-progress"}, got)
+
+        raw = clean_stage2_disturbance_evidence(self.tmp / "disturb-second-absent")
+        (raw / second_file).unlink()
+        got = statuses(raw)
+        self.assertEqual({name for name in DISTURBANCE_INVARIANTS if got[name] == "fail"},
+                         set(DISTURBANCE_INVARIANTS), got)
 
     def test_stage_two_direct_store_events_refuse_false_order_and_missing_timeline_events(self):
         cases = (
@@ -1494,7 +1930,8 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         shell = (BOOTSTRAP / "perch.sh").read_text(encoding="utf-8")
         wait = __import__("re").search(r"(?ms)^stage2_wait_worker\(\) \{[^\n]*\n.*?^\}\n", shell)
         self.assertIsNotNone(wait)
-        self.assertIn('project status --project perch-stage2', wait.group())
+        self.assertIn('project="${3:-perch-stage2}"', wait.group())
+        self.assertIn('project status --project "$project"', wait.group())
         self.assertNotIn('manager --project perch-stage2 status', wait.group())
         self.assertIn('stage2-task-landed', wait.group())
         self.assertIn('if [ "$task" = C ]; then', wait.group())
@@ -1900,6 +2337,65 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertIn('cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"',
                       shell)
 
+    def test_fake_manager_reviews_second_project_F_and_G_through_installed_cli(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        fake = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fake)
+        calls = []
+        project = {"authority": "owner", "kind": "work.project", "id": "project-disturb",
+                   "revision": "rev-disturb"}
+        refs = {}
+        for alias in ("F", "G"):
+            refs[alias] = {
+                "candidate": {"authority": "owner", "kind": "wrk.result", "id": "result-" + alias,
+                              "revision": "rev-" + alias},
+                "source": {"authority": "owner", "kind": "dat.content.document", "id": "source-" + alias,
+                           "revision": "rev-source-" + alias},
+                "evidence": {"authority": "owner", "kind": "dat.content.document", "id": "receipt-" + alias,
+                             "revision": "rev-receipt-" + alias},
+                "criterion": {"authority": "owner", "kind": "assessment.criterion", "id": "criterion-" + alias,
+                              "revision": "rev-criterion-" + alias},
+            }
+
+        def client(*words):
+            calls.append(words)
+            if words[:2] == ("review-input", "--task"):
+                alias = words[2]
+                retained = refs[alias]
+                return {"outcome": "read", "project_ref": project, "candidate_ref": retained["candidate"],
+                        "source_refs": [retained["source"]],
+                        "evidence_refs": [retained["candidate"], retained["evidence"]],
+                        "criterion_aliases": {"C-" + alias: retained["criterion"]},
+                        "worker_result_sha256": ("f" if alias == "F" else "e") * 64,
+                        "task_outcome": "Canary dispatch " + alias, "observed_turn_id": "turn-" + alias}
+            if words[0] == "review-task":
+                alias = words[words.index("--task") + 1]
+                retained = refs[alias]
+                candidate = json.loads(words[words.index("--candidate-ref") + 1])
+                self.assertEqual(candidate, retained["candidate"])
+                self.assertEqual(json.loads(words[words.index("--source-ref") + 1]), retained["source"])
+                judgments = json.loads(words[words.index("--judgments") + 1])
+                self.assertEqual(judgments["C-" + alias]["verdict"], "PASS")
+                self.assertEqual(judgments["C-" + alias]["evidence_refs"],
+                                 [retained["candidate"], retained["evidence"]])
+                self.assertEqual(json.loads(words[words.index("--inspection") + 1])["observed_turn_id"],
+                                 "turn-" + alias)
+                return {"outcome": "accepted", "gate_refs": [{**retained["criterion"],
+                                                                  "kind": "assessment.decision"}],
+                        "completion": {"outcome": "pending", "completion_intent": "perch-" + alias}}
+            self.fail("unexpected installed client command: " + repr(words))
+
+        for alias in ("F", "G"):
+            with self.subTest(task=alias):
+                self.assertEqual(fake.scripted_manager_turn(alias, client=client), "reviewed")
+        self.assertEqual([words[:3] for words in calls if words[:2] == ("review-input", "--task")],
+                         [("review-input", "--task", "F"), ("review-input", "--task", "G")])
+        reviews = [words for words in calls if words[0] == "review-task"]
+        self.assertEqual([words[words.index("--task") + 1] for words in reviews], ["F", "G"])
+        self.assertEqual([words[words.index("--request-key") + 1] for words in reviews],
+                         ["perch-stage2-review-F", "perch-stage2-review-G"])
+        self.assertNotIn("complete-task", [words[0] for words in calls])
+
     def test_task_lifecycle_wait_is_red_until_owner_completes(self):
         status = {"tasks": [{"id": "A", "lifecycle": "completed"}]}
         owner = {"native_capacity": {"active_or_uncertain": 0}}
@@ -2021,6 +2517,39 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             self.assertEqual(observed, {"A": 3, "B": 2, "C": 0})
             self.assertEqual(fake.manager_journey("owner brief"), "recovered")
             self.assertEqual(observed, {"A": 4, "B": 3, "C": 2})
+
+    def test_disturb_manager_journey_selects_F_and_G_from_project_context(self):
+        spec = importlib.util.spec_from_file_location("perch_fake_claude", BOOTSTRAP / "perch_fake_claude.py")
+        fake = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fake)
+        temporary = short_temp_root()
+        self.addCleanup(shutil.rmtree, temporary, True)
+        entrypoint = temporary / "ottoctl"
+        entrypoint.write_text("#!/bin/sh\n", encoding="utf-8")
+        brief = {"operating_core": {"role": "manager", "introduction": {
+            "tool_entrypoint": str(entrypoint),
+            "manager_operating_context": {"project_ref": {
+                "authority": "owner", "kind": "work.project", "id": "perch-disturb",
+                "revision": "rev-disturb"}}}}}
+        prompt = ('<otto-resource-brief sha256="' + "0" * 64 + '>\n'
+                  + json.dumps(brief) + '\n</otto-resource-brief>')
+        self.assertEqual(fake.manager_project_id(prompt), "perch-disturb")
+        self.assertEqual(fake.manager_marker(prompt), ".perch-manager-perch-disturb.pid")
+
+        calls = []
+        turn_count = {"F": 0, "G": 0}
+
+        def turn(alias, *, client):
+            calls.append(alias)
+            turn_count[alias] += 1
+            return "reviewed" if turn_count[alias] == 1 else "completed"
+
+        with mock_patch.object(fake, "scripted_manager_turn", side_effect=turn), \
+                mock_patch.object(fake.time, "sleep", return_value=None):
+            self.assertEqual(fake.manager_journey(prompt), "reviewed")
+            self.assertEqual(fake.manager_journey(prompt), "reviewed")
+            self.assertEqual(fake.manager_journey(prompt), "completed")
+        self.assertEqual(calls, ["F", "F", "G", "F", "G"])
 
     def test_stage_two_owner_does_not_install_completion_port_hook(self):
         source = (BOOTSTRAP / "perch_stage2_owner.py").read_text(encoding="utf-8")
@@ -2302,6 +2831,76 @@ class FakeRunTests(unittest.TestCase):
         got = results_of(report_dir)
         self.assertEqual({name for name, status in got.items() if status == "fail"},
                          {"landing-conflict-refused"}, got)
+
+    def test_stage2_fake_disturbances_preserve_all_six_invariants_after_each_step(self):
+        """Run outside the worker sandbox: this starts and stops a real staging owner."""
+        code, log, report_dir = run_perch(self.tmp, self.sha, stage="2")
+        self.assertIsNotNone(code, "stage 2 fake perch did not finish; log tail:\n" + log)
+        self.assertEqual(code, 0, log)
+        self.assertIsNotNone(report_dir, log)
+        raw = report_dir / "raw"
+        got = results_of(report_dir)
+        self.assertEqual({name: got.get(name) for name in DISTURBANCE_INVARIANTS},
+                         {name: "pass" for name in DISTURBANCE_INVARIANTS}, got)
+        for step in STAGE2_DISTURBANCES:
+            for side in ("before", "after"):
+                for source in ("owner", "project", "store"):
+                    path = raw / ("stage2-disturb-%s-%s-%s.json" % (step, side, source))
+                    self.assertTrue(path.is_file(), "missing direct product observation " + str(path))
+                    self.assertIsInstance(json.loads(path.read_text(encoding="utf-8")), dict)
+            if step == "overlapping-activation":
+                second = raw / "stage2-disturb-overlapping-activation-second-project.json"
+                self.assertTrue(second.is_file(), "missing second project's direct status " + str(second))
+                self.assertIsInstance(json.loads(second.read_text(encoding="utf-8")), dict)
+            if step == "refused-landing":
+                followup = raw / "stage2-disturb-refused-landing-after-next-project.json"
+                self.assertTrue(followup.is_file(), "missing independent next project status " + str(followup))
+                self.assertIsInstance(json.loads(followup.read_text(encoding="utf-8")), dict)
+            if step == "failed-launch":
+                dues = raw / "stage2-disturb-failed-launch-after-dues.json"
+                self.assertTrue(dues.is_file(), "missing failed H Due readback " + str(dues))
+                due_status = json.loads(dues.read_text(encoding="utf-8"))
+                activation = json.loads((raw / "stage2-disturb-activation.json").read_text(encoding="utf-8"))
+                task_refs = activation["activation"]["steps"]["tasks"]["task_refs"]
+                due_refs = [((row.get("target") or {}).get("task_ref") or {}).get("id")
+                            for row in due_status.get("schedules", [])]
+                self.assertIn(task_refs["H"]["id"], due_refs, due_status)
+            if step == "operator-denial":
+                admission_log = raw / "stage2-disturb-operator-denial-admission.jsonl"
+                self.assertTrue(admission_log.is_file(), "missing raw owner denial admission " + str(admission_log))
+                self.assertTrue(admission_log.read_text(encoding="utf-8").strip())
+            action_path = raw / ("stage2-disturb-%s-action.json" % step)
+            self.assertTrue(action_path.is_file(), "missing product action response " + str(action_path))
+            action = json.loads(action_path.read_text(encoding="utf-8"))
+            if step == "refused-landing":
+                responses = action.get("responses")
+                self.assertIsInstance(responses, list, action)
+                self.assertTrue(responses, action)
+                self.assertIs(responses[0].get("ok"), False, action)
+                self.assertEqual(responses[0].get("error"), "landing_refused", action)
+            elif step == "queued-landings":
+                responses = action.get("responses")
+                self.assertIsInstance(responses, list, action)
+                self.assertEqual(len(responses), 2, action)
+                self.assertEqual(sum(reply.get("ok") is True for reply in responses), 1, action)
+                self.assertEqual(sum(reply.get("ok") is False for reply in responses), 1, action)
+            elif step == "failed-launch":
+                self.assertEqual(action.get("outcome"), "read", action)
+                failed = next((row for row in action.get("tasks", []) if row.get("id") == "H"), {})
+                self.assertEqual((failed.get("dispatch") or {}).get("state"), "failed", action)
+                activation = json.loads((raw / "stage2-disturb-activation.json").read_text(encoding="utf-8"))
+                refs = activation["activation"]["steps"]["tasks"]["task_refs"]
+                dues = json.loads((raw / "stage2-disturb-failed-launch-after-dues.json").read_text(encoding="utf-8"))
+                exact_due = next(row for row in dues["schedules"]
+                                 if ((row.get("target") or {}).get("task_ref") or {}).get("id") == refs["H"]["id"])
+                self.assertEqual((failed.get("dispatch") or {}).get("reason"),
+                                 "native Claude error result retained", action)
+                self.assertEqual((exact_due["host_evidence"]["gateway_attempt"]["result"]["error"]
+                                  .get("code")), "claude_native_failure", exact_due)
+            else:
+                response = action.get("response")
+                self.assertTrue((isinstance(response, dict) or isinstance(response, str) and response.strip()), action)
+                self.assertIsInstance(action.get("rc"), int, action)
 
 
 # The assertions each seeded fault turns red in a real run. A lab left behind also leaves its lab-deleted

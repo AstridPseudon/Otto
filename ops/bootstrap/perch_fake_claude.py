@@ -35,24 +35,108 @@ def emit(value):
     print(json.dumps(value), flush=True)
 
 
-def done_tool(args):
-    """Submit through the owner-issued, token-fenced worker tool socket."""
+def worker_tool(args, tool, tool_args=None):
+    """Call a real owner-issued, token-fenced worker tool socket."""
     config = json.loads(args[args.index("--mcp-config") + 1])
     entry = config["mcpServers"]["otto"]
     server_args = entry["args"]
     socket_path = server_args[server_args.index("--socket") + 1]
     token_name = server_args[server_args.index("--token-env") + 1]
     token = os.environ[token_name]
-    request = {"op": "call", "token": token, "tool": "done",
-               "args": {"summary": "PERCH stage-2 canary worker finished"}}
+    request = {"op": "call", "token": token, "tool": tool, "args": tool_args or {}}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.connect(socket_path)
         client.sendall((json.dumps(request) + "\n").encode("utf-8"))
         with client.makefile("r", encoding="utf-8") as stream:
             reply = json.loads(stream.readline())
+    return reply
+
+
+def worker_tool_pair(args, requests):
+    """Queue two token-authenticated tool requests before reading either reply."""
+    config = json.loads(args[args.index("--mcp-config") + 1])
+    entry = config["mcpServers"]["otto"]
+    server_args = entry["args"]
+    socket_path = server_args[server_args.index("--socket") + 1]
+    token_name = server_args[server_args.index("--token-env") + 1]
+    token = os.environ[token_name]
+    clients = [socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) for _ in requests]
+    streams = []
+    try:
+        for client, (tool, tool_args) in zip(clients, requests):
+            client.connect(socket_path)
+            client.sendall((json.dumps({"op": "call", "token": token, "tool": tool,
+                                        "args": tool_args}) + "\n").encode("utf-8"))
+        for client in clients:
+            streams.append(client.makefile("r", encoding="utf-8"))
+        return [json.loads(stream.readline()) for stream in streams]
+    finally:
+        for stream in streams:
+            stream.close()
+        for client in clients:
+            client.close()
+
+
+def done_tool(args):
+    """Submit through the owner-issued, token-fenced worker tool socket."""
+    reply = worker_tool(args, "done", {"summary": "PERCH stage-2 canary worker finished"})
     if reply.get("ok") is not True:
         raise RuntimeError("owner done tool refused: " + repr(reply))
     return reply
+
+
+def disturbance(alias):
+    """Read a harness trigger from the disposable admitted project's directory."""
+    for parent in (Path.cwd(), *Path.cwd().parents):
+        if parent.name.startswith("2-") and parent.parent.name == "perch-canary":
+            marker = parent / (".perch-disturb-" + alias + ".json")
+            if marker.is_file():
+                try:
+                    value = json.loads(marker.read_text(encoding="utf-8"))
+                except Exception:
+                    value = {"mode": marker.read_text(errors="replace").strip()}
+                value["marker_dir"] = str(parent)
+                return value
+    return {}
+
+
+def apply_disturbance(args, alias, mode):
+    """Exercise disturbances through the actual worker tool socket."""
+    marker_dir = Path(disturbance(alias).get("marker_dir", Path.cwd()))
+    trace = marker_dir / (".perch-disturb-" + alias + "-trace.json")
+    if mode in {"conflict", "double-done"}:
+        (marker_dir / (".perch-disturb-" + alias + ".pid")).write_text(str(os.getpid()) + "\n",
+                                                                          encoding="utf-8")
+    calls = []
+    if mode == "check-failure":
+        # Make the admitted repository check fail inside this real fenced lab.
+        target = Path.cwd() / "toy" / "mathx.py"
+        if target.exists():
+            target.write_text(target.read_text(encoding="utf-8") + "\nthis is invalid python !!!\n", encoding="utf-8")
+        calls.append(worker_tool(args, "done", {"summary": "exercise retained landing refusal"}))
+        if target.exists():
+            target.write_text(target.read_text(encoding="utf-8").replace("\nthis is invalid python !!!\n", "\n"), encoding="utf-8")
+        calls.append(worker_tool(args, "done", {"summary": "retry after refusal"}))
+    elif mode == "double-done":
+        calls.extend(worker_tool_pair(args, [
+            ("done", {"summary": "first queued landing request"}),
+            ("done", {"summary": "second queued landing request"}),
+        ]))
+    elif mode in {"conflict", "hold"}:
+        if mode == "conflict":
+            target = Path.cwd() / "toy" / "perch_disturb_slot.py"
+            if not target.exists():
+                raise RuntimeError("conflict seed file is absent from the admitted repository")
+            target.write_text("PERCH_DISTURB_SLOT = 'worker'\n", encoding="utf-8")
+            await_release(".perch-worker-" + alias + ".pid")
+        else:
+            await_release(".perch-worker-" + alias + ".pid")
+        calls.append(worker_tool(args, "done", {"summary": "PERCH disturbance task finished"}))
+    else:
+        return False
+    trace.write_text(json.dumps({"mode": mode, "task": alias, "responses": calls}, sort_keys=True, indent=2) + "\n",
+                     encoding="utf-8")
+    return True
 
 
 def canary_alias(prompt):
@@ -65,7 +149,7 @@ def canary_alias(prompt):
     contract = brief.get("instruction_contract") or {}
     core = brief.get("operating_core") or {}
     priorities = core.get("priorities") or []
-    for alias in ("A", "B", "C"):
+    for alias in ("A", "B", "C", "D", "E", "F", "G", "H", "I"):
         if (core.get("role") == "worker"
                 and contract.get("objective") == "Implement the delegated " + alias + " outcome"
                 and (contract.get("task_ref") or {}).get("kind") == "work.task"
@@ -103,6 +187,26 @@ def manager_entrypoint(prompt):
     return entrypoint
 
 
+def manager_project_id(prompt):
+    """Read the project pinned into this manager's adopted operating context."""
+    opening = '<otto-resource-brief sha256="'
+    if prompt.count(opening) != 1:
+        return "perch-stage2"
+    body = prompt.split(opening, 1)[1].split('>\n', 1)[1].split('\n</otto-resource-brief>', 1)[0]
+    brief = json.loads(body)
+    context = ((brief.get("operating_core") or {}).get("introduction") or {}).get("manager_operating_context") or {}
+    project_ref = context.get("project_ref")
+    project_id = project_ref.get("id") if isinstance(project_ref, dict) else None
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError("fake manager brief has no pinned project in its operating context")
+    return project_id
+
+
+def manager_marker(prompt):
+    project = manager_project_id(prompt)
+    return ".perch-manager.pid" if project == "perch-stage2" else ".perch-manager-" + project + ".pid"
+
+
 def installed_client(entrypoint, *words):
     result = subprocess.run([entrypoint, "manager", *words], capture_output=True, text=True,
                             check=False)
@@ -117,7 +221,7 @@ def installed_client(entrypoint, *words):
 
 def scripted_manager_turn(alias, *, client):
     """One owner-started turn records a judgment or reconciles C's exact Due."""
-    if alias in {"A", "B"}:
+    if alias in {"A", "B", "F", "G"}:
         observed = client("review-input", "--task", alias)
         if observed.get("outcome") == "pending":
             return "pending"
@@ -181,7 +285,9 @@ def scripted_manager_turn(alias, *, client):
 def manager_journey(prompt):
     entrypoint = manager_entrypoint(prompt)
     client = lambda *words: installed_client(entrypoint, *words)
-    for alias in ("A", "B"):
+    project = manager_project_id(prompt)
+    aliases = ("F", "G") if project == "perch-disturb" else ("A", "B")
+    for alias in aliases:
         while True:
             state = scripted_manager_turn(alias, client=client)
             if state == "completed":
@@ -191,6 +297,8 @@ def manager_journey(prompt):
                 # retained finish intent can settle and wake the next turn.
                 return state
             time.sleep(0.25)
+    if project == "perch-disturb":
+        return "completed"
     # The accepted B completion wakes this same manager. Keep that turn
     # available while the owner dispatches and the harness kills worker C.
     while True:
@@ -238,8 +346,9 @@ def main():
         alias = None
     if alias is None:
         if workspace_role == "manager":
-            if not Path(".perch-manager.pid").exists():
-                await_release(".perch-manager.pid")
+            marker = manager_marker(prompt)
+            if not Path(marker).exists():
+                await_release(marker)
             try:
                 result = manager_journey(prompt)
             except Exception as exc:
@@ -254,6 +363,16 @@ def main():
               "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
               "result": "PERCH manager turn " + result, "usage": {"input_tokens": 1, "output_tokens": 1}})
         return 0
+    mode = (disturbance(alias).get("mode") or "").strip()
+    if mode == "failed-launch":
+        print("PERCH seeded fake launcher failure for admitted task " + alias, file=sys.stderr)
+        marker_dir = disturbance(alias).get("marker_dir")
+        if marker_dir:
+            (Path(marker_dir) / (".perch-disturb-" + alias + ".json")).unlink(missing_ok=True)
+        emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
+              "session_id": session, "uuid": "failed-" + uuid.uuid4().hex[:8],
+              "result": "PERCH seeded launcher failure"})
+        return 1
     if tools and "Bash" not in tools:
         if alias == "C":
             # Stage 2 kills this exact owner-launched worker to verify that
@@ -262,7 +381,11 @@ def main():
                 marker.write(str(os.getpid()) + "\n")
             signal.pause()
             return 1
-        if alias in {"A", "B"} and workspace_role == "worker":
+        if (alias in {"A", "B"} and workspace_role == "worker"
+                and mode not in {"check-failure", "double-done", "conflict", "hold"}):
+            await_release(".perch-worker-" + alias + ".pid")
+        if (alias in {"A", "B"} and workspace_role == "worker"
+                and mode in {"check-failure", "double-done", "conflict", "hold"}):
             await_release(".perch-worker-" + alias + ".pid")
         path = os.path.join(os.getcwd(), "perch-worker-" + session + ".txt")
         content = "PERCH stage-2 worker artifact from " + model + "\n"
@@ -276,6 +399,19 @@ def main():
               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "write-1",
                                                        "is_error": False, "content": "written"}]}})
         if "mcp__otto__done" in mcp_tools:
+            if mode in {"check-failure", "double-done", "conflict", "hold"}:
+                try:
+                    apply_disturbance(args, alias, mode)
+                except Exception as exc:
+                    print(str(exc), file=sys.stderr)
+                    emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                          "session_id": session, "uuid": "failed-" + uuid.uuid4().hex[:8],
+                          "result": str(exc)[:2000]})
+                    return 1
+                emit({"type": "result", "subtype": "success", "is_error": False,
+                      "session_id": session, "uuid": "done-" + uuid.uuid4().hex[:8],
+                      "result": "PERCH disturbance calls completed", "usage": {"input_tokens": 3, "output_tokens": 2}})
+                return 0
             emit({"type": "assistant", "uuid": "submit-" + session, "session_id": session,
                   "message": {"role": "assistant", "model": model,
                               "content": [{"type": "tool_use", "id": "done-1", "name": "mcp__otto__done",

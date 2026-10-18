@@ -167,6 +167,261 @@ stage2_capture_fds() {  # BEFORE|AFTER
   }
 }
 
+# Capture direct product reads around one stage-2 disturbance. These files are
+# intentionally raw CLI/Store output; the report checker derives expectations.
+stage2_disturb_capture() {  # STEP before|after HOST PROJECT
+  local step="$1" side="$2" host="$3" project="$4" prefix="$RAW/stage2-disturb-$1-$2"
+  cold_client service status > "$prefix-owner.json" 2>> "$RAW/stage2-setup-errors.txt" || \
+    echo '{"outcome":"unavailable"}' > "$prefix-owner.json"
+  stage2_host_client --host "$host" project status --project "$project" \
+    > "$prefix-project.json" 2>> "$RAW/stage2-setup-errors.txt" || \
+    echo '{"outcome":"unavailable"}' > "$prefix-project.json"
+  "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" \
+    --out "$prefix-store.json" || echo '{"outcome":"unavailable"}' > "$prefix-store.json"
+}
+
+# Preserve a command's product response and its process result in the action
+# record. Arguments after OUTPUT are the product CLI command.
+stage2_disturb_action() {  # STEP OUTPUT COMMAND...
+  local step="$1" output="$2" rc=0 stdout="$RAW/stage2-disturb-$1-response.json" stderr="$RAW/stage2-disturb-$1-stderr.txt"
+  shift 2
+  if "$@" > "$stdout" 2> "$stderr"; then :; else rc=$?; fi
+  "$PY" -I - "$output" "$rc" "$*" "$stdout" "$stderr" <<'PY'
+import json, sys
+from pathlib import Path
+out, rc, command, stdout, stderr = sys.argv[1:]
+raw = Path(stdout).read_text(errors="replace")
+try:
+    response = json.loads(raw)
+except Exception:
+    response = None
+Path(out).write_text(json.dumps({"command": command, "rc": int(rc), "response": response,
+    "stdout": raw, "stderr": Path(stderr).read_text(errors="replace")}, sort_keys=True, indent=2) + "\n")
+PY
+  return 0
+}
+
+# A one-shot fake presence decline is exercised through real operator admission.
+# Keep the owner's refusal response and surrounding product projections.
+stage2_disturb_operator_denial() {  # HOST TASK
+  local host="$1" task_id="$2" ref revision task_ref_id request_id response="$RAW/stage2-disturb-operator-denial-response.json"
+  ref="$("$PY" -I -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
+    "$RAW/stage2-disturb-activation.json" "$task_id")" || return 1
+  revision="$("$PY" -I -c 'import json,sys; print(json.loads(sys.argv[1])["revision"])' "$ref")" || return 1
+  task_ref_id="$("$PY" -I -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$ref")" || return 1
+  "$PY" -I - "$STAGE_ROOT/home/run/perch-fake-presence-deny.json" "$task_ref_id" <<'PYDENY'
+import json,sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({"task":sys.argv[2]})+"\n")
+PYDENY
+  stage2_disturb_capture operator-denial before "$host" perch-disturb
+  [ ! -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ] || cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-disturb-operator-denial-log-before.jsonl"
+  local rc=0
+  if cold_client --host "$host" --wait-seconds 0 service admit --task-ref "$ref" \
+      --revision "$revision" --review-ref "$(cat "$RAW/stage2-disturb-review-ref.json")" \
+      --request-key "perch-stage2-disturb-denied-$task_id" > "$response" 2> "$RAW/stage2-disturb-operator-denial-stderr.txt"; then :; else rc=$?; fi
+  request_id="$("$PY" -I "$REPORT_PY" stage2-admission-request --response "$response" 2>> "$RAW/stage2-setup-errors.txt" || true)"
+  if [ -n "$request_id" ]; then
+    local next_request retained="$RAW/stage2-disturb-operator-denial-retained.json"
+    while :; do
+      if ! stage2_operator_request_status "$request_id" > "$retained" 2>> "$RAW/stage2-setup-errors.txt"; then
+        stage2_owner_alive || return 1
+        continue
+      fi
+      next_request="$("$PY" -I "$REPORT_PY" stage2-admission-request --response "$retained" \
+        --expected-request-id "$request_id" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
+      [ -n "$next_request" ] || break
+      request_id="$next_request"
+      stage2_owner_alive || return 1
+    done
+    "$PY" -I - "$retained" <<'PYDENY-ASSERT'
+import json,sys
+from pathlib import Path
+v=json.loads(Path(sys.argv[1]).read_text())
+assert v.get("outcome") == "rejected", v
+assert (v.get("error") or {}).get("code") == "presence_declined", v
+PYDENY-ASSERT
+  else
+    cp "$response" "$RAW/stage2-disturb-operator-denial-retained.json"
+    "$PY" -I - "$response" <<'PYDENY-IMMEDIATE'
+import json,sys
+from pathlib import Path
+v=json.loads(Path(sys.argv[1]).read_text())
+assert v.get("outcome") == "rejected", v
+assert (v.get("error") or {}).get("code") == "presence_declined", v
+PYDENY-IMMEDIATE
+  fi
+  [ ! -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ] || cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-disturb-operator-denial-admission.jsonl"
+  local retained="$RAW/stage2-disturb-operator-denial-retained.json"
+  "$PY" -I - "$RAW/stage2-disturb-operator-denial-action.json" "$rc" "$response" "$retained" <<'PYDENY2'
+import json,sys
+from pathlib import Path
+action,rc,response_path,retained_path=sys.argv[1:]
+raw=Path(response_path).read_text(errors="replace")
+try:
+    response=json.loads(Path(retained_path).read_text()) if Path(retained_path).is_file() else json.loads(raw)
+except Exception:
+    response=None
+Path(action).write_text(json.dumps({"command":"service admit (operator presence declined)","rc":int(rc),
+    "response":response,"stdout":raw},sort_keys=True,indent=2)+"\n")
+PYDENY2
+  stage2_disturb_capture operator-denial after "$host" perch-disturb
+}
+
+stage2_disturb_arm() {  # STEP TASK MODE
+  "$PY" -I - "$CANARY_DIR/.perch-disturb-$2.json" "$2" "$3" <<'PY'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({"task":sys.argv[2],"mode":sys.argv[3]})+"\n")
+PY
+}
+
+stage2_disturb_finish() {  # STEP HOST PROJECT TASK
+  local step="$1" host="$2" project="$3" task="$4" trace watch="$RAW/stage2-disturb-$1-trace-watch-project.json"
+  local worker_pid_file="$CANARY_DIR/.perch-disturb-$4.pid" worker_pid worker_command
+  stage2_disturb_capture "$step" after "$host" "$project"
+  while :; do
+    trace="$(find "$CANARY_DIR" -name ".perch-disturb-$task-trace.json" -print -quit 2>/dev/null || true)"
+    [ -z "$trace" ] || break
+    stage2_host_client --host "$host" project status --project "$project" \
+      > "$watch" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+    if "$PY" -I - "$watch" "$step" "$task" <<'PYTRACE-TERMINAL'
+import json,sys
+from pathlib import Path
+value=json.loads(Path(sys.argv[1]).read_text())
+step,alias=sys.argv[2:]
+rows=value.get("tasks") or []
+row=next((item for item in rows if isinstance(item,dict) and item.get("id")==alias),{})
+dispatch=(row.get("dispatch") or {}).get("state")
+lifecycle=row.get("lifecycle")
+terminal=(step=="refused-landing" and dispatch in {"failed","unknown"}) or lifecycle=="completed"
+raise SystemExit(0 if terminal else 1)
+PYTRACE-TERMINAL
+    then
+      worker_pid="$(cat "$worker_pid_file" 2>/dev/null || true)"
+      case "$worker_pid" in *[!0-9]*|"")
+        echo "task $task reached a terminal product state without a worker PID marker or raw socket trace" >> "$RAW/stage2-setup-errors.txt"
+        return 1 ;;
+      esac
+      worker_command="$(ps -ww -p "$worker_pid" -o command= 2>/dev/null || true)"
+      case "$worker_command" in
+        *perch-fake-claude.py*) ;;
+        *) echo "task $task reached a terminal product state and worker $worker_pid exited without its raw socket trace" >> "$RAW/stage2-setup-errors.txt"
+           return 1 ;;
+      esac
+    fi
+    stage2_owner_alive || return 1
+  done
+  cp "$trace" "$RAW/stage2-disturb-$step-action.json"
+}
+
+stage2_disturb_start_manager() {  # HOST
+  local host="$1" schedule marker
+  schedule="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["operating_setup"]["setup"]["roles"]["manager"])' \
+    "$RAW/stage2-disturb-activation.json")" || return 1
+  stage2_host_client --host "$host" --wait-seconds 0 manager --project perch-disturb \
+      start-manager --schedule-id "$schedule" > "$RAW/stage2-disturb-manager-start.json" \
+      2>> "$RAW/stage2-setup-errors.txt" || return 1
+  marker="$(stage2_wait_marker manager-perch-disturb)" || return 1
+  stage2_release_marker "$marker"
+}
+
+stage2_disturb_refused_landing() {  # HOST PROJECT
+  local host="$1" project="$2" marker
+  stage2_disturb_seed_conflict || return 1
+  stage2_disturb_capture refused-landing before "$host" "$project"
+  stage2_disturb_arm refused-landing E conflict
+  stage2_admit_tasks E "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
+  marker="$(stage2_wait_marker worker-E)" || return 1
+  printf "PERCH_DISTURB_SLOT = 'line'\n" > "$CANON/toy/perch_disturb_slot.py"
+  git -C "$CANON" -c user.name=perch-canary -c user.email=perch-canary@localhost add toy/perch_disturb_slot.py
+  git -C "$CANON" -c user.name=perch-canary -c user.email=perch-canary@localhost commit -m 'advance line during E worker' \
+      >> "$RAW/stage2-disturb-refused-landing-line-update.txt" 2>&1 || return 1
+  stage2_release_marker "$marker" || return 1
+  stage2_wait_owner_capacity "$RAW/stage2-disturb-refused-landing-settled-owner.json" 0 0 || return 1
+  stage2_disturb_finish refused-landing "$host" "$project" E || return 1
+
+  # The second project's own manager reviews F/G through its installed client.
+  # Start it after E settles and before admitting F, whose completion gates G.
+  stage2_disturb_start_manager "$host" || return 1
+
+  # Prove that the retained E work does not block the next task.
+  stage2_admit_tasks F "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
+  stage2_wait_worker "$host" F "$project" "$RAW/stage2-disturb-activation.json" || return 1
+  cp "$RAW/stage2-dispatch-F-project.json" "$RAW/stage2-disturb-refused-landing-after-next-project.json"
+}
+
+stage2_disturb_queued_landings() {  # HOST PROJECT
+  local host="$1" project="$2"
+  stage2_disturb_capture queued-landings before "$host" "$project"
+  stage2_disturb_arm queued-landings G double-done
+  stage2_admit_tasks G "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
+  stage2_wait_worker "$host" G "$project" "$RAW/stage2-disturb-activation.json" || return 1
+  stage2_disturb_finish queued-landings "$host" "$project" G
+}
+
+# These steps need an independent admitted project/task so their evidence can
+# coexist with the stage-2 A/B/C completion and C kill assertions. The trigger
+# is still the normal host product command, and its refusal is recorded raw.
+stage2_disturb_restart() {  # HOST PROJECT
+  stage2_disturb_capture restart before "$1" "$2"
+  stage2_host_client --host "$1" schedules --project "$2" \
+      > "$RAW/stage2-disturb-restart-before-dues.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+  cp "$STAGE_ROOT/home/run/generation" "$RAW/stage2-disturb-restart-before-generation.txt" 2>/dev/null || true
+  local rc=0
+  if OTTO_STAGING_REF="$STAGING_REF" OTTO_STAGING_FAKE_PRESENCE=1 OTTO_STAGING_STAGE2_SETUP=1 \
+      OTTO_STAGING_CANARY_REPO="$CANON" bash "$STAGING" restart < /dev/null > "$RAW/stage2-disturb-restart-response.json" \
+      2> "$RAW/stage2-disturb-restart-stderr.txt"; then :; else rc=$?; fi
+  "$PY" -I - "$RAW/stage2-disturb-restart-action.json" "$rc" <<'PY'
+import json,sys
+from pathlib import Path
+path,rc=sys.argv[1:]
+Path(path).write_text(json.dumps({"command":"staging restart","rc":int(rc),
+ "response":Path(path.replace("-action.json","-response.json")).read_text(errors="replace")},indent=2)+"\n")
+PY
+  cp "$STAGE_ROOT/home/run/generation" "$RAW/stage2-disturb-restart-after-generation.txt" 2>/dev/null || true
+  stage2_disturb_capture restart after "$1" "$2"
+  stage2_host_client --host "$1" schedules --project "$2" \
+      > "$RAW/stage2-disturb-restart-after-dues.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+}
+
+stage2_disturb_overlapping_activation() {  # HOST PROJECT SECOND_PROJECT
+  stage2_disturb_capture overlapping-activation before "$1" "$2"
+  local rc=0
+  if stage2_activate_disturb_project "$1"; then :; else rc=$?; fi
+  cp "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-overlapping-activation-response.json" 2>/dev/null || true
+  cp "$RAW/stage2-disturb-second-project-status.json" "$RAW/stage2-disturb-overlapping-activation-second-project.json" 2>/dev/null || true
+  "$PY" -I - "$RAW/stage2-disturb-overlapping-activation-action.json" \
+      "$RAW/stage2-disturb-overlapping-activation-response.json" \
+      "$RAW/stage2-disturb-activation-errors.txt" "$rc" <<'PY'
+import json,sys
+from pathlib import Path
+action,response,stderr,rc=sys.argv[1:]
+raw=Path(response).read_text(errors="replace")
+try: parsed=json.loads(raw)
+except Exception: parsed=None
+Path(action).write_text(json.dumps({"command":"project activate","rc":int(rc),"response":parsed,
+ "stdout":raw,"stderr":Path(stderr).read_text(errors="replace")},sort_keys=True,indent=2)+"\n")
+PY
+  stage2_disturb_capture overlapping-activation after "$1" "$2"
+}
+
+stage2_disturb_failed_launch() {  # HOST PROJECT TASK
+  local host="$1" project="$2" task="${3:-H}"
+  stage2_disturb_capture failed-launch before "$host" "$project"
+  stage2_disturb_arm failed-launch "$task" failed-launch
+  stage2_admit_tasks "$task" "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
+  if stage2_wait_worker "$host" "$task" "$project" "$RAW/stage2-disturb-activation.json"; then
+    echo "$task unexpectedly completed despite the seeded fake launcher failure" >> "$RAW/stage2-setup-errors.txt"
+    return 1
+  fi
+  stage2_disturb_capture failed-launch after "$host" "$project"
+  stage2_host_client --host "$host" schedules --project "$project" \
+      > "$RAW/stage2-disturb-failed-launch-after-dues.json" \
+      2>> "$RAW/stage2-setup-errors.txt" || return 1
+  cp "$RAW/stage2-dispatch-$task.json" "$RAW/stage2-disturb-failed-launch-action.json"
+}
+
 # Operator service admit retains its request on the service's owner lane. The
 # public request-status command reads an admitted host lane, so read this exact
 # owner-lane request with the same product retained-request reader instead.
@@ -238,6 +493,109 @@ stage2_setup() {
   return "$rc"
 }
 
+stage2_prepare_disturb_project() {
+  local host bundle
+  host="$($PY -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
+  bundle="$CANARY_DIR/disturb-project"
+  "$PY" -I "$REPORT_PY" stage2-bundle --project "$CANARY/project.json" --out "$bundle" \
+    --run-id perch-disturb --tasks D,E,F,G,H,I > "$RAW/stage2-disturb-bundle-path.txt" || return 1
+  if stage2_host_client --host "$host" project register --bundle "$bundle" --worktree "$CANON" \
+      > "$RAW/stage2-disturb-registration.json" 2>> "$RAW/stage2-setup-errors.txt"; then :; else return $?; fi
+  "$PY" -I "$REPORT_PY" stage2-plan-save --project "$CANARY/project.json" \
+      --registration "$RAW/stage2-disturb-registration.json" --tasks D,E,F,G,H,I \
+      --project-title perch-disturb --out "$RAW/stage2-disturb-plan-save.input.json" || return 1
+  stage2_host_client --host "$host" portfolio --portfolio "$host-portfolio" \
+      save "$RAW/stage2-disturb-plan-save.input.json" > "$RAW/stage2-disturb-plan-save.json" \
+      2>> "$RAW/stage2-setup-errors.txt" || return 1
+  "$PY" -I -c 'import json,sys; assert json.load(open(sys.argv[1]))["outcome"] == "saved"' \
+      "$RAW/stage2-disturb-plan-save.json" || return 1
+  return 0
+}
+
+stage2_activate_disturb_project() {  # HOST
+  local host="$1"
+  stage2_host_client --host "$host" project activate --project perch-disturb --worktree "$CANON" \
+      > "$RAW/stage2-disturb-activation.json" 2> "$RAW/stage2-disturb-activation-errors.txt" || return 1
+  stage2_host_client --host "$host" project status --project perch-disturb \
+      > "$RAW/stage2-disturb-second-project-status.json" 2>> "$RAW/stage2-disturb-activation-errors.txt" || return 1
+  "$PY" -I "$REPORT_PY" stage2-review-ref --status "$RAW/stage2-disturb-second-project-status.json" \
+      --activation "$RAW/stage2-disturb-activation.json" --bundle "$CANARY_DIR/disturb-project" \
+      > "$RAW/stage2-disturb-review-ref.json" 2>> "$RAW/stage2-disturb-activation-errors.txt" || return 1
+}
+
+stage2_disturb_seed_conflict() {
+  mkdir -p "$CANON/toy"
+  printf "PERCH_DISTURB_SLOT = 'base'\n" > "$CANON/toy/perch_disturb_slot.py"
+  git -C "$CANON" -c user.name=perch-canary -c user.email=perch-canary@localhost add toy/perch_disturb_slot.py
+  git -C "$CANON" -c user.name=perch-canary -c user.email=perch-canary@localhost commit -m 'seed PERCH landing conflict' \
+      > "$RAW/stage2-disturb-refused-landing-line-update.txt" 2>&1 || return 1
+}
+
+stage2_run_disturbances() {  # HOST
+  local host="$1"
+  # A genuine one-shot presence decline on the independent project's I task.
+  stage2_disturb_operator_denial "$host" I || return 1
+
+  # E's exact line conflict is concurrent with its owner-launched worker turn.
+  stage2_disturb_refused_landing "$host" perch-disturb || return 1
+
+  # Queue both landing requests over separate authenticated worker sockets.
+  stage2_disturb_queued_landings "$host" perch-disturb || return 1
+
+  # A failed native launch is retained on H's real owner dispatch record.
+  stage2_disturb_failed_launch "$host" perch-disturb H || return 1
+
+  return 0
+}
+
+stage2_disturb_restart_task() {  # HOST
+  local host="$1" marker old_pid current_pid command new_marker trace
+  stage2_disturb_arm restart D hold
+  stage2_admit_tasks D "$RAW/stage2-disturb-activation.json" "$RAW/stage2-disturb-review-ref.json" || return 1
+  marker="$(stage2_wait_marker worker-D)" || return 1
+  old_pid="$(cat "$marker")" || return 1
+  stage2_disturb_restart "$host" perch-disturb || return 1
+  while :; do
+    new_marker="$(find "$CANARY_DIR" -name .perch-worker-D.pid -print -quit 2>/dev/null || true)"
+    current_pid="$(cat "$new_marker" 2>/dev/null || true)"
+    command="$(ps -ww -p "$current_pid" -o command= 2>/dev/null || true)"
+    if [ -n "$current_pid" ] && [ "$current_pid" = "$old_pid" ]; then
+      break
+    fi
+    if [ -n "$current_pid" ] && [ "$current_pid" != "$old_pid" ]; then
+      case "$command" in
+        *"$CANARY_DIR/perch-fake-claude"*) stage2_release_marker "$new_marker" || return 1; break ;;
+      esac
+    fi
+    stage2_host_client --host "$host" project status --project perch-disturb \
+      > "$RAW/stage2-disturb-restart-reconcile-project.json" 2>> "$RAW/stage2-setup-errors.txt" || return 1
+    if ! "$PY" -I - "$RAW/stage2-disturb-restart-reconcile-project.json" <<'PYRESTART'
+import json,sys
+from pathlib import Path
+v=json.loads(Path(sys.argv[1]).read_text())
+tasks=v.get("tasks") or []
+row=next((item for item in tasks if isinstance(item,dict) and item.get("id")=="D"),{})
+raise SystemExit(0 if (row.get("dispatch") or {}).get("state")=="launched" else 1)
+PYRESTART
+    then
+      break
+    fi
+    if "$PY" -I - "$RAW/stage2-disturb-restart-after-owner.json" <<'PYRESTART-CAPACITY'
+import json,sys
+from pathlib import Path
+v=json.loads(Path(sys.argv[1]).read_text())
+raise SystemExit(0 if (v.get("native_capacity") or {}).get("active_or_uncertain")==0 else 1)
+PYRESTART-CAPACITY
+    then
+      break
+    fi
+    stage2_owner_alive || return 1
+  done
+  trace="$(find "$CANARY_DIR" -name '.perch-disturb-D-trace.json' -print -quit 2>/dev/null || true)"
+  [ -z "$trace" ] || cp "$trace" "$RAW/stage2-disturb-restart-worker-trace.json"
+  return 0
+}
+
 stage2_wait_admission_boundary() {  # TASK
   local task="$1" status="$RAW/stage2-admit-$1-boundary-status.json"
   while :; do
@@ -275,15 +633,17 @@ stage2_submit_admission() {  # HOST TASK REF REVIEW_REF ATTEMPT
 }
 
 stage2_admit_tasks() {
-  local host task ref review_ref attempt receipt request_id next_request retained selected
+  local host task ref review_ref attempt receipt request_id next_request retained selected activation_file review_file
   host="$("$PY" -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
-  review_ref="$(cat "$RAW/stage2-review-ref.json")"
+  activation_file="${2:-$RAW/stage2-activation.json}"
+  review_file="${3:-$RAW/stage2-review-ref.json}"
+  review_ref="$(cat "$review_file")"
   selected="${1:-$("$PY" -I "$REPORT_PY" tasks --project "$CANARY/project.json" --stage 2)}"
   # Submit the selected tasks before waiting for their results. A pending
   # admission retains its one owner-lane request.
   for task in $selected; do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
-      "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
+      "$activation_file" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     # The operator command is the sole task admission route. It performs the
     # owner-local presence proof and verifies the selected exact revision.
     stage2_submit_admission "$host" "$task" "$ref" "$review_ref" 1 || return $?
@@ -291,7 +651,7 @@ stage2_admit_tasks() {
   done
   for task in $selected; do
     ref="$("$PY" -I -c 'import json,sys; v=json.load(open(sys.argv[1])); print(json.dumps(v["activation"]["steps"]["tasks"]["task_refs"][sys.argv[2]],separators=(",",":")))' \
-      "$RAW/stage2-activation.json" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
+      "$activation_file" "$task" 2>> "$RAW/stage2-setup-errors.txt")" || return 1
     attempt=0
     while :; do
       attempt=$(( attempt + 1 ))
@@ -409,6 +769,9 @@ stage2_capacity_turn() {
   done
   schedule="$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["operating_setup"]["setup"]["roles"]["manager"])' \
     "$RAW/stage2-activation.json")" || return 1
+  if [ -n "$FAKE" ]; then
+    stage2_disturb_overlapping_activation "$host" perch-stage2 perch-disturb || return 1
+  fi
   stage2_host_client --host "$host" --wait-seconds 0 manager --project perch-stage2 \
     start-manager --schedule-id "$schedule" > "$RAW/stage2-manager-start.json" \
     2>> "$RAW/stage2-setup-errors.txt" || return 1
@@ -488,15 +851,15 @@ stage2_dispatch_tasks() {
 # Owner automatic dispatch is the scenario's dispatch path. The admitted host
 # reads each task's retained dispatch state through product project status.
 # Manager status requires a native manager caller.
-stage2_wait_worker() {  # HOST TASK
-  local host="$1" task="$2" saw_dispatch="" request_id="" next_request="" activation admission
-  activation="$RAW/stage2-activation.json"; admission="$RAW/stage2-admit-$task.json"
-  if [ "$task" = C ] && [ -f "$RAW/stage2-current-activation.json" ]; then
+stage2_wait_worker() {  # HOST TASK [PROJECT ACTIVATION ADMISSION]
+  local host="$1" task="$2" project="${3:-perch-stage2}" saw_dispatch="" request_id="" next_request="" activation admission
+  activation="${4:-$RAW/stage2-activation.json}"; admission="${5:-$RAW/stage2-admit-$task.json}"
+  if [ "$project" = perch-stage2 ] && [ "$task" = C ] && [ -f "$RAW/stage2-current-activation.json" ]; then
     activation="$RAW/stage2-current-activation.json"; admission="$RAW/stage2-metadata-only-C.json"
   fi
   while :; do
     # Return a retained receipt promptly; only request-status may read it until terminal.
-    if ! stage2_host_client --host "$host" --wait-seconds 0 project status --project perch-stage2 \
+    if ! stage2_host_client --host "$host" --wait-seconds 0 project status --project "$project" \
         > "$RAW/stage2-dispatch-$task.json" 2>> "$RAW/stage2-setup-errors.txt"; then
       if ! stage2_owner_alive; then
         echo "owner exited while waiting for $task project status; see stage2-dispatch-$task.json" >> "$RAW/stage2-setup-errors.txt"
@@ -808,9 +1171,11 @@ run_stage() {  # STAGE
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: staging did not start (rc $RESTART_RC)"
         elif [ "$("$PY" -I "$REPORT_PY" composefleet --stage-root "$STAGE_ROOT")" != true ]; then
           "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch --value "failed: COMPOSEFLEET prerequisites are absent from the staging tree"
-        elif stage2_setup; then
+        elif stage2_setup && { [ -z "$FAKE" ] || stage2_prepare_disturb_project; }; then
+          host="$($PY -I "$REPORT_PY" stage --project "$CANARY/project.json" --stage 2 --key host | tr -d '\"')"
           if stage2_admit_tasks C && stage2_edit_C && stage2_admit_tasks "A B"; then
-            if stage2_finish_C && stage2_dispatch_tasks; then
+            if stage2_finish_C && stage2_dispatch_tasks && \
+                { [ -z "$FAKE" ] || stage2_run_disturbances "$host"; }; then
               if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
                 cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"
               fi
@@ -820,6 +1185,10 @@ run_stage() {  # STAGE
               cold_client service status > "$RAW/stage2-owner-status.json" 2>> "$RAW/stage2-setup-errors.txt" || true
               "$PY" -I "$REPORT_PY" store --store "$STAGE_ROOT/store/staging.store" --out "$RAW/stage2-store-after.json"
               stage2_capture_fds after || true
+              if [ -n "$FAKE" ] && ! stage2_disturb_restart_task "$host"; then
+                "$PY" -I "$REPORT_PY" note --raw "$RAW" --key admit-and-dispatch \
+                    --value "failed: owner restart disturbance did not settle from captured owner evidence"
+              fi
             else
               if [ -f "$STAGE_ROOT/home/run/operator-admission.jsonl" ]; then
                 cp "$STAGE_ROOT/home/run/operator-admission.jsonl" "$RAW/stage2-operator-admission.jsonl"

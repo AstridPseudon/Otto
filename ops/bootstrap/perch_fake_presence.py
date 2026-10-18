@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import json
+import re
 
 
 def main(argv=None):
@@ -19,6 +21,17 @@ def main(argv=None):
 
     class ApprovingPresence:
         def prove(self, *, reason, timeout_seconds):
+            marker = Path(root) / "home" / "run" / "perch-fake-presence-deny.json"
+            if marker.is_file():
+                try:
+                    request = json.loads(marker.read_text(encoding="utf-8"))
+                except Exception:
+                    request = {}
+                task = request.get("task")
+                match = re.search(r"Admit Otto task ([^ ]+) at revision ", reason)
+                if isinstance(task, str) and match and match.group(1) == task:
+                    marker.unlink()
+                    return presence.PresenceResult("declined")
             return presence.PresenceResult("approved")
 
     presence.LocalAuthenticationProver = ApprovingPresence

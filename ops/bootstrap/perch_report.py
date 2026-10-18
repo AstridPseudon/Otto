@@ -54,7 +54,11 @@ STAGE2 = ("admit-and-dispatch-ran", "stage2-canary-valid", "stage2-review-docume
           "admitted-ready-dependency-order",
           "unadmitted-revision-refused", "metadata-only-write-runnable",
           "pool-and-manager-reserve-held", "owner-descriptors-bounded", "worker-kill-recovery",
-          "stage2-store-snapshots", "stage2-census")
+          "stage2-store-snapshots", "stage2-census", "disturbance-owner-custody",
+          "disturbance-project-continuity", "disturbance-store-retention",
+          "disturbance-capacity-accounting", "disturbance-fence", "disturbance-progress")
+STAGE2_DISTURBANCES = ("restart", "refused-landing", "queued-landings", "overlapping-activation",
+                       "failed-launch", "operator-denial")
 STAGE2_REVIEW_TEXT = "# Plan review\n\nThe PERCH stage-2 canary plan is approved for operator admission and dispatch on staging.\n"
 # The events of a lab run: a save starts none of them.
 RUN_EVENTS = ("lab-created", "turn", "done", "check-passed", "check-failed", "landed", "refused", "lab-deleted")
@@ -133,11 +137,15 @@ def cmd_stage2_bundle(args):
     stage = project.get("stages", {}).get("2", {})
     bundle = Path(args.out)
     bundle.mkdir(parents=True, exist_ok=True)
-    tasks = stage.get("tasks", [])
+    requested_tasks = getattr(args, "tasks", "")
+    tasks = [item for item in (requested_tasks.split(",") if requested_tasks else stage.get("tasks", [])) if item]
+    if not tasks:
+        raise ValueError("stage-2 bundle needs at least one task")
     deps = stage.get("dependencies", {})
     repo = stage.get("repository", "toy")
     branch = stage.get("branch", "canon/main")
-    rows = ["# Tasklist: perch-stage2", "", "## Dispatch canary",
+    run_id = getattr(args, "run_id", "") or "perch-stage2"
+    rows = ["# Tasklist: " + run_id, "", "## Dispatch canary",
             "| id | repo | branch | outcome | deps | route | proof |",
             "|---|---|---|---|---|---|---|"]
     for task in tasks:
@@ -145,8 +153,8 @@ def cmd_stage2_bundle(args):
         rows.append("| %s | %s | %s | Canary dispatch %s | %s | normal | accepted check passes |" %
                     (task, repo, branch, task, dependency))
     texts = {
-        "northstar.md": "# PERCH stage 2\n\nProve owner dispatch on staging.\n",
-        "agent_goal.md": "# Agent goal: perch-stage2\n\n## Objective\n\nDispatch three admitted canary tasks in dependency order.\n",
+        "northstar.md": "# " + run_id + "\n\nProve owner dispatch on staging.\n",
+        "agent_goal.md": "# Agent goal: " + run_id + "\n\n## Objective\n\nDispatch canary tasks in dependency order.\n",
         "plan.md": "# Plan\n\nRegister, activate, admit, then observe owner dispatch.\n",
         "status.md": "# Status\n\nStaging canary.\n",
         "manager-brief.md": "# Manager brief\n\nDispatch ready admitted tasks from %s at %s and report any owner dispatch failure.\n" % (repo, branch),
@@ -157,10 +165,17 @@ def cmd_stage2_bundle(args):
         target = bundle / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    run = {"run_id": "perch-stage2", "mode": "planning_only",
+    accounting = json.loads(json.dumps(stage.get("run_policy", {}).get("assessment_accounting")))
+    if isinstance(accounting, dict) and "task_criterion_pairs" in accounting:
+        accounting["task_criterion_pairs"] = ["%s/C-%s" % (alias, alias) for alias in tasks]
+        if type(accounting.get("cumulative_allowance_units")) is int:
+            accounting["cumulative_allowance_units"] = max(accounting["cumulative_allowance_units"], len(tasks))
+        if run_id != "perch-stage2" and accounting.get("pool_id") == "perch-stage2-checks":
+            accounting["pool_id"] = run_id + "-checks"
+    run = {"run_id": run_id, "mode": "planning_only",
            "roles": {"coordinator": {"model": "claude-haiku-5-5"},
                      "worker_normal": {"model": "claude-haiku-5-5"}},
-           "assessment_accounting": stage.get("run_policy", {}).get("assessment_accounting")}
+           "assessment_accounting": accounting}
     (bundle / "run.json").write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
     print(str(bundle))
 
@@ -174,7 +189,12 @@ def cmd_stage2_plan_save(args):
         raise ValueError("registration did not return an exact project ref")
     repo, branch = stage["repository"], stage["branch"]
     tasks = []
-    for alias in stage["tasks"]:
+    requested_tasks = getattr(args, "tasks", "")
+    aliases = [item for item in (requested_tasks.split(",") if requested_tasks else stage["tasks"]) if item]
+    if not aliases:
+        raise ValueError("stage-2 plan save needs at least one task")
+    title = getattr(args, "project_title", "") or "perch-stage2"
+    for alias in aliases:
         tasks.append({
             "id": alias, "title": "Canary dispatch " + alias,
             "instructions": "Canary dispatch " + alias,
@@ -185,7 +205,7 @@ def cmd_stage2_plan_save(args):
             "custom": {"otto.plan": {"repo": repo, "branch": branch}},
         })
     value = {"project_ref": project_ref,
-             "project": {"title": "perch-stage2", "outcome": "Dispatch three admitted canary tasks in dependency order."},
+             "project": {"title": title, "outcome": "Dispatch canary tasks in dependency order."},
              "tasks": tasks}
     Path(args.out).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -510,6 +530,102 @@ def stage2_owner_labs_snapshot(root):
     return result
 
 
+def stage2_disturbance_due_for_task(snapshot, task_id):
+    if not isinstance(snapshot, dict) or snapshot.get("outcome") != "read":
+        return None
+    schedules = snapshot.get("schedules")
+    if not isinstance(schedules, list):
+        return None
+    matches = []
+    for row in schedules:
+        if not isinstance(row, dict):
+            continue
+        target = row.get("target") or {}
+        task_ref = row.get("task_ref") or (target.get("task_ref") if isinstance(target, dict) else None)
+        if isinstance(task_ref, dict) and task_ref.get("id") == task_id:
+            matches.append(row)
+    return matches[0] if len(matches) == 1 else None
+
+
+def stage2_disturbance_native_failure_due(snapshot, task_ref):
+    """Require the exact product Due to retain a failed native Claude result."""
+    task_id = task_ref.get("id") if isinstance(task_ref, dict) else task_ref
+    due = stage2_disturbance_due_for_task(snapshot, task_id)
+    if not isinstance(due, dict):
+        return None
+    target_ref = ((due.get("target") or {}).get("task_ref") or {})
+    if isinstance(task_ref, dict) and (not all(
+            isinstance(target_ref.get(key), str) and target_ref.get(key)
+            and target_ref.get(key) == task_ref.get(key) for key in ("authority", "kind", "id"))
+            or not isinstance(target_ref.get("revision"), str) or not target_ref["revision"]):
+        return None
+    assignment_ref = due.get("assignment_ref") or {}
+    if (not isinstance(assignment_ref, dict) or not isinstance(assignment_ref.get("id"), str)
+            or not assignment_ref["id"]):
+        return None
+    result = (((due.get("host_evidence") or {}).get("gateway_attempt") or {}).get("result") or {})
+    if not isinstance(result, dict):
+        return None
+    raw = result.get("raw_result") or {}
+    raw = raw if isinstance(raw, dict) else {}
+    native_failure = result.get("native_failure") or raw.get("native_failure")
+    error = result.get("error") or {}
+    error = error if isinstance(error, dict) else {}
+    if (result.get("outcome") != "failed" or error.get("code") != "claude_native_failure"
+            or not isinstance(native_failure, dict) or native_failure.get("is_error") is not True):
+        return None
+    return due
+
+
+def stage2_disturbance_manager_completion_errors(store, task_id, alias):
+    """Require one Store completion tied to the owner-started manager turn and accepted evidence."""
+    if not isinstance(store, dict) or store.get("error") or not isinstance(store.get("events"), list):
+        return [alias + " has no readable Store events for manager completion"]
+    events = [row for row in store["events"] if isinstance(row, dict)
+              and row.get("task_id") == task_id and row.get("alias") == alias]
+    completed = [row for row in events if row.get("event_type") == "work.revised"
+                 and row.get("stream") == "work:" + str(task_id)
+                 and (row.get("subject") or {}).get("id") == task_id
+                 and (row.get("effects") or {}).get("completion")]
+    if len(completed) != 1:
+        return [alias + " does not have exactly one Store manager completion event"]
+    completion = completed[0]
+    body = (completion.get("effects") or {}).get("completion") or {}
+    manager = body.get("manager")
+    actor = (completion.get("actor") or {}).get("actor")
+    turns = [turn for turn in store.get("manager_turns") or [] if isinstance(turn, dict)]
+    if (body.get("logical_request_key") != "journey:perch-stage2-review-" + alias + ":finish"
+            or not isinstance(manager, str) or not manager or actor != manager
+            or not any(turn.get("native_turn_started") is True
+                       and turn.get("recipient") == actor
+                       and turn.get("generation") == body.get("generation")
+                       and stage2_event_time(turn) is not None
+                       and stage2_event_time(completion) is not None
+                       and stage2_event_time(turn) < stage2_event_time(completion)
+                       for turn in turns)):
+        return [alias + " completion lacks its owner-started manager turn and journey finish key"]
+    gates = body.get("gate_refs") or []
+    evidence = body.get("evidence_refs") or []
+    checked = body.get("assessment_gate_check") or {}
+    decisions = store.get("decisions") or {}
+    cited = [decisions.get(gate.get("id")) for gate in gates if isinstance(gate, dict)]
+    if (not gates or len(cited) != len(gates) or not evidence
+            or body.get("candidate_ref") not in evidence
+            or checked.get("evidence_verification") != "verified"
+            or checked.get("blockers") != []
+            or {json.dumps(ref, sort_keys=True) for ref in checked.get("accepted_decision_refs") or []}
+               != {json.dumps(ref, sort_keys=True) for ref in gates}
+            or any(not isinstance(decision, dict) or decision.get("ref") != gate
+                   or (decision.get("payload") or {}).get("disposition") != "accept"
+                   or (decision.get("payload") or {}).get("candidate_ref") != body.get("candidate_ref")
+                   for decision, gate in zip(cited, gates))
+            or {json.dumps(ref, sort_keys=True) for decision in cited if isinstance(decision, dict)
+                for ref in (decision.get("payload") or {}).get("evidence_refs") or []}
+               != {json.dumps(ref, sort_keys=True) for ref in evidence}):
+        return [alias + " completion does not cite its accepted decision evidence"]
+    return []
+
+
 def stage2_owner_lab_evidence(raw):
     """Judge owner lab snapshots and describe the same evidence for the report."""
     mapped = (read_json(raw / "stage2-repository-map.json", {}) or {}).get("repositories", {}).get("toy")
@@ -533,6 +649,123 @@ def stage2_owner_lab_evidence(raw):
                 retained_c = str(relative)
         except ValueError:
             pass
+
+    # Disturbance labs can remain after owner recovery, a refused landing or a
+    # failed launch. Recognize only task ids backed by that step's product evidence.
+    refusal_activation = read_json(raw / "stage2-disturb-activation.json", {}) or {}
+    refusal_refs = (((refusal_activation.get("activation") or {}).get("steps") or {})
+                    .get("tasks") or {}).get("task_refs") or {}
+    retained_disturbance_labs = {}
+
+    def disturbance_task_status(step, side, alias):
+        status = read_json(raw / ("stage2-disturb-%s-%s-project.json" % (step, side)), {}) or {}
+        return next((task for task in status.get("tasks") or []
+                     if isinstance(task, dict) and task.get("id") == alias), {})
+
+    restart_before = read_json(raw / "stage2-disturb-restart-before-owner.json", {}) or {}
+    restart_after = read_json(raw / "stage2-disturb-restart-after-owner.json", {}) or {}
+    restart_before_task = disturbance_task_status("restart", "before", "D")
+    restart_after_task = disturbance_task_status("restart", "after", "D")
+    restart_action = read_json(raw / "stage2-disturb-restart-action.json", {}) or {}
+    restart_task_id = (refusal_refs.get("D") or {}).get("id")
+    restart_before_dues = read_json(raw / "stage2-disturb-restart-before-dues.json", {}) or {}
+    restart_after_dues = read_json(raw / "stage2-disturb-restart-after-dues.json", {}) or {}
+    restart_before_due = stage2_disturbance_due_for_task(restart_before_dues, restart_task_id)
+    restart_after_due = stage2_disturbance_due_for_task(restart_after_dues, restart_task_id)
+    restart_due_preserved = (isinstance(restart_before_due, dict) and isinstance(restart_after_due, dict)
+                             and restart_before_due.get("schedule_id")
+                             and restart_before_due.get("schedule_id") == restart_after_due.get("schedule_id")
+                             and restart_before_due.get("assignment_ref") == restart_after_due.get("assignment_ref")
+                             and (restart_before_due.get("target") or {}).get("task_ref") ==
+                             (restart_after_due.get("target") or {}).get("task_ref"))
+    restart_after_holds = (read_json(raw / "stage2-disturb-restart-after-owner.json", {}) or {})
+    restart_holds = (restart_after_holds.get("native_capacity") or {}).get("holds") or []
+    restart_completion = (restart_after_due or {}).get("completion_state")
+    restart_unresolved = (restart_completion in {"none", "unknown"}
+                          and (restart_after_due or {}).get("stop_state") == "active")
+    restart_terminal = (restart_completion in {"succeeded", "failed"}
+                        or (restart_after_due or {}).get("stop_state") == "completed")
+    restart_due_evidence = (isinstance(restart_after_due, dict)
+                            and restart_after_due.get("host_state") in {"unknown", "pending", "active", "paused", "failed"}
+                            and (bool(restart_after_due.get("host_evidence"))
+                                 or bool(restart_after_due.get("completion_evidence"))))
+    restart_hold_disposition = ((restart_unresolved and
+                                 (restart_before_due or {}).get("schedule_id") in restart_holds)
+                                or (restart_terminal and
+                                    (restart_before_due or {}).get("schedule_id") not in restart_holds))
+    if (isinstance(restart_task_id, str) and restart_task_id
+            and type(restart_before.get("generation")) is int and type(restart_after.get("generation")) is int
+            and restart_after["generation"] > restart_before["generation"]
+            and (restart_before_task.get("dispatch") or {}).get("state") == "launched"
+            and restart_after_task
+            and (restart_after_task.get("dispatch") or {}).get("state") in {"failed", "unknown", "launched"}
+            and restart_action.get("rc") == 0 and restart_due_preserved and restart_hold_disposition
+            and restart_due_evidence):
+        retained_disturbance_labs[restart_task_id] = "D owner restart recovery"
+
+    refusal_action = read_json(raw / "stage2-disturb-refused-landing-action.json", {}) or {}
+    refusal_replies = refusal_action.get("responses") or []
+    refusal_project = read_json(raw / "stage2-disturb-refused-landing-after-project.json", {}) or {}
+    refusal_task = disturbance_task_status("refused-landing", "after", "E")
+    later_project = read_json(raw / "stage2-disturb-refused-landing-after-next-project.json", {}) or {}
+    later_task = next((task for task in later_project.get("tasks") or []
+                       if isinstance(task, dict) and task.get("id") == "F"), {})
+    refusal_task_id = (refusal_refs.get("E") or {}).get("id")
+    refusal_store = read_json(raw / "stage2-store-events.json", {}) or {}
+    refusal_events = [row for row in refusal_store.get("events") or []
+                      if isinstance(row, dict) and row.get("task_id") == refusal_task_id
+                      and row.get("alias") == "E"]
+    refusal_dispatches = [row for row in refusal_events
+                          if row.get("event_type") == "work.assignment.dispatched"
+                          and row.get("assignment_id")
+                          and row.get("stream") == "dispatch:" + row["assignment_id"]
+                          and (refusal_store.get("assignments") or {}).get(row["assignment_id"]) == refusal_task_id]
+    refusal_landings = [row for row in refusal_events
+                        if row.get("event_type") == "work.result.appended"
+                        and (row.get("value") or {}).get("assignment_id") == row.get("assignment_id")]
+    refusal_completions = [row for row in refusal_events
+                           if row.get("event_type") == "work.revised"
+                           and (row.get("effects") or {}).get("completion")]
+    if (expected_root and isinstance(refusal_task_id, str) and refusal_task_id
+            and refusal_project.get("outcome") == "read"
+            and refusal_task.get("lifecycle") == "pending"
+            and (refusal_task.get("dispatch") or {}).get("state") in {"failed", "unknown", "launched"}
+            and refusal_store.get("error") is None
+            and (refusal_store.get("tasks") or {}).get(refusal_task_id) == "E"
+            and len(refusal_dispatches) == 1 and not refusal_landings and not refusal_completions
+            and refusal_replies and isinstance(refusal_replies[0], dict)
+            and refusal_replies[0].get("ok") is False
+            and refusal_replies[0].get("error") == "landing_refused"
+            and later_project.get("outcome") == "read"
+            and later_task.get("lifecycle") == "completed"):
+        retained_disturbance_labs[refusal_task_id] = "E refused landing"
+
+    launch_action = read_json(raw / "stage2-disturb-failed-launch-action.json", {}) or {}
+    launch_task = disturbance_task_status("failed-launch", "after", "H")
+    launch_task_id = (refusal_refs.get("H") or {}).get("id")
+    launch_dues = read_json(raw / "stage2-disturb-failed-launch-after-dues.json", {}) or {}
+    launch_task_ref = (refusal_refs.get("H") or {})
+    launch_due = stage2_disturbance_native_failure_due(launch_dues, launch_task_ref)
+    launch_product_task = next((task for task in launch_action.get("tasks") or []
+                                if isinstance(task, dict) and task.get("id") == "H"), {})
+    launch_dispatch = launch_product_task.get("dispatch") or {}
+    launch_target_ref = ((launch_due or {}).get("target") or {}).get("task_ref") or {}
+    launch_store = read_json(raw / "stage2-store-events.json", {}) or {}
+    launch_assignment_id = ((launch_due or {}).get("assignment_ref") or {}).get("id")
+    launch_store_dispatches = [row for row in launch_store.get("events") or []
+                               if isinstance(row, dict) and row.get("task_id") == launch_task_id
+                               and row.get("alias") == "H" and row.get("event_type") == "work.assignment.dispatched"
+                               and row.get("assignment_id") == launch_assignment_id]
+    if (isinstance(launch_task_id, str) and launch_task_id
+            and (launch_task.get("dispatch") or {}).get("state") == "failed"
+            and launch_dispatch.get("state") == "failed"
+            and launch_dispatch.get("reason") == "native Claude error result retained"
+            and launch_action.get("outcome") == "read" and launch_due is not None
+            and launch_target_ref.get("id") == launch_task_id
+            and (launch_store.get("tasks") or {}).get(launch_task_id) == "H"
+            and (launch_store.get("assignments") or {}).get(launch_assignment_id) == launch_task_id
+            and len(launch_store_dispatches) == 1):
+        retained_disturbance_labs[launch_task_id] = "H failed launch"
 
     failures, summary, retained = [], [], []
     for label, when in (("before", "before the first harness step"), ("after", "after down")):
@@ -565,6 +798,11 @@ def stage2_owner_lab_evidence(raw):
             elif label == "after" and name == retained_c:
                 retained.append("C %s" % name)
                 task_labs.append("`%s` (expected retained C lab: worker killed; task pending, dispatch unknown)" % name)
+            elif (label == "after" and len(Path(name).parts) == 2
+                  and Path(name).name in retained_disturbance_labs):
+                reason = retained_disturbance_labs[Path(name).name]
+                retained.append("%s %s" % (reason.split()[0], name))
+                task_labs.append("`%s` (expected retained %s lab with product evidence)" % (name, reason))
             else:
                 failures.append("owner %s lab %s" % (label, name))
                 task_labs.append("`%s` (unexpected)" % name)
@@ -845,6 +1083,90 @@ def seed(raw, kind):
         if len(kept) == len(lines):
             raise ValueError("no owner-dispatch-launched event in this run to seed an owner-path fault into")
         path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+    elif kind.startswith("disturb-"):
+        step_faults = {
+            "disturb-restart": ("restart", "after-owner"),
+            "disturb-refused-landing": ("refused-landing", "action"),
+            "disturb-queued-landings": ("queued-landings", "after-project"),
+            "disturb-overlapping-activation": ("overlapping-activation", "action"),
+            "disturb-failed-launch": ("failed-launch", "after-project"),
+            "disturb-operator-denial": ("operator-denial", "after-project"),
+        }
+        if kind in step_faults:
+            step, suffix = step_faults[kind]
+            path = raw / ("stage2-disturb-%s-%s.json" % (step, suffix))
+            value = seeded_read(path)
+            if kind == "disturb-restart":
+                value["outcome"] = "closed"
+            elif kind in {"disturb-refused-landing", "disturb-overlapping-activation"}:
+                value["response"] = {}
+                value["stdout"] = ""
+                value["stderr"] = ""
+            elif kind == "disturb-queued-landings":
+                tasks = value.get("tasks")
+                if not isinstance(tasks, list) or len(tasks) < 2:
+                    raise ValueError("fewer than two project tasks to seed in queued landings")
+                for task in tasks:
+                    if isinstance(task, dict):
+                        task["lifecycle"] = "running"
+            elif kind == "disturb-failed-launch":
+                target = next((row for row in value.get("tasks", []) if isinstance(row, dict)
+                               and row.get("id") == "H"
+                               and isinstance(row.get("dispatch"), dict)), None)
+                if target is None:
+                    raise ValueError("project status has no dispatch to seed for failed launch")
+                target["dispatch"]["state"] = "admitted"
+            elif kind == "disturb-operator-denial":
+                assignments = value.get("assignments")
+                if not isinstance(assignments, list) or not assignments or not isinstance(assignments[0], dict):
+                    raise ValueError("project status has no assignment identity to seed for operator denial")
+                assignments[0]["assignment_id"] = "seeded-wrong-assignment"
+            path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return
+        faults = {
+            "disturb-owner": ("restart", "after-owner"),
+            "disturb-project": ("restart", "after-project"),
+            "disturb-store": ("restart", "after-store"),
+            "disturb-capacity": ("restart", "after-owner"),
+            "disturb-fence": ("restart", "action"),
+            "disturb-progress": ("failed-launch", "after-project"),
+        }
+        if kind not in faults:
+            raise ValueError("unknown disturbance fault: " + kind)
+        step, suffix = faults[kind]
+        path = raw / ("stage2-disturb-%s-%s.json" % (step, suffix))
+        value = seeded_read(path)
+        if kind == "disturb-owner":
+            value["outcome"] = "closed"
+        elif kind == "disturb-project":
+            tasks = value.get("tasks")
+            if not isinstance(tasks, list) or not tasks:
+                raise ValueError("no project task to remove in the captured disturbance status")
+            tasks[0]["id"] = str(tasks[0].get("id", "task")) + "-seeded-mismatch"
+        elif kind == "disturb-store":
+            rows = value.get("rows") or {}
+            table = next((key for key in rows if type(rows[key]) is int and rows[key] > 0), None)
+            if table is None:
+                raise ValueError("no Store row count to reduce in the captured disturbance snapshot")
+            rows[table] -= 1
+        elif kind == "disturb-capacity":
+            capacity = value.get("native_capacity") or {}
+            if type(capacity.get("active_or_uncertain")) is not int:
+                raise ValueError("owner status has no capacity count to corrupt")
+            capacity["active_or_uncertain"] = -1
+        elif kind == "disturb-fence":
+            value["rc"] = 1
+            value["response"] = ""
+            value["stdout"] = ""
+            value["stderr"] = ""
+        elif kind == "disturb-progress":
+            tasks = value.get("tasks")
+            target = next((row for row in tasks or [] if isinstance(row, dict) and row.get("id") == "H"
+                           and isinstance(row.get("dispatch"), dict)), None)
+            if target is None:
+                raise ValueError("project status has no task dispatch to corrupt")
+            target["dispatch"]["state"] = "admitted"
+        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     elif kind == "census":
         (raw / "census.up.txt").write_text("", encoding="utf-8")
     elif kind == "store":
@@ -1577,6 +1899,452 @@ def stage2_timeline_failures(raw, config):
     return failures
 
 
+def stage2_disturbance_failures(raw):
+    """Check each disturbance against captured owner CLI and Store observations only."""
+    raw = Path(raw)
+    names = ("disturbance-owner-custody", "disturbance-project-continuity",
+             "disturbance-store-retention", "disturbance-capacity-accounting",
+             "disturbance-fence", "disturbance-progress")
+    failures = {name: [] for name in names}
+    def response_text(action):
+        """Flatten only captured stdout/stderr/response for checking diagnostic wording."""
+        values = [action.get(key) for key in ("response", "result", "ok", "responses", "stdout", "stderr")]
+        return " ".join(json.dumps(value, sort_keys=True).lower() if not isinstance(value, str)
+                         else value.lower() for value in values if value is not None)
+
+    def load(step, suffix):
+        path = raw / ("stage2-disturb-%s-%s.json" % (step, suffix))
+        value = read_json(path, None)
+        return value if isinstance(value, dict) else None
+
+    def status_ok(value):
+        holder = value.get("holder") if isinstance(value, dict) else None
+        return (isinstance(value, dict) and isinstance(holder, dict)
+                and value.get("outcome") in {"serving", "running"}
+                and value.get("state", "serving") == "serving"
+                and type(holder.get("pid")) is int and holder["pid"] > 0
+                and type(value.get("generation")) is int and value["generation"] > 0)
+
+    def project_tasks(value):
+        if not isinstance(value, dict) or value.get("outcome") != "read" or not isinstance(value.get("tasks"), list):
+            return None
+        result = {}
+        for row in value["tasks"]:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+                return None
+            dispatch = row.get("dispatch")
+            if not isinstance(dispatch, dict) or not isinstance(dispatch.get("state"), str):
+                return None
+            result[row["id"]] = row
+        return result if result else None
+
+    def identity_set(value, key):
+        items = value.get(key)
+        if not isinstance(items, list):
+            return None
+        result = set()
+        for row in items:
+            if not isinstance(row, dict):
+                return None
+            ref = row.get("ref") or row.get("assignment_ref") or row.get("schedule_ref")
+            identity = (row.get("id") or row.get("assignment_id") or row.get("schedule_id")
+                        or (ref.get("id") if isinstance(ref, dict) else None))
+            if not isinstance(identity, str) or not identity:
+                return None
+            result.add(identity)
+        return result
+
+    def same_project(left, right):
+        return (isinstance(left, dict) and isinstance(right, dict)
+                and all(isinstance(left.get(key), str) and left.get(key)
+                        and left.get(key) == right.get(key) for key in ("authority", "kind", "id"))
+                and isinstance(left.get("revision"), str) and bool(left["revision"])
+                and isinstance(right.get("revision"), str) and bool(right["revision"]))
+
+    def attached_project_ids(value):
+        rows = value.get("attached_projects") if isinstance(value, dict) else None
+        if not isinstance(rows, list):
+            return None
+        result = set()
+        for row in rows:
+            project_id = row.get("project_id") if isinstance(row, dict) else row
+            if not isinstance(project_id, str) or not project_id:
+                return None
+            result.add(project_id)
+        return result
+
+    def action_responses(action):
+        """Return captured product/tool replies, excluding the action wrapper."""
+        if not isinstance(action, dict):
+            return []
+        if isinstance(action.get("responses"), list):
+            return [row for row in action["responses"] if isinstance(row, dict)]
+        response = action.get("response")
+        if isinstance(response, dict):
+            return [response]
+        return []
+
+    def activation_project_ref(action):
+        response = action.get("response") if isinstance(action, dict) else None
+        if not isinstance(response, dict):
+            return None
+        activation = response.get("activation")
+        return response.get("project_ref") or (activation.get("project_ref") if isinstance(activation, dict) else None)
+
+    def due_for_task(snapshot, task_id):
+        if not isinstance(snapshot, dict) or snapshot.get("outcome") != "read":
+            return None
+        schedules = snapshot.get("schedules")
+        if not isinstance(schedules, list):
+            return None
+        matches = []
+        for row in schedules:
+            if not isinstance(row, dict):
+                continue
+            target = row.get("target") or {}
+            task_ref = row.get("task_ref") or (target.get("task_ref") if isinstance(target, dict) else None)
+            if isinstance(task_ref, dict) and task_ref.get("id") == task_id:
+                matches.append(row)
+        return matches[0] if len(matches) == 1 else None
+
+    rows = {}
+    for step in STAGE2_DISTURBANCES:
+        rows[step] = {
+            "before_owner": load(step, "before-owner"), "after_owner": load(step, "after-owner"),
+            "before_project": load(step, "before-project"), "after_project": load(step, "after-project"),
+            "before_store": load(step, "before-store"), "after_store": load(step, "after-store"),
+            "action": load(step, "action"),
+        }
+        evidence = rows[step]
+        missing = [key for key, value in evidence.items() if value is None]
+        if step == "overlapping-activation" and load(step, "second-project") is None:
+            missing.append("second_project")
+        if step == "refused-landing" and load(step, "after-next-project") is None:
+            missing.append("after_next_project")
+        if step == "restart" and any(not (raw / ("stage2-disturb-restart-%s-dues.json" % side)).is_file()
+                                      for side in ("before", "after")):
+            missing.append("before/after dues")
+        if step == "failed-launch" and not (raw / "stage2-disturb-failed-launch-after-dues.json").is_file():
+            missing.append("after-launch Due status")
+        denial_log = raw / "stage2-disturb-operator-denial-admission.jsonl"
+        if step == "operator-denial" and not denial_log.is_file():
+            missing.append("owner_admission_log")
+        if missing:
+            for name in names:
+                failures[name].append("%s lacks %s product observation(s)" % (step, ", ".join(missing)))
+            continue
+
+        before_owner, after_owner = evidence["before_owner"], evidence["after_owner"]
+        before_project = project_tasks(evidence["before_project"])
+        after_project = project_tasks(evidence["after_project"])
+        before_store, after_store = evidence["before_store"], evidence["after_store"]
+        action = evidence["action"]
+        response = action.get("response")
+        if not status_ok(before_owner) or not status_ok(after_owner):
+            failures["disturbance-owner-custody"].append(
+                "%s owner status is missing serving state, holder pid or generation" % step)
+        else:
+            before_generation, after_generation = before_owner["generation"], after_owner["generation"]
+            if step == "restart":
+                if after_generation <= before_generation:
+                    failures["disturbance-owner-custody"].append("restart did not advance the serving owner generation")
+                if (before_owner.get("native_capacity") or {}).get("active_or_uncertain", 0) < 1:
+                    failures["disturbance-owner-custody"].append("restart was not observed during an active worker turn")
+            elif after_generation != before_generation:
+                failures["disturbance-owner-custody"].append(
+                    "%s unexpectedly changed the serving owner generation" % step)
+            if step == "restart" and before_owner.get("holder", {}).get("pid") == after_owner.get("holder", {}).get("pid"):
+                failures["disturbance-owner-custody"].append("restart retained the old owner process")
+
+        if before_project is None or after_project is None:
+            failures["disturbance-project-continuity"].append(
+                "%s lacks readable project task dispatch states before and after" % step)
+            failures["disturbance-progress"].append("%s lacks readable project task progress" % step)
+        else:
+            before_ref = evidence["before_project"].get("project_ref")
+            after_ref = evidence["after_project"].get("project_ref")
+            if not same_project(before_ref, after_ref):
+                failures["disturbance-project-continuity"].append(
+                    "%s did not retain the primary project identity and exact revision evidence" % step)
+            # All original task ids must remain visible. A second activation may add tasks,
+            # but it may not erase the project that was already active.
+            if not set(before_project).issubset(after_project):
+                failures["disturbance-project-continuity"].append(
+                    "%s removed task(s) from product project status" % step)
+            for task_id in before_project.keys() & after_project.keys():
+                old, new = before_project[task_id], after_project[task_id]
+                old_ref = old.get("task_ref") or old.get("ref")
+                new_ref = new.get("task_ref") or new.get("ref")
+                if old_ref is not None or new_ref is not None:
+                    stable = (isinstance(old_ref, dict) and isinstance(new_ref, dict)
+                              and all(old_ref.get(key) == new_ref.get(key) and old_ref.get(key)
+                                      for key in ("authority", "kind", "id"))
+                              and isinstance(old_ref.get("revision"), str) and bool(old_ref["revision"])
+                              and isinstance(new_ref.get("revision"), str) and bool(new_ref["revision"]))
+                    if not stable:
+                        failures["disturbance-project-continuity"].append(
+                            "%s changed or lost the task identity for %s" % (step, task_id))
+                if new.get("lifecycle") is None:
+                    failures["disturbance-progress"].append("%s task %s has no lifecycle after action" % (step, task_id))
+                if step == "operator-denial" and task_id == "I" and (
+                        old.get("lifecycle") != new.get("lifecycle") or old.get("dispatch") != new.get("dispatch")):
+                    failures["disturbance-project-continuity"].append(
+                        "operator denial changed task I state")
+            for key in ("assignments", "schedules"):
+                old_ids = identity_set(evidence["before_project"], key)
+                new_ids = identity_set(evidence["after_project"], key)
+                if old_ids is None or new_ids is None or not old_ids.issubset(new_ids):
+                    failures["disturbance-project-continuity"].append(
+                        "%s did not retain readable %s identities" % (step, key))
+
+        if step == "overlapping-activation":
+            second = load(step, "second-project")
+            second_ref = (second or {}).get("project_ref")
+            if (not isinstance(second, dict) or second.get("outcome") != "read"
+                    or not isinstance(second_ref, dict)
+                    or not same_project(second_ref, second_ref)
+                    or second_ref.get("id") == ((evidence["before_project"] or {}).get("project_ref") or {}).get("id")):
+                failures["disturbance-progress"].append(
+                    "second activation has no distinct readable product project revision")
+            attached_before = attached_project_ids(before_owner)
+            attached_after = attached_project_ids(after_owner)
+            if (attached_before is None or attached_after is None
+                    or not attached_before.issubset(attached_after)
+                    or (isinstance(second_ref, dict) and second_ref.get("id") not in attached_after)):
+                failures["disturbance-owner-custody"].append(
+                    "owner status does not retain both project attachments after overlapping activation")
+            primary_tasks = before_project or {}
+            if ((before_owner.get("native_capacity") or {}).get("active_or_uncertain", 0) < 1
+                    or not any((row.get("dispatch") or {}).get("state") == "launched"
+                               for row in primary_tasks.values())):
+                failures["disturbance-progress"].append(
+                    "second activation was not observed while primary project work was in flight")
+
+        if step == "restart":
+            activation = read_json(raw / "stage2-disturb-activation.json", {}) or {}
+            task_refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {})
+            d_ref = (task_refs.get("task_refs") or {}).get("D") or {}
+            before_dues = read_json(raw / "stage2-disturb-restart-before-dues.json", {}) or {}
+            after_dues = read_json(raw / "stage2-disturb-restart-after-dues.json", {}) or {}
+            before_due = due_for_task(before_dues, d_ref.get("id"))
+            after_due = due_for_task(after_dues, d_ref.get("id"))
+            due_identity = (isinstance(before_due, dict) and isinstance(after_due, dict)
+                            and isinstance(before_due.get("schedule_id"), str)
+                            and before_due.get("schedule_id")
+                            and before_due.get("schedule_id") == after_due.get("schedule_id")
+                            and before_due.get("assignment_ref") == after_due.get("assignment_ref")
+                            and (before_due.get("target") or {}).get("task_ref") ==
+                            (after_due.get("target") or {}).get("task_ref"))
+            if not due_identity:
+                failures["disturbance-owner-custody"].append(
+                    "restart did not retain task D's exact Due schedule, assignment and task refs")
+                failures["disturbance-progress"].append("restart has no exact task D Due schedule readback")
+            else:
+                schedule_id = before_due["schedule_id"]
+                before_holds = (before_owner.get("native_capacity") or {}).get("holds") or []
+                after_holds = (after_owner.get("native_capacity") or {}).get("holds") or []
+                if (schedule_id not in before_holds or before_due.get("host_state") != "active"
+                        or before_due.get("stop_state") != "active"
+                        or before_due.get("completion_state") != "none"):
+                    failures["disturbance-capacity-accounting"].append(
+                        "restart began without task D's active held worker Due")
+                host_state = after_due.get("host_state")
+                completion = after_due.get("completion_state")
+                unresolved = completion in {"none", "unknown"} and after_due.get("stop_state") == "active"
+                terminal = completion in {"succeeded", "failed"} or after_due.get("stop_state") == "completed"
+                if (host_state not in {"unknown", "pending", "active", "paused", "failed"}
+                        or completion not in {"none", "succeeded", "failed", "unknown"}
+                        or not (isinstance(after_due.get("host_evidence"), dict)
+                                and after_due["host_evidence"]
+                                or isinstance(after_due.get("completion_evidence"), dict)
+                                and after_due["completion_evidence"])):
+                    failures["disturbance-owner-custody"].append(
+                        "restart Due readback lacks recognized host/completion state and evidence")
+                elif ((unresolved and schedule_id not in after_holds)
+                      or (terminal and schedule_id in after_holds)
+                      or (not unresolved and not terminal)):
+                    failures["disturbance-capacity-accounting"].append(
+                        "restart Due hold does not match its unresolved or terminal disposition")
+
+        if (before_store.get("integrity") != "ok" or after_store.get("integrity") != "ok"
+                or not isinstance(before_store.get("rows"), dict) or not isinstance(after_store.get("rows"), dict)):
+            failures["disturbance-store-retention"].append("%s Store snapshots are missing integrity or row counts" % step)
+        else:
+            old_rows, new_rows = before_store["rows"], after_store["rows"]
+            if not set(old_rows).issubset(new_rows) or any(
+                    type(count) is not int or count < 0 or type(new_rows.get(table)) is not int
+                    or new_rows[table] < count
+                    for table, count in old_rows.items()):
+                failures["disturbance-store-retention"].append(
+                    "%s Store row counts regressed or became unreadable" % step)
+            if step == "operator-denial" and old_rows != new_rows:
+                failures["disturbance-store-retention"].append("operator denial changed Store row counts")
+
+        for phase, owner in (("before", before_owner), ("after", after_owner)):
+            capacity, managers = owner.get("native_capacity"), owner.get("manager_turns")
+            if (not isinstance(capacity, dict) or type(capacity.get("active_or_uncertain")) is not int
+                    or capacity["active_or_uncertain"] < 0 or not isinstance(capacity.get("holds"), list)
+                    or not isinstance(managers, dict) or type(managers.get("active")) is not int
+                    or managers["active"] < 0):
+                failures["disturbance-capacity-accounting"].append(
+                    "%s %s owner status lacks bounded capacity and manager counts" % (step, phase))
+            elif (capacity["active_or_uncertain"] < len(capacity["holds"])
+                  or (type(capacity.get("worker_limit")) is int
+                      and capacity["active_or_uncertain"] > capacity["worker_limit"])
+                  or (type(managers.get("limit")) is int and managers["active"] > managers["limit"])):
+                failures["disturbance-capacity-accounting"].append(
+                    "%s %s active counts exceed their holds or configured limits" % (step, phase))
+
+        raw_response = response_text(action)
+        if not raw_response.strip():
+            if not (step == "failed-launch" and action.get("outcome") == "read"
+                    and project_tasks(action) is not None):
+                failures["disturbance-fence"].append("%s has no captured product action response" % step)
+        if step == "restart":
+            if action.get("rc") != 0:
+                failures["disturbance-fence"].append("restart command did not complete successfully")
+        elif step == "refused-landing":
+            replies = action_responses(action)
+            first = replies[0] if replies else {}
+            if first.get("ok") is not False or first.get("error") != "landing_refused":
+                failures["disturbance-fence"].append("worker response does not record the product landing_refused error")
+        elif step == "queued-landings":
+            replies = action_responses(action)
+            accepted = [reply for reply in replies if reply.get("ok") is True]
+            fenced = [reply for reply in replies if reply.get("ok") is False and
+                      reply.get("error") in {"unauthorized", "landing_refused"}]
+            if (len(replies) != 2 or len(accepted) != 1 or len(fenced) != 1
+                    or any("tool" in reply and reply.get("tool") != "done" for reply in replies)):
+                failures["disturbance-fence"].append(
+                    "two concurrent landing replies lack one accepted result and one fenced/refused result")
+        elif step == "overlapping-activation":
+            ref = activation_project_ref(action)
+            second = load(step, "second-project")
+            second_ref = (second or {}).get("project_ref")
+            if (not isinstance(ref, dict) or ref.get("kind") != "work.project" or not ref.get("revision")
+                    or response.get("outcome") != "prepared"
+                    or not same_project(ref, second_ref)):
+                failures["disturbance-fence"].append("activation response is not the prepared second project's project identity")
+        elif step == "failed-launch":
+            task = (project_tasks(action) or {}).get("H")
+            activation = read_json(raw / "stage2-disturb-activation.json", {}) or {}
+            refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {})
+            expected_ref = ((refs.get("task_refs") or {}).get("H") or {})
+            after_task = (after_project or {}).get("H")
+            after_dues = read_json(raw / "stage2-disturb-failed-launch-after-dues.json", {}) or {}
+            failure_due = stage2_disturbance_native_failure_due(after_dues, expected_ref)
+            due_target_ref = ((failure_due or {}).get("target") or {}).get("task_ref") or {}
+            due_assignment_id = ((failure_due or {}).get("assignment_ref") or {}).get("id")
+            store = read_json(raw / "stage2-store-events.json", {}) or {}
+            h_dispatches = [row for row in store.get("events") or [] if isinstance(row, dict)
+                            and row.get("task_id") == expected_ref.get("id") and row.get("alias") == "H"
+                            and row.get("event_type") == "work.assignment.dispatched"
+                            and row.get("stream") == "dispatch:" + str(due_assignment_id)
+                            and row.get("assignment_id") == due_assignment_id]
+            if ((task or {}).get("dispatch", {}).get("state") != "failed"
+                    or (after_task or {}).get("dispatch", {}).get("state") != "failed"
+                    or not expected_ref.get("id") or due_target_ref.get("id") != expected_ref.get("id")
+                    or (store.get("tasks") or {}).get(expected_ref.get("id")) != "H"
+                    or (store.get("assignments") or {}).get(due_assignment_id) != expected_ref.get("id")
+                    or len(h_dispatches) != 1
+                    or ((task or {}).get("dispatch") or {}).get("reason") != "native Claude error result retained"
+                    or failure_due is None):
+                failures["disturbance-fence"].append(
+                    "product status and exact H Due do not retain the failed native Claude result")
+        elif step == "operator-denial":
+            error = response.get("error") if isinstance(response, dict) else None
+            try:
+                admissions = [json.loads(line) for line in read_lines(denial_log)]
+            except ValueError:
+                admissions = []
+            activation = read_json(raw / "stage2-disturb-activation.json", {}) or {}
+            task_refs = (((activation.get("activation") or {}).get("steps") or {})
+                         .get("tasks") or {}).get("task_refs") or {}
+            expected_task = (task_refs.get("I") or {}).get("id")
+            exact = [row for row in admissions if isinstance(row, dict)
+                     and (row.get("task") == expected_task
+                          or (row.get("task_ref") or {}).get("id") == expected_task)]
+            if (not isinstance(response, dict) or response.get("outcome") != "rejected"
+                    or not isinstance(error, dict) or error.get("code") != "presence_declined"
+                    or len(exact) != 1 or exact[0].get("prover_result") != "declined"):
+                failures["disturbance-fence"].append(
+                    "operator action lacks rejected/presence_declined response and exact declined owner admission record")
+        if before_project is not None and after_project is not None:
+            target = {"restart": "D", "refused-landing": "E", "queued-landings": "G",
+                      "failed-launch": "H", "operator-denial": "I"}.get(step)
+            before_target = before_project.get(target) if target else None
+            after_target = after_project.get(target) if target else None
+            if step == "restart":
+                if ((before_target or {}).get("dispatch", {}).get("state") != "launched"
+                        or after_target is None):
+                    failures["disturbance-progress"].append("restart did not retain task D's in-flight project state")
+            elif step == "refused-landing":
+                later = load(step, "after-next-project")
+                later_tasks = project_tasks(later)
+                activation = read_json(raw / "stage2-disturb-activation.json", {}) or {}
+                refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {})
+                e_ref = ((refs.get("task_refs") or {}).get("E") or {})
+                store = read_json(raw / "stage2-store-events.json", {}) or {}
+                e_events = [row for row in store.get("events") or [] if isinstance(row, dict)
+                            and row.get("task_id") == e_ref.get("id") and row.get("alias") == "E"]
+                e_dispatches = [row for row in e_events
+                                if row.get("event_type") == "work.assignment.dispatched"
+                                and row.get("assignment_id")
+                                and row.get("stream") == "dispatch:" + row["assignment_id"]
+                                and (store.get("assignments") or {}).get(row["assignment_id"]) == e_ref.get("id")]
+                e_landings = [row for row in e_events if row.get("event_type") == "work.result.appended"]
+                e_completions = [row for row in e_events if row.get("event_type") == "work.revised"
+                                 and (row.get("effects") or {}).get("completion")]
+                f_ref = ((refs.get("task_refs") or {}).get("F") or {})
+                manager_errors = stage2_disturbance_manager_completion_errors(
+                    store, f_ref.get("id"), "F")
+                e_product_ref = ((after_target or {}).get("task_ref") or {})
+                if ((after_target or {}).get("dispatch", {}).get("state") not in {"failed", "unknown", "launched"}
+                        or later_tasks is None
+                        or (later_tasks.get("F") or {}).get("lifecycle") != "completed"
+                        or not e_ref.get("id") or store.get("error") is not None
+                        or e_product_ref.get("id") != e_ref.get("id")
+                        or (store.get("tasks") or {}).get(e_ref.get("id")) != "E"
+                        or len(e_dispatches) != 1 or e_landings or e_completions):
+                    failures["disturbance-progress"].append(
+                        "refusal did not retain dispatched task E without landing/completion and later record task F completion")
+                failures["disturbance-progress"].extend(manager_errors)
+            elif step == "queued-landings":
+                activation = read_json(raw / "stage2-disturb-activation.json", {}) or {}
+                refs = (((activation.get("activation") or {}).get("steps") or {}).get("tasks") or {})
+                g_ref = ((refs.get("task_refs") or {}).get("G") or {})
+                store = read_json(raw / "stage2-store-events.json", {}) or {}
+                events = [row for row in store.get("events") or [] if isinstance(row, dict)
+                          and row.get("task_id") == g_ref.get("id") and row.get("alias") == "G"]
+                landings = [row for row in events if row.get("event_type") == "work.result.appended"
+                            and row.get("assignment_id")
+                            and row.get("stream") == "result:" + row["assignment_id"]
+                            and (row.get("value") or {}).get("lab_commit")
+                            and ((row.get("value") or {}).get("task_ref") or {}).get("id") == g_ref.get("id")
+                            and (row.get("value") or {}).get("assignment_id") == row.get("assignment_id")]
+                completions = [row for row in events if row.get("event_type") == "work.revised"
+                               and row.get("stream") == "work:" + str(g_ref.get("id"))
+                               and (row.get("effects") or {}).get("completion")]
+                manager_errors = stage2_disturbance_manager_completion_errors(
+                    store, g_ref.get("id"), "G")
+                if ((after_target or {}).get("lifecycle") != "completed" or not g_ref.get("id")
+                        or len(landings) != 1 or len(completions) != 1):
+                    failures["disturbance-progress"].append(
+                        "two G landing requests lack exactly one retained landing and one completion Store event")
+                failures["disturbance-progress"].extend(manager_errors)
+            elif step == "failed-launch":
+                if (after_target or {}).get("dispatch", {}).get("state") != "failed":
+                    failures["disturbance-progress"].append("failed launch is not retained for task H")
+            elif step == "operator-denial":
+                denied_before = before_project.get("I")
+                denied_after = after_project.get("I")
+                if (denied_before is None or denied_after is None
+                        or denied_before.get("lifecycle") != denied_after.get("lifecycle")
+                        or denied_before.get("dispatch") != denied_after.get("dispatch")):
+                    failures["disturbance-progress"].append("denial did not preserve task I's product state")
+    return failures
+
+
 def stage2_lsof_count(raw, label, expected_pid):
     lines = read_lines(raw / ("stage2-fds-" + label + ".txt"))
     if not lines or not lines[0].startswith("COMMAND "):
@@ -1867,6 +2635,8 @@ def stage2_failures(raw, config):
     if not census.get("unrelated_started_pids") or not set(census.get("unrelated_started_pids", [])).issubset(
             set(census.get("after_pids", []))):
         found["stage2-census"].append("census does not show unrelated started processes survived")
+    for name, details in stage2_disturbance_failures(raw).items():
+        found[name].extend(details)
     return found
 
 
@@ -2248,10 +3018,12 @@ def build_parser():
     p = sub.add_parser("stage"); p.add_argument("--project", required=True); p.add_argument("--stage", required=True)
     p.add_argument("--key", required=True); p.set_defaults(fn=cmd_stage)
     p = sub.add_parser("stage2-bundle"); p.add_argument("--project", required=True); p.add_argument("--out", required=True)
+    p.add_argument("--run-id", default=""); p.add_argument("--tasks", default="")
     p.set_defaults(fn=cmd_stage2_bundle)
     p = sub.add_parser("stage2-plan-save")
     p.add_argument("--project", required=True); p.add_argument("--registration", required=True)
-    p.add_argument("--out", required=True); p.set_defaults(fn=cmd_stage2_plan_save)
+    p.add_argument("--out", required=True); p.add_argument("--tasks", default="")
+    p.add_argument("--project-title", default=""); p.set_defaults(fn=cmd_stage2_plan_save)
     p = sub.add_parser("stage2-review-ref")
     p.add_argument("--status", required=True); p.add_argument("--activation", required=True)
     p.add_argument("--bundle", required=True); p.set_defaults(fn=cmd_stage2_review_ref)
