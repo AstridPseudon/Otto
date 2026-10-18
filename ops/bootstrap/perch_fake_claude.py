@@ -44,7 +44,6 @@ def done_tool(args):
     request = {"op": "call", "token": token, "tool": "done",
                "args": {"summary": "PERCH stage-2 canary worker finished"}}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(90)
         client.connect(socket_path)
         client.sendall((json.dumps(request) + "\n").encode("utf-8"))
         with client.makefile("r", encoding="utf-8") as stream:

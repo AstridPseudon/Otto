@@ -789,9 +789,6 @@ class AssertionKindTests(unittest.TestCase):
             def __exit__(self, *args):
                 return None
 
-            def settimeout(self, value):
-                self.timeout = value
-
             def connect(self, value):
                 self.address = value
 
@@ -809,7 +806,7 @@ class AssertionKindTests(unittest.TestCase):
                 mock_patch.dict(os.environ, {"OTTO_WORKER_TOKEN": "exact-worker-token"}):
             result = launcher.done_tool(["--mcp-config", json.dumps(config)])
         self.assertEqual(sock.address, "/tmp/canary.sock")
-        self.assertEqual(sock.timeout, 90)
+        self.assertFalse(hasattr(sock, "timeout"))
         self.assertEqual(sent, [{"op": "call", "token": "exact-worker-token", "tool": "done",
                                  "args": {"summary": "PERCH stage-2 canary worker finished"}}])
         self.assertTrue(result["result"]["landed"])
@@ -1356,6 +1353,36 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 self.assertEqual((raw / "polls").read_text(encoding="utf-8").strip(), "3")
                 self.assertIn(missing, (raw / "stage2-setup-errors.txt").read_text(encoding="utf-8"))
 
+    def test_deadline_absence_covers_all_stage_two_waits_and_fake_socket(self):
+        import re
+
+        shell = PERCH.read_text(encoding="utf-8")
+        fake = (BOOTSTRAP / "perch_fake_claude.py").read_text(encoding="utf-8")
+        function_pattern = r"(?ms)^(stage2_[A-Za-z0-9_]+)\(\) \{[^\n]*\n.*?^\}\n"
+        matches = list(re.finditer(function_pattern, shell))
+        waits = [(match.group(1), match.group()) for match in matches
+                 if "while " in match.group() or "sleep " in match.group()]
+        self.assertTrue(waits)
+
+        def deadline_violations(shell_source, fake_source):
+            pattern = r"\bdeadline\b|date\s+\+%s|\.settimeout\s*\("
+            violations = []
+            for match in re.finditer(function_pattern, shell_source):
+                body = match.group()
+                if ("while " in body or "sleep " in body) and re.search(pattern, body):
+                    violations.append(match.group(1))
+            if re.search(pattern, fake_source):
+                violations.append("perch_fake_claude.py")
+            return violations
+
+        self.assertEqual(deadline_violations(shell, fake), [])
+        for name, body in waits:
+            with self.subTest(wait=name):
+                doctored_shell = shell.replace(body, body[:-2] + "  # deadline=doctored\n}\n", 1)
+                self.assertIn(name, deadline_violations(doctored_shell, fake))
+        self.assertIn("perch_fake_claude.py", deadline_violations(
+            shell, fake + "\nclient.settimeout(90)"))
+
     def test_fake_worker_has_native_entrypoint_and_executes_python_turn(self):
         root = short_temp_root()
         self.addCleanup(shutil.rmtree, root, True)
@@ -1511,11 +1538,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 "PY=" + shlex.quote(sys.executable),
                 "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
                 "sleep() { :; }",
-                "date() {",
-                '  if [ "${SEED_BOUNDARY_STUCK:-0}" != 1 ] || [ "$1" != +%s ]; then command date "$@"; return; fi',
-                '  n=$(cat "$RAW/date-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/date-calls"',
-                '  case "$n" in 1|2|3) echo 1000 ;; 4) echo 1001 ;; *) echo 1180 ;; esac',
-                "}",
+                'stage2_owner_alive() { [ "${SEED_BOUNDARY_STUCK:-0}" != 1 ] || [ "$(cat "$RAW/status-calls" 2>/dev/null || echo 0)" -lt 3 ]; }',
                 "cold_client() {",
                 '  if [ "$*" = "service status" ]; then',
                 '    n=$(cat "$RAW/status-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/status-calls"',
@@ -1570,10 +1593,10 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
                          ["admit-A:perch-stage2-admit-A", "admit-B:perch-stage2-admit-B",
-                          "admit-C:perch-stage2-admit-C", "status-busy"])
+                          "admit-C:perch-stage2-admit-C", "status-busy", "status-busy", "status-busy"])
         self.assertEqual(json.loads((raw / "stage2-admit-C.json").read_text())["outcome"], "held")
         self.assertFalse((raw / "stage2-admit-C-attempt-2.json").exists())
-        self.assertIn("boundary stayed open", (raw / "stage2-setup-errors.txt").read_text())
+        self.assertIn("owner exited before", (raw / "stage2-setup-errors.txt").read_text())
 
     def test_only_pre_effect_boundary_hold_can_be_retried(self):
         held = {"outcome": "held", "reason": "execution-changing operation requires a closed owner boundary",
@@ -1626,14 +1649,11 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
                 "REPORT_PY=" + shlex.quote(str(BOOTSTRAP / "perch_report.py")),
                 "REQUEST_ID=" + shlex.quote(request_id),
                 "sleep() { :; }",
-                "date() {",
-                '  if [ "${SEED_PENDING_STUCK:-0}" != 1 ] || [ "$1" != +%s ]; then command date "$@"; return; fi',
-                '  n=$(cat "$RAW/date-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/date-calls"',
-                '  case "$n" in 1|2|3) echo 1000 ;; 4) echo 1001 ;; *) echo 1180 ;; esac',
-                "}",
+                'stage2_owner_alive() { [ "${SEED_PENDING_STUCK:-0}" != 1 ] || [ "$(cat "$RAW/polls" 2>/dev/null || echo 0)" -lt 3 ]; }',
                 "stage2_operator_request_status() {",
                 '  case "$*" in',
                 '    "$REQUEST_ID")',
+                '      n=$(cat "$RAW/polls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$RAW/polls"',
                 '      echo request-status-B >> "$RAW/trace"',
                 '      if [ "${SEED_BAD_REQUEST_ID:-0}" = 1 ]; then',
                 '        printf \'%s\\n\' \'{"outcome":"pending","request_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","terminal":false}\'',
@@ -1697,8 +1717,9 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
         raw, result = run(seed_stuck=True)
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertEqual((raw / "trace").read_text(encoding="utf-8").splitlines(),
-                         ["admit-A", "admit-B", "admit-C", "request-status-B"])
-        self.assertIn("stayed pending", (raw / "stage2-setup-errors.txt").read_text())
+                         ["admit-A", "admit-B", "admit-C", "request-status-B", "request-status-B",
+                          "request-status-B"])
+        self.assertIn("owner exited while retained admission request", (raw / "stage2-setup-errors.txt").read_text())
         self.assertFalse((raw / "stage2-admit-B-attempt-2.json").exists())
 
     def test_operator_retained_read_uses_the_admission_owner_lane(self):
@@ -1776,6 +1797,7 @@ class Stage2OwnerBootstrapTests(unittest.TestCase):
             '  esac',
             '}',
             "cold_client() { printf '%s\\n' '{\"native_capacity\":{\"active_or_uncertain\":1}}'; }",
+            "stage2_owner_alive() { :; }",
             "stage2_kill_worker() { :; }",
             "sleep() { :; }",
             wait.group(),
