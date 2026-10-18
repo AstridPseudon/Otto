@@ -669,6 +669,7 @@ def test_worker_mcp_runs_installed_server_despite_lab_shadows(tmp_path, sock_dir
                                 state="launched", role="worker", token=token)}
     registry.dispatcher = NS()
     registry._due_keys, registry._due_bindings = {}, {}
+    registry._active_due = {}
     registry._lock = registry._pair_lock = threading.RLock()
     registry.facade_server = object()
     registry.facade_socket = str(sock_dir / "facade.sock")
