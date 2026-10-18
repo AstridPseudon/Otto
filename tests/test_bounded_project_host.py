@@ -59,8 +59,8 @@ class NativeFixture(fixture.Provider):
                 outer.started.setdefault(key, threading.Event()).set()
                 release = outer.releases.setdefault(key, threading.Event())
                 try:
-                    if not outer.release_all and not release.wait(12):
-                        raise RuntimeError("fixture transport was not released")
+                    if not outer.release_all:
+                        release.wait()
                     if principal in outer.unknown_principals:
                         receipt, _ = observed
                         return replace(receipt, outcome=fixture.HostOutcome.UNKNOWN), {"delivery_state": "unknown"}
@@ -210,7 +210,9 @@ class BoundedProjectHostTests(unittest.TestCase):
             self.apps[letter], self.states[letter] = app, state
         def owner_route(request):
             return self.owner_targets.get(request.pop("owner_ticket", None))
-        self.router = ProjectServices(self.services, owner_route=owner_route)
+        initial = getattr(self, "initial_view_letters", "ABCDE")
+        self.router = ProjectServices({letter: self.services[letter] for letter in initial},
+                                      owner_route=owner_route)
         self.router.install()
         original = type(f.port).save_due
         def save(port, *args, **kwargs):

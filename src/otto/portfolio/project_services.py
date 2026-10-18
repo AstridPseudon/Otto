@@ -78,12 +78,14 @@ class ProjectServices:
         server, state = service.server, service.server.state
         project, assignment = _identity(state["project_ref"]), _identity(state["assignment_ref"])
         project_id = state["project_ref"]["id"]
-        # Live or queued executions keep the shared activation boundary closed.
-        # Retained capacity holds are project-scoped, so an unrelated hold
-        # does not prevent this view from being installed.
+        # Live and queued executions, plus retained holds, fence their own
+        # project. A missing execution scope keeps the shared fence closed.
         active = self.host._capacity_holds
-        if self.host._executions:
-            raise RuntimeError("install a project view only after its execution custody clears")
+        for execution in self.host._executions.values():
+            scope = execution.get("scope")
+            if (not isinstance(scope, Mapping) or scope.get("project") is None
+                    or scope.get("project") == project_id):
+                raise RuntimeError("install a project view only after its execution custody clears")
         if any(scope.get("project") in (None, project_id) for scope in active.values()):
             raise RuntimeError("install a project view only after its execution custody clears")
         first = next(iter(current.values()), None)
