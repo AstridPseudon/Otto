@@ -1,0 +1,5 @@
+Added the r4 refusal case in [tests/test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SCRIPTMGR/tests/test_perch.py:1954). It supplies an accepted review with nonempty gate refs and a held completion, then requires `RuntimeError` matching `review or finish was refused`. The accepted/pending case and other protections remain unchanged.
+
+The targeted test passed. The focused files, with staging-owner classes excluded, finished with **84 passed, 1 failed, 6 deselected, 87 subtests passed**. The sole failure was the sandbox denying `ps` in a process-census test. `git diff --check` passed.
+
+A Luna sub-agent made the edit. Its first test selection accidentally included seeded staging-owner cases; I corrected the selection for the reported focused run. Only `tests/test_perch.py` changed, and the launcher can commit it.

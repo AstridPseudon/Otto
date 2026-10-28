@@ -1,0 +1,7 @@
+The rebase conflicts are **resolved in the working-tree files**, and the full D19 Restore is applied. The rebase remains paused: `git add` could not create the index lock under the read-only `.git` worktree (`Operation not permitted`), so Git still reports two `UU` entries. The launcher must stage those resolved files and continue the rebase; I did not commit or bypass the sandbox.
+
+Changed this round: [landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LABPIN/src/herzchen/fleet/landing.py) and [fleet_landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LABPIN/src/otto/hostctl/fleet_landing.py) preserve both upstream resource cleanup and LABPIN occurrence pins; [test_fleet_custody.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LABPIN/tests/test_fleet_custody.py) has the five unconditional waits and joins; [test_landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LABPIN/tests/test_landing.py) updates a direct caller fixture introduced by the rebase. No other lab was touched.
+
+The required full custody check completed: **29 passed, 8 failed**. All eight failures involve denied `sandbox-exec` or `ps` access, or unavailable process census. The related landing, external owner, and boundary tests passed: **37 passed, 16 subtests passed**. `git diff --check` passed.
+
+Three Luna agents handled the file resolutions, D19 edits, and tests. I reviewed both merges and corrected the test agent’s initial Due selection and settled request-key comparison before its three affected test modes passed.

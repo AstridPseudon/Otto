@@ -1,0 +1,5 @@
+Updated the stage-2 dispatch poll to handle the shipped pending protocol. It now gets a retained receipt promptly, polls that same request ID until it returns a read, and checks the returned dispatch state. It never resends a pending request, and the existing 180-second deadline still bounds the poll. The admission path, fake-only stand-ins, and `operator-admission.jsonl` allowance are unchanged.
+
+**Focused checks:** 36 unit tests passed, including pending → read and a seeded terminal error that fails. Shell syntax, Python syntax, and `git diff --check` passed. I did not run `perch.sh` in the sandbox.
+
+The lab remains at commit `a3174a5` with changes **uncommitted** for the launcher. The [08:56:53Z stage-2 report](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/perch/2/20261017T085653Z/report.md) is the failed run that prompted this fix; full stage verification remains with the landing gate.

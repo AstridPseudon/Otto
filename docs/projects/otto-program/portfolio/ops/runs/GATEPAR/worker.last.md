@@ -1,0 +1,5 @@
+Implemented the run/judge split in [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/GATEPAR/ops/bootstrap/land.sh). `OTTO_GATE_JOBS` defaults to 3; setting it to 1 preserves serial runs. Each file’s outputs go under `$G/sweep/<file>/`, and judging remains serial and in file order with the existing verdict and log behavior.
+
+Added fake-sweep coverage in [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/GATEPAR/tests/test_bootstrap_gate.py) for bounded concurrency, sequential runs per file, serial mode, and refusal of a reproducible new failure.
+
+**Verification:** the full gate test file passed: 57 passed. After a small validation cleanup, the focused sweep and refusal tests passed: 3 passed; `bash -n` and `git diff --check` passed. Only the two requested files are modified.

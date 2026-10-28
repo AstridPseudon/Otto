@@ -1,0 +1,3 @@
+Updated [perch_stage2_owner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/FAKECOMPLETE2/ops/bootstrap/perch_stage2_owner.py) to read evidence refs from the assessment payload and convert stored refs before verification. The unit test now returns a real `AssessmentResult` with `payload["evidence_refs"]`, so it would fail against the old attribute access.
+
+Focused test passed: `1 passed`. The supplied selector used a class name absent from this checkout; I ran the test under `Stage2OwnerBootstrapTests`. Only the two owned files were changed.

@@ -1,0 +1,3 @@
+Applied Astra’s D19 restore in [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/tests/test_bootstrap_gate.py:271): the PID-only signal test now uses `signal.pause()` and plain `proc.communicate()`. Its readiness wait, outer-PID SIGTERM, and assertions remain intact.
+
+The Luna sub-agent initially changed the neighboring test; I caught that in diff review and had it corrected. The final diff contains only the two requested edits. The brief’s full check passed: **68 passed in 250.14s**. Earlier lease and fail-fast regressions were red on the pre-amendment gate; the current suite is green. No commit, push, or landing was run.

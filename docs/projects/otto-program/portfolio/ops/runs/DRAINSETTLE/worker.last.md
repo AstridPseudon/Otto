@@ -1,0 +1,5 @@
+Drain now resolves each queued, unstarted execution once as held on the owner lane, leaves its prepared Due available for an explicit start after restart, and releases its admission. The final owner pump also settles queued file requests when close arrives before the next regular pump.
+
+The new socket regression **timed out on the canon baseline** after 45 seconds. The required focused command now passes: **10 passed**. `git diff --check` is clean. I removed the drain queue bypass and updated the old assertions that expected no queued reply.
+
+Changed [execution_host.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DRAINSETTLE/src/otto/portfolio/execution_host.py:894) and the two required test files: [test_admitted_transport_drain.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DRAINSETTLE/tests/test_admitted_transport_drain.py:31) and [test_bounded_project_host.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DRAINSETTLE/tests/test_bounded_project_host.py:333). No other files changed, no design departure or blocker. No commit was made; the lab remains based on `b635c93` for the launcher.

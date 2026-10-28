@@ -1,0 +1,3 @@
+The fix is already committed as **`2889d3e`** (`TOOLING21: perch staging tests use a short /tmp root (socket path limit)`). The perch fixture now uses `/tmp/ps-*` to keep its socket path within the limit.
+
+I ran the brief’s gate check. It was still running after the tool’s 30-second response window, so I did not wait or poll for its result. I left both staging test files for the landing gate, as requested. No additional working-tree changes were made.

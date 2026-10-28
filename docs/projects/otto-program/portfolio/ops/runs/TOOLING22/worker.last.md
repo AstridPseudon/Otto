@@ -1,0 +1,7 @@
+Implemented the regressions and fixes in [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING22/ops/bootstrap/land.sh), [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING22/tests/test_bootstrap_gate.py), and [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING22/tests/test_perch.py). The gate now recognizes `SUBFAILED` entries and runs each top-level `&&`-joined check part while preserving failure status. Perch tests now create roots directly under `/private/tmp` with short names.
+
+**Regression results:** both new gate regressions failed against the original canon `land.sh`, then passed with the fix. The gate suite passed: **49 passed**. The perch subset that could run here passed: **50 passed, 37 subtests passed**.
+
+The requested combined command finished with **100 passed and 13 failed**. Those failures were process-census cases blocked because this sandbox denies spawning `ps` (`PermissionError: Operation not permitted`). I left those tests unchanged; the full perch suite still needs a run outside the worker sandbox.
+
+`bash -n` and `git diff --check` passed. No files outside the three listed above were changed. No commit was made.

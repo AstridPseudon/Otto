@@ -1,0 +1,7 @@
+Read retained requests (`request-status`) through the admitted client home, as register and admit do; `raw/stage2-admit-A-retained-1.json` in the run above went through the service home. Check every `cold_client`/owner call in stage 2 uses the client home the host was admitted with.
+
+The latest stage-2 run is `${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/perch/2/20261017T121523Z/`. The `store-matches-stage`, `stage2-review-document`, and `operator-presence-approved` checks pass. The only reported failure is the retained request returning `host_unavailable: no admitted host at …/labs/_staging/home`; inspect the run's raw artifacts and fix the stage-2 harness call site(s) so `request-status`, like register and admit, uses the admitted client home. Check every `cold_client`/owner call in stage 2 for the same mismatch.
+
+Stay within PERCH2B's stated outcome and file exclusions. Preserve scenario ordering and the existing pending-request protocol. Do not add waits/retries or change unrelated owner behavior. Run focused tests only. The stage-2 `bash ops/bootstrap/perch.sh 2 --fake` check is run by the landing gate and may be blocked in the worker sandbox. Leave changes for the launcher to commit and report the call sites checked, cause, fix, focused checks, and anything incomplete.
+
+**Do not touch:** files owned by another running worker (none known); `production/`, any Store, `~/.otto`, `~/.codex`, Codex projects/vision/Native5, or anything outside the lab.

@@ -1,0 +1,7 @@
+**PERCH2C is incomplete.** The branch preserves commit `8d2957f` on top of ORPHANWORKER (`ac02366`). Git reported the rebase up to date, though it could not create two worktree lock files.
+
+I added the canary capacity policy in [project.json](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2C/ops/bootstrap/canary/project.json), wired it into the staging installation before owner startup in [staging.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2C/ops/bootstrap/staging.sh), and removed the two tests that call deleted `defer_fake_lab_cleanup` from [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2C/tests/test_perch.py). `staging.sh` is an additional file directly required to apply the product’s capacity setting.
+
+The assertion work remains. The required task edits, `lsof` snapshots, and pre-harness lab listing need collection points in `perch.sh`, which the brief forbids editing. The current projected timeline also lacks a task link for manager completion reports, so I have not inferred one. I’ve asked whether focused stage-2 collection edits to `perch.sh` are allowed; that decision is still pending. No doctored-input regressions were added, and I did not run stage 2.
+
+The owner free test selection passed: **52 passed, 6 deselected**. A broader selection had one sandbox-only failure because `ps` was denied. I did not run the full check command because it includes tests that start a staging owner.

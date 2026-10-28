@@ -1,0 +1,4 @@
+# Landed before the manager started (15 Oct 2026)
+S0 canon/installed bbd9b6d + canon/main 794623a (the rest is S0B)
+OWNERSAFE 12f3a1e (merged into canon/main)
+T0 skipped (the user: disregard Codex)

@@ -1,0 +1,7 @@
+The 11:45Z gate report shows A and B admitted with the stored plan review and approved presence proof. C returned `held` because the owner had an open execution boundary. The harness had sent all three admissions before waiting for dispatch.
+
+I changed [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/bootstrap/perch.sh) to admit A, wait for its completion and capacity release, then do the same for B before admitting C. It still sends each admission once, follows retained pending status requests, and leaves C running for the recovery probe. No product code or fake presence behavior changed.
+
+The regression in [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/tests/test_perch.py) passes with the sequence `admit-A, wait-A, admit-B, wait-B, admit-C, wait-C`. A seeded C `held` response returns nonzero and never records `wait-C`.
+
+Focused checks passed: 37 unit tests, `bash -n`, and `git diff --check`. HEAD remains `5e9b7f5`; both edits are uncommitted for the launcher. The [11:45Z stage report](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/perch/2/20261017T114529Z/report.md) is the failing gate evidence. Full staging success remains for the landing gate to verify; I did not run `perch.sh` in the sandbox.

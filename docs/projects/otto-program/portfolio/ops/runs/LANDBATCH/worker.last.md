@@ -1,0 +1,5 @@
+Implemented `land.sh --batch` for up to eight tasks in [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/ops/bootstrap/land.sh). It builds one ordered candidate, drops tasks with textual conflicts and a clear reason, runs each accepted task’s check and D19 decision, uses GATEPAR’s parallel sweep over the changed-file union, and runs added-test, orphan, and stage checks. New test failures name the tasks that changed files the failing test imports. A green batch makes one `Land <TASK>:` merge commit per accepted task and pushes once; a gate refusal leaves canon unchanged. The single-task path remains covered.
+
+Added batch regressions in [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/tests/test_bootstrap_gate.py:444). Against a canon script snapshot, six batch tests failed as expected. The final full gate run passed: **64 passed**. No other files were added or edited, and I did not commit or push.
+
+`ops/brief-template.md` was absent from this lab, so I could not read its additional XHARD rules.

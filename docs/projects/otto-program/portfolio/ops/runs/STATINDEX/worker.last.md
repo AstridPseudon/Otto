@@ -1,0 +1,5 @@
+Implemented project-key indexing for the four status selectors. The regression first captured the unchanged queries searching only the identity primary key; it now verifies expression-index searches and parity with the pre-index results, including all selected-project rows.
+
+Added three optional indexes in [schema.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATINDEX/src/herzchen/kernel/schema.py:182), fixed indexed selectors with a generic fallback in [store.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATINDEX/src/herzchen/kernel/store.py:1562), and index preparation after admitted Store open in [product_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATINDEX/src/otto/hostctl/product_service.py:1211). The regression is in [test_portfolio_status.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATINDEX/tests/test_portfolio_status.py:52). No other paths changed.
+
+Check passed: `14 passed`. Changes are uncommitted on `lab/STATINDEX`.

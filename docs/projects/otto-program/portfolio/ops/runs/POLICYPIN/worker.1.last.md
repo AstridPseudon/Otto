@@ -1,0 +1,8 @@
+Both reported landing regressions are fixed in the lab, with changes left uncommitted.
+
+- **Hydration failure:** the new parent check rejected a trusted task view that omitted `project_ref`. The Luna policy agent made absence acceptable while keeping an explicit malformed or foreign parent a refusal. I reviewed that the current-ref, task-content, and exact-criterion checks remain in place.
+- **Composition failure:** the serialized reader lacked `get_revision`, so it could not compare an older policy pin. The Luna reader agent exposed the Store’s existing read-only method through the finite reader endpoint. I extended its [composition test](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/POLICYPIN/tests/test_local_assessment_composition.py:75) to confirm a lifecycle-only revision binds and changed task content refuses.
+
+The additional files [command_ports.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/POLICYPIN/src/herzchen/command_ports.py:35) and the composition test were necessary to cover the serialized reader path.
+
+**Checks:** the two reported tests pass (`2 passed, 6 subtests`). The brief’s check finished with `21 passed, 8 failed`; those eight require OS sandbox or process-census access denied in this worker environment. The two relevant files finished with `17 passed, 4 skipped, 3 failed`; the three manager-launch failures report `sandbox-exec: sandbox_apply: Operation not permitted`. `git diff --check` passes.

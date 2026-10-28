@@ -1,0 +1,5 @@
+**Finding:** pid `29717` was an orphaned Otto owner running `service run --home /private/tmp/ps-vc825222/_staging/home`. The gate reports only the pid and home, but its census matches the command text `service run` and only counts processes reparented to pid 1.
+
+That `ps-` temp-root pattern belongs to `tests/test_perch_staging.py`, whose `staging("up")` registers `stop_owner()` cleanup. TOOLING22’s `tests/test_perch.py` uses `p-` roots, and the landing log shows the sweep ran `test_perch.py`, not `test_perch_staging.py`. This identifies a separate staging-test execution; the available log doesn’t show whether it was interrupted before cleanup or cleanup failed. The gate correctly refused to land while it saw the orphan. I left the census intact and made no file changes.
+
+**Focused check:** the existing orphan-detection and live-owner tests passed: **2 passed**. The lab is clean; no commit was made.

@@ -1,0 +1,1 @@
+Followed the Orchestrator’s stop instruction. Requested no effects and updated [ops/STATUS.log](${TRANSFER_ROOT}/portfolio/ops/STATUS.log) and [ops/manager-state.md](${TRANSFER_ROOT}/portfolio/ops/manager-state.md). The state records that STAGE2CLIENT check-run 1129 was unresolved at its last observation, to reconcile only if work resumes.

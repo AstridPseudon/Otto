@@ -1,0 +1,7 @@
+The stale callers and assertions are updated without restoring document syncing. `project status` now tests stored-document facts without removed digest baselines; the replay test expects duplicate registration to be refused while activation replay remains unchanged. Detach tests seed canonical DAT associations directly, and the serve test checks that later source-folder files are not mirrored. History-import replay still returns its saved receipt.
+
+The brief check passed: **25 passed**. `git diff --check` is clean.
+
+The broader changed-file runs had environment failures: `test_hostctl_cli.py` plus `test_portfolio_detach.py` reported 16 passed and 2 failed; `test_hostctl_serve.py` reported 11 passed, 4 skipped, and 3 failed. Those failures stop at `sandbox-exec` with “Operation not permitted.” The named manager-launch test fails there before reaching its updated document assertion.
+
+**Commit:** `ee485dd` remains HEAD; this turn’s changes are uncommitted for the launcher. No STAGESETUP-owned files or protected landing files were changed. The additional files edited for this follow-up were [cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/A6/src/otto/hostctl/cli.py), [test_hostctl_cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/A6/tests/test_hostctl_cli.py), [test_hostctl_serve.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/A6/tests/test_hostctl_serve.py), and [test_portfolio_detach.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/A6/tests/test_portfolio_detach.py).

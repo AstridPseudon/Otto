@@ -1,0 +1,11 @@
+# D19 decision: UNTIME2, tests/test_embedded_host_heartbeat.py, tests/test_execution_host_manager_turn_queue.py (Astra for the orchestrator, 2026-10-17)
+
+**Decision: SEND BACK.**
+
+- `tests/test_embedded_host_heartbeat.py`: Waiting for a published heartbeat advance replaces the sleep and preserves the frozen-projection checks (`tests/test_embedded_host_heartbeat.py:112`). However, deleting the owner-thread assertion at `canon/main:tests/test_embedded_host_heartbeat.py:103` weakens protection. The remaining assertion at `tests/test_embedded_host_heartbeat.py:148` records only operations entering the fixture’s queue (`:48`, `:58`). Initial projection could bypass that queue and run on the caller thread without failing this test. UNTIME2 requires preserving assertions, so removing the product-method patch needs replacement coverage.
+- `tests/test_execution_host_manager_turn_queue.py`: The timed lock probe becomes a completed callback under the shared lock while capacity remains occupied (`tests/test_execution_host_manager_turn_queue.py:173`). Assertions now also require dispatch to remain blocked and its response absent (`:181`, `:183`); response and outcome checks remain (`:188`, `:190`). This strengthens the row’s intended protection: holding the shared lock while queued prevents callback completion and fails through the harness’s hang detection.
+
+The supplied `land.out` is absent. The file list above was reconstructed from the gate’s deleted-assertion filter at `ops/bootstrap/land.sh:133`, not read from a recorded gate result.
+
+Restore:
+In `tests/test_embedded_host_heartbeat.py`, initialize a dedicated status-read thread log in `SerializedHost.__init__`, append the calling thread in its existing `capacity_holds()` fixture method (`:23`), and assert after `service.close()` that the log is nonempty and contains only `host.owner_thread`. Product `_status()` reads this fixture at `src/otto/hostctl/project_service.py:485`. Preserve the state waits and frozen-projection assertions; keep `service._status` unpatched.

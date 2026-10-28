@@ -1,0 +1,5 @@
+Updated [cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATUSLAUNCH/src/otto/hostctl/cli.py) to use retained worker schedules and lifecycle evidence in project status. A schedule alone remains **admitted**; gateway start evidence reports **launched**, successful completion reports **landed**, and failed or unknown outcomes retain their reason. Existing report and result handling still preserves failure and unknown reasons.
+
+Added projection coverage in [test_hostctl_cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATUSLAUNCH/tests/test_hostctl_cli.py), including admitted, launched, landed, and failed states. No extra files were changed.
+
+The focused regressions passed (2 tests), and `git diff --check` passed. The specified full test command had **17 passed and 2 failed**: both failures hit macOS `sandbox-exec` with “Operation not permitted” in the admission and launcher-drift tests. No worker or Stage 2 checks were run.

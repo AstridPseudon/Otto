@@ -1,0 +1,5 @@
+Stage 2’s accepted `worker-done` lands and accepts work but does not complete the task in the same transaction. The fake hook still calls the guarded product completion API, now for A, B, and C, using managed evidence refs from the accepted assessment and their verified stored digests. It no longer uses the landing candidate as evidence or synthesizes a hash.
+
+The regression checks completion request order and evidence values in [perch_stage2_owner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/FAKECOMPLETE/ops/bootstrap/perch_stage2_owner.py:33) and [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/FAKECOMPLETE/tests/test_perch.py:1268).
+
+The requested test command completed: **51 passed, 15 failed**. The completion regression passed; the remaining failures were blocked by the sandbox denying `ps` during process census in unrelated staging and fake-run cases. `git diff --check` passed.

@@ -1,0 +1,5 @@
+Completed the D19 Restore in the PINALL lab. The three specified waits now use `process.wait()`, and the live-group fixture uses `signal.pause()`. SIGKILL cleanup, assertions, owner-thread observation, and the other two timeout waits are unchanged.
+
+Changed [test_capacity_pool.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/tests/test_capacity_pool.py) and [test_claude_manager_admission.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/tests/test_claude_manager_admission.py). The Luna sub-agent made the edits and ran the checks; I reviewed the diff and made no corrections.
+
+The full check completed: **83 passed, 1 failed, 10 subtests passed**. The failure is the macOS fence preflight, which this sandbox denies with `sandbox_apply: Operation not permitted`. `git diff --check` passed. Changes remain uncommitted for the launcher.

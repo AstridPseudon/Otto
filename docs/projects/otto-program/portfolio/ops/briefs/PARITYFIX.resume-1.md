@@ -1,0 +1,8 @@
+# Resume PARITYFIX (normal): D19 restore
+
+Read `${TRANSFER_ROOT}/portfolio/ops/reviews/D19-PARITYFIX.md.sendback` and implement its entire Restore section in the PARITYFIX lab. Restore immutable fixture pack bytes independently from production, retain the original fixture manifest/tree digests, and independently record the pack-only revision. Replace `inventory_identity_scope` with a canonical inventory preimage template verified against pinned Astrid at two roots; independently substitute each root and hash the preimage, then include `source_inventory_identity` in full expected-field equality assertions. Keep relocation, comment-invariance, cleanup, and tamper-refusal coverage.
+
+The original brief and check command still govern. Run the brief's full check to completion, then `git diff --check`; report changed files and results. Leave changes for the launcher to commit. Do not touch files in other task labs, especially the running LANDBATCH lab.
+
+
+**On Codex** (Luna or Sol, the program's host since 16 Oct): you can't commit, because Codex's sandbox keeps `.git` read-only. Leave your work in the lab and `run-task.sh` commits it when you exit; don't work around the sandbox. **A long test runs to its end:** give the shell command a long timeout (for example `timeout_ms: 1800000`), or keep reading its session until it exits; never stop a test run because a window passed (REDS and DISPATCH stopped at "30 seconds", 16 Oct). A test that fails with `sandbox_apply: Operation not permitted` needs a sandbox of its own, which can't nest inside yours: list it in your report, and the landing gate runs it outside. **Any sub-agent you start is `spawn_agent` with `model: "gpt-6-luna"`.**

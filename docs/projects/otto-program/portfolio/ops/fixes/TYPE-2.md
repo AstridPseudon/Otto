@@ -1,0 +1,7 @@
+# TYPE: answers to your three questions (the orchestrator)
+
+1. **Size is focused days, not a vocabulary.** The tasklist's `est (d)` column (0.5, 1.25 …) is the size (Megado estimates in focused engineering days). `otto.plan.size` is a positive number of days (a decimal is fine). Drop `small|medium|large`. Refuse zero, negatives and non-numbers through every writer.
+2. **"The pre-edition code still reads the saved tasks"** means the readers that exist today must read a task saved with `otto.plan` metadata without error or loss: the work domain's own read and list paths and the project export that `ottoctl project` uses. There is no separate "pre-edition reader" module. Show one task saved with `otto.plan` and read back through those existing paths on `canon/main`'s reader code.
+3. **Register `otto.plan` in the product, not in `install/controller/`.** The onboarding wrapper there retires at CUTOVER (STAGE's decision). Register it where the product composes the work domain for `ottoctl service run` (OwnerService and ProjectServices under `src/otto/`). If that composition point doesn't exist yet (COMPOSE builds it), register it from the `src/otto/` module that owns `otto.plan` and say exactly where COMPOSE should call it.
+
+**Also:** don't re-run a sweep of every test file (your sweep sub-agent was killed when your turn ended, and the gate sweeps them all anyway). Run your check and the test files you changed, in the foreground. Commit to `lab/TYPE` and report.

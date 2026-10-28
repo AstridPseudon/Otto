@@ -1,0 +1,5 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_perch.py
+
+Decision: LAND
+
+- `tests/test_perch.py`: The 90-second socket expectation becomes timeout absence (`:808`), matching the removal in `ops/bootstrap/perch_fake_claude.py:46`; restoring `settimeout(90)` would fail against the socket stub. The stuck-admission assertions now require three polls followed by owner-exit diagnostics (`:1589`, `:1714`), matching the evidence-or-owner-death loops in `ops/bootstrap/perch.sh:243` and `:304` and the row at `projects/program/tasklist.md:208`. Exact traces, held receipts, request-key reuse, mismatched-request rejection, and no-resubmission checks remain (`tests/test_perch.py:1578`, `:1584`, `:1592`, `:1707`, `:1718`), so premature retries or incorrect completion still fail. Liveness fixtures model owner death; they add no timer or Otto product-method patch. Separate row-acceptance gap: the additive deadline scanner filters functions by `while`/`sleep` (`:1358`, `:1367`), so it does not literally cover every `stage2_*` function. That gap does not weaken the existing assertions being decided here.

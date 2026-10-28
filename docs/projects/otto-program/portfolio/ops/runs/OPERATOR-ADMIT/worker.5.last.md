@@ -1,0 +1,5 @@
+The portfolio CLI now defaults `--actor` to `bound_actor`, denies a different value, and keeps `--actor` required without a binding. I removed the save-specific `owner` rewrite and removed `--actor owner` from the stage-1 save callers. The audit also found literal actors in direct, unbound CLI tests and explicit actor checks; those remain intentional.
+
+**One required change is blocked.** Your earlier A6 ownership rule forbids editing [hostctl/portfolio.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/OPERATOR-ADMIT/src/otto/hostctl/portfolio.py). Its separate cold-client `save_parser()` still requires `--actor` before the request reaches the bound CLI. I asked whether A6 has released that file and have not changed it without an answer.
+
+Tests run separately: `test_owner_lane.py` **9 passed**; `test_admit.py` **12 passed**; `test_operator_admission.py` **1 failed, 12 passed, 1 skipped**; `test_perch_stage1.py` **2 failed, 17 passed**. The brief’s combined check has the same one failure. All remaining failures stop at that preflight parser. No commit was made.

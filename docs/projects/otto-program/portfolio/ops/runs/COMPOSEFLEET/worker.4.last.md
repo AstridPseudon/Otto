@@ -1,0 +1,7 @@
+I found two causes behind the missing second dispatch. The test’s standalone owner had no fleet callbacks, repo map, or admitted task plans, so its first worker could not reach an assignment lab. I also found a production resolver defect: owner setup advances the project revision while tasks retain an earlier project pin; the resolver wrongly required those revisions to match.
+
+I fixed the resolver to verify the **current project still links the exact admitted task**. The test now supplies a disposable repo and admitted plans, runs workers in their labs, and waits for both dispatch receipts and the third manager turn before reading results. It retains the routing and resume assertions.
+
+Evidence: both fixture labs prepared with admitted revisions; the focused registry tests passed **6/6**. The exact selector and full row check ran, but this Codex sandbox stops manager launch at `sandbox-exec: sandbox_apply: Operation not permitted`. The full check reported **41 passed, 4 skipped, 2 subtests passed, 10 sandbox-related failures**. The landing gate must rerun the selector to verify the end-to-end fix.
+
+Only [product_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/src/otto/hostctl/product_service.py:394), [test_hostctl_serve.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/tests/test_hostctl_serve.py:562), and [test_fleet_custody.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/tests/test_fleet_custody.py:188) changed. The worktree is uncommitted for the launcher.

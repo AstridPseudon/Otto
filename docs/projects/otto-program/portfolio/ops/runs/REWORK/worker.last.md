@@ -1,0 +1,7 @@
+The Herzchen host continuation path is ready in [contract.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REWORK/src/herzchen/fleet/hosts/contract.py:153) and [claude.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REWORK/src/herzchen/fleet/hosts/claude.py:347). It resumes the exact native session in the recorded parked workspace with the landing log in Claude’s prompt. It refuses unsettled attempts before launch and calls Otto’s authorizer for each attempt; retry counts and limits stay with Otto.
+
+The requested [host contract tests](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REWORK/tests/test_host_contract.py:642) passed: **38 passed, 23 subtests passed**. `git diff --check` is clean. No behavioral red run was captured before implementation; an initial run had three test import failures, which were corrected before the passing run.
+
+Luna inspection mapped the existing session path; no correction was needed. Luna implementation wrote the code and tests; I requested fixes to test placement, imports, and worker checks, then made a small validation and documentation tidy. The existing `--resume` handling remains; the new explicit contract supplies the missing landing recovery entry point. Otto caller wiring was outside this lab’s owned files.
+
+The three changes are uncommitted. Codex cannot write `.git` here; `run-task.sh` will commit them on exit, so there is no commit hash yet.

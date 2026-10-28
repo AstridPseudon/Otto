@@ -1,0 +1,9 @@
+COMPOSEFLEET **has landed**. The previous runner searched for the literal `COMPOSEFLEET` marker, which the implementation modules do not contain. I changed detection to check the landed owner and Herzchen modules directly.
+
+Stage 2 still cannot run from the current canary setup. It has no registered and activated host project or authenticated manager occurrence, which the owner’s `manager run-worker` route requires. The runner now reports that setup blocker explicitly, and the mandatory stage-2 gate remains red; I did not substitute a local simulation or claim a staging pass.
+
+The branch already contains `fe17d49` in its ancestry, so no additional rebase was needed. The current changes are uncommitted in [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2/ops/bootstrap/perch.sh), [perch_report.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2/ops/bootstrap/perch_report.py), and [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2/tests/test_perch.py).
+
+**Checks:** the stage-2 assertion and report checks passed: 14 tests and 30 subtests. The full requested command completed with **16 failed, 29 passed, 30 subtests passed**. The process census cannot launch `ps` in this sandbox (`Operation not permitted`); this affects the census, fake-run, seeded-fault integration, and staging-start checks. Those checks need a sandbox of their own at the landing gate. Shell syntax, Python compilation, and `git diff --check` passed.
+
+No existing helper or assertion was removed. The external prerequisite is to register and activate the canary project and start an authenticated manager occurrence before stage 2 can dispatch.

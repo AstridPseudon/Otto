@@ -1,0 +1,5 @@
+Implemented the shared line checkout preflight in [landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LINECHECK/src/herzchen/fleet/landing.py:25) and call it during worker preparation, under the pair lock and before lab creation or reuse, in [product_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LINECHECK/src/otto/hostctl/product_service.py:618). Landing still runs its final preflight.
+
+Added regressions for an unchecked-out configured branch, a dirty line with an existing lab, and successful preparation on a clean line in [test_fleet_custody.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LINECHECK/tests/test_fleet_custody.py:273).
+
+**Checks:** Focused regressions and `test_landing.py` passed: 19 passed. The requested full command completed with 39 passed and 8 failures. Those failures are sandbox restrictions: `sandbox-exec` returned “Operation not permitted,” and process-custody tests could not access the process census or run `ps`. `git diff --check` passed.

@@ -1,0 +1,12 @@
+You are a senior engineer (Sol, extra-high reasoning) writing the implementation design for one task of the Otto program, before a worker builds it. Read-only: never edit, create or delete files, never commit, never run tests, never start an owner or `ottoctl`, never pass `--help` to an Otto command, never read ~/.otto, ~/.otto-clients, ~/.codex or ~/Documents/Codex. Hand the legwork (reading, finding callers, checking line numbers) to as many parallel Luna sub-agents as it splits into: every sub-agent is `spawn_agent` with `model: "gpt-6-luna"`; check their claims yourself.
+
+Code: ${TRANSFER_ROOT}/source/otto at `canon/main` (read with `git -C ${TRANSFER_ROOT}/source/otto show canon/main:<path>`, `git grep`). Rules the program follows: tests are meaningful, not timed (only a hang fails); no test or harness patches a product method except to stand in for a person or a model; prefer deleting a duplicate path over adding a mechanism; a change to an existing test's assertion needs a written decision.
+
+Answer, at most ~120 lines: 1. The design: each change as `file:line` (on canon/main now) → what to change, in order. 2. The failing test to write first: its file, name and full code. 3. What to delete. 4. The plausible mistake and how the test catches it. 5. Existing tests whose expectations change, and why (they need a D19 decision). 6. Anything in the row that is wrong or stale on canon now.
+
+The task row:
+
+id LABPIN, route xhard, deps LABCAPTURE
+Outcome: **A lab is removed only for its exact captured landing occurrence.**<br>Evidence: `src/otto/hostctl/product_service.py:416`, `src/herzchen/fleet/labs.py:375`, `:399`, `:423`; LABCAPTURE 1–2.<br>• Bind the marker to the owner occurrence, assignment generation and commit. • Check capture, marker, HEAD and retained ref under one exclusive lab lock through removal, including partial-removal recovery. • Reuse existing landing and Due records.
+Acceptance: Retain captured turn A and uncaptured landed turn B for the same task: startup must retain B until B’s capture. Coordinate a real writer and sweep so HEAD changes before deletion acquires custody: replacement work must remain available. Both expose the current gap; retain the existing dirty-work and Git-ref protections.
+Xhard: Invariant: Cleanup authority applies to one captured occurrence and one lab incarnation. Plausible mistake: Matching only task identity or validating before acquiring the deletion lock. Surfaces: A later worker loses its lab before its result is captured.

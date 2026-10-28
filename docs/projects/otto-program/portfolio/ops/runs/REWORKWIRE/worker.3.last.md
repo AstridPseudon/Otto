@@ -1,0 +1,3 @@
+The three reported regressions are fixed on the current clean lab commit, `5888017`. The [latest outside-sandbox check](<${TRANSFER_ROOT}/portfolio/ops/runs/REWORKWIRE/check.out>) passed all four focused files, including `test_reworkwire.py` (8/8); the later sweep also passed that file twice. No files needed editing in this resume.
+
+I reran the brief’s command on `5888017`: 7 passed, 39 passed with 23 subtests, and 8 passed. `test_tools.py` had 28 passed and one worker-sandbox `sandbox-exec` permission failure; all 29 passed outside the sandbox. I did not land. The [landing log](<${TRANSFER_ROOT}/portfolio/ops/runs/REWORKWIRE/land.log>) records separate sweep failures in files assigned to TESTPATCH.

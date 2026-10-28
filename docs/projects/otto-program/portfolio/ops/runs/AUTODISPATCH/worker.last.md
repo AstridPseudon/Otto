@@ -1,0 +1,5 @@
+Implemented automatic worker selection in the owner capacity pump. It checks current admission, task and project dependencies, route, and capacity, then uses the retained worker start path through `admit_execution`. Dispatch is serialized per task generation; a manager’s later `run-worker` returns `retained`. The obsolete refusal of manager prepared worker records after dispatcher binding was removed.
+
+**Checks:** The requested command passed: 38 passed, 16 skipped. Six focused registry tests and `git diff --check` also passed. A broader exploratory run was not green: seven custody tests hit sandbox-denied `ps`, and three service tests failed; those failures remain unresolved. The referenced `projects/program/tasklist.md` is absent from this lab, so I used the brief as the acceptance contract.
+
+All changes are in the seven owned files. No sub-agents were used. **Commit:** none; changes remain uncommitted on `lab/AUTODISPATCH` at `61a6e99` for the launcher.

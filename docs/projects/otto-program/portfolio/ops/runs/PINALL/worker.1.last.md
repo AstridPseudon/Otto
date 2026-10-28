@@ -1,0 +1,5 @@
+Applied the SEND BACK restore in the PINALL lab. The owner-thread assertion now uses test-scoped profiling, and the second-pin test uses a real `.capacity-process-groups.json.tmp` collision. Only [test_capacity_pool.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/tests/test_capacity_pool.py) and [test_claude_manager_admission.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/tests/test_claude_manager_admission.py) changed. Changes remain uncommitted on `66f460e`.
+
+The original check command completed: **82 passed, 1 failed, 10 subtests passed**. The sole failure is the existing macOS fence test; this environment rejects `sandbox-exec` with `sandbox_apply: Operation not permitted`. `git diff --check` passed.
+
+Remaining work: rerun the original check where `sandbox-exec` is permitted.

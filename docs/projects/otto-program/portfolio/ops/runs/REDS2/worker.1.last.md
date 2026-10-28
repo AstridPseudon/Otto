@@ -1,0 +1,17 @@
+**REDS2 remains incomplete.** I left the work in the lab for the launcher; no commit was made here. No test assertions were changed, none of the prohibited modules were touched, and `git diff --check` is clean.
+
+I changed six production files: [register.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS2/src/otto/hostctl/register.py), [completion_intent_selection.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS2/src/otto/portfolio/completion_intent_selection.py), [execution.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS2/src/otto/portfolio/execution.py), [manager_journey_command.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS2/src/otto/portfolio/manager_journey_command.py), [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS2/src/otto/portfolio/manager_journey_service.py), and [operating_setup.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS2/src/otto/portfolio/operating_setup.py). The fixes cover immutable history-import replay, prior-generation journal selection, bounded `list_due` compatibility, and current manager continuation selection across authenticated adoption. The continuation path now accepts verified same-generation adoption ancestry and preserves continuation precedence.
+
+**Passing checks:** supervisor direction (43 passed, 5 subtests); manager service continuation (45 passed, 5 subtests); selector/help/journey/service continuation (81 passed, 27 subtests); OWNERLANE/embedded heartbeat/service routing (19 passed). The history replay test also passes after its fix. The focused supervisor test passed; I found no heartbeat flake in the focused OWNERLANE checks.
+
+**Remaining reds and limits:**
+
+- `test_events_final_corrections.py` fails during fixture setup: manager acceptance cannot read the owner’s private evidence (`evidence_read_unavailable`). Fixing this safely requires a scoped evidence-verification path beyond the allowed Otto product files.
+- `test_worker_occurrences.py` has one remaining failure: the lost-reply caller handle says retention is unconfirmed, while the owner’s occurrence record says retained. Reconciling those values requires the excluded `execution_host.py` path; I left both truthful states unchanged.
+- Terminal status still raises `KeyError: 'summary'`, and the correction-planning checks still fail on `requires_native_caller('review-task')`. Both need the excluded `manager_journey_client.py`. The same-owner-thread authoring timeout also needs the excluded `execution_host.py`.
+- Hostctl CLI and serve failures include `sandbox-exec: sandbox_apply: Operation not permitted` in this runner. The isolated CLI run passed 13 tests and had two such preflight failures.
+- The ASK `land.log` is absent from this checkout, so I could not compare its exact 31 selectors. In the isolated current ASK tests, selector/help/journey/service continuation pass; the correction-planning and reentrant IPC failures above remain.
+
+I left `tests/test_project_folder_scale.py` and its production path unchanged. Contradiction, exactly as found: **a 256 MiB limit; 21 KiB aggregate bounded; 16.3 KiB single rejected; 25 KiB imported**.
+
+The full requested sweep completed, but hit `Too many open files` during the hostctl CLI section and cascaded into 104 failures and 3 teardown errors. I therefore relied on isolated reruns for classification; the full gate is not green, and I did not complete three standalone passes for every listed test.

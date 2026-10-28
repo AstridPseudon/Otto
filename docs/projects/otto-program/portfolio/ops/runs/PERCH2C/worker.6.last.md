@@ -1,0 +1,5 @@
+I applied the SEND BACK test restores in [tests/test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2C/tests/test_perch.py): seeded faults now require exact failure sets, and the capture test uses a temporary Store with normal domains. The focused tests passed. The retained C lab evidence and all other implementation remain unchanged.
+
+**Checks:** 66 passed, 71 subtests passed, 4 deselected; one sandbox-only census test failed because `ps` was denied. Python compilation and `git diff --check` passed. The exact full check was not run because its four deselected tests start a staging owner, which you prohibited.
+
+**Unfinished:** The three wait changes require editing `ops/bootstrap/perch.sh`, which this request also explicitly forbids. I left that file untouched and have asked whether those three functions are an exception. The branch contains current `canon/main`; changes remain uncommitted.

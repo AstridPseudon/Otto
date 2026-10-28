@@ -1,0 +1,11 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_manager_reentrant_ipc.py, tests/test_bounded_project_host.py
+
+Decision: SEND BACK
+
+The header identifies the proposed review files. The supplied `land.out:5` stops at D14; no D19 inventory exists, and the requested branch diff changes neither file’s assertions.
+
+- `tests/test_manager_reentrant_ipc.py`: The unchanged absence assertion at `:143` conflicts with the intended durable claim before handler entry (`src/otto/portfolio/execution_host.py:1624`, branch). Replacing it with explicit claimed/processing-marker assertions is appropriate; preserve the outstanding-response check at `:142`, completion/provider-count checks at `:149`, and queued-request replay check at `:216`. No concrete replacement is supplied.
+- `tests/test_bounded_project_host.py`: The report’s absent-response expectation at branch `:350` is obsolete. Current canon asserts a terminal `held` receipt with `provider_called=False`, `effects_started=False`, and `retry=False` at `:439`, then preserves that exact receipt across restart at `:460`. Shutdown settles unstarted work (`src/otto/portfolio/execution_host.py:934`). Replacing these checks with `unknown` would weaken durable-receipt preservation; unknown applies only when no durable settlement exists.
+
+Restore:
+Preserve canon’s bounded-host assertions unchanged. Replace only the manager test’s `:143` absence assertion with checks for `dispatch_claimed=True`, `request_state="processing"`, `terminal=False`, the exact request ID and response path, and `retry=False`; retain its other protections. Resolve the rebase and submit the concrete assertion diff with its D19 inventory.

@@ -1,0 +1,7 @@
+The earlier landing failures are resolved in the rebased lab. The latest section of `land.log` exposed five further failures: the temporary direct host changed admission and capture behavior for injected provider bindings. I restricted that host to built-in native transports. Native pinning still requires an owner before input; injected bindings retain their direct path.
+
+Changed [execution.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/src/otto/portfolio/execution.py), [claude_adapter.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/src/otto/agents/claude_adapter.py), and [herzchen_adapter.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/src/otto/agents/herzchen_adapter.py). The Herzchen adapter is the additional file needed to identify its built-in native binding. No tests were changed.
+
+**Checks:** targeted regression tests: 4 passed; completed-worker selector and execution application suites: 34 passed; missing-manager capture suite: 8 passed; `git diff --check`: passed. The original check command completed with **82 passed, 1 failed**. Its sole failure is the macOS fence test because this lab denies `sandbox-exec` (`sandbox_apply: Operation not permitted`).
+
+Changes are uncommitted on `c531aa4`. The remaining work is a gate rerun in an environment that permits the fence preflight.

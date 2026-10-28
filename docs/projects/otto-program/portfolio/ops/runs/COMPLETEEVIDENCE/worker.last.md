@@ -1,0 +1,11 @@
+The missing completion input was the **managed evidence payload resolver**. Otto’s provisional gate had it, but the sheet used by ordinary manager `complete_task` created a separate assignment port without it. [Owner wiring](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPLETEEVIDENCE/src/otto/portfolio/owner_bootstrap.py:693) now shares the resolver-configured port with the sheet. The [Herzchen gate](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPLETEEVIDENCE/src/herzchen/domains/assessment/module.py:1239) blocks managed DAT evidence when its pin or required read inputs are missing; unknown is not treated as verified.
+
+The [real-owner regression](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPLETEEVIDENCE/tests/test_manager_completion_command.py:127) covers activation, admission, dispatch, worker completion, managed-evidence acceptance, and manager completion. Missing bytes remain held, tampered bytes report a mismatch, and the restored exact bytes complete with a verified gate.
+
+- **Canon red:** final regression failed against an isolated copy of the original source: tampered evidence reported `completion_evidence_unverified` instead of `completion_evidence_mismatch`.
+- **Fixed green:** focused command: 13 passed, 17 subtests passed. Adjacent assessment and execution suites: 40 passed, 15 subtests passed. `git diff --check` passed.
+- **Other file edited:** `owner_bootstrap.py`, required to pass the resolver into the sheet’s transactional completion path. Nothing was deleted.
+
+Two Luna sub-agents worked on the audit and regression. I corrected the audit’s initial missed sheet port and narrowed its first blocker change to preserve the existing non-DAT result flow; I had the regression agent add explicit activation and missing-byte coverage. Staging-owner checks remain for the landing gate as specified.
+
+No commit was made: `.git` is read-only in this sandbox. The work is left on `lab/COMPLETEEVIDENCE` for the launcher to commit; base commit is `7000cdd61a4a8c4f0ab08a692dadbafb1a1f6328`.

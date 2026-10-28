@@ -1,0 +1,8 @@
+# D19 decision (Astra for the orchestrator, 2026-10-17): tests/test_act_activation.py
+
+**Decision: SEND BACK.**
+
+- `tests/test_act_activation.py`: Replacing cross-project waiting with B activation during A’s live and queued work follows `projects/program/tasklist.md:134` and the scoped custody checks in `src/otto/hostctl/project_service.py:83` and `src/otto/portfolio/project_services.py:84`. Same-project queuing and exactly-once continuation remain protected (`tests/test_act_activation.py:45–73`), as do unknown custody (`:76–86`, `:215–222`), A’s held activation (`:156–169`), and A’s callback routing (`:175–192`). Reintroducing global blocking or replacing A’s router/view would fail these assertions. However, the replacement introduces timed waits through `f.wait` at `tests/test_act_activation.py:101`, `:114`, `:126`, `:134`, and `:188`. That existing helper imposes a 10-second deadline (`tests/test_bounded_project_host.py:234–238`). Its new use violates the no-timer rule and `PLAN.md:486`.
+
+Restore:
+In `tests/test_act_activation.py`, replace the event waits at lines 114, 126, and 188 with `first_manager.wait()`, `worker_started.wait()`, and `second_manager.wait()`, without timeouts. Replace the receipt wait at line 101 and queued-execution wait at lines 134–135 with predicate loops without deadlines. Preserve all scoped-custody, continuation, installation, and callback assertions.

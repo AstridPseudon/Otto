@@ -1,0 +1,7 @@
+**Cause:** KILLFENCE’s project-scoping change read `scope` from every execution row. The three activation tests use valid rows containing only `running`, so activation raised `KeyError`. The change also let an active execution in another project bypass the established shared activation gate.
+
+I restored the shared gate for live or queued executions in [project_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/KILLFENCE/src/otto/hostctl/project_service.py:73) and [project_services.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/KILLFENCE/src/otto/portfolio/project_services.py:69). Killed-worker capacity holds remain project scoped; the manager recovery and released-hold paths are unchanged. The `project_service.py` edit was the required direct-caller fix.
+
+**Checks:** the three named activation tests passed (**3 passed**); the original focused command passed (**16 passed**); `git diff --check` passed. One Luna agent diagnosed and implemented the fix; I corrected its initial suggestion to make capacity holds global, then reviewed the diff and test results.
+
+No staging Otto was started and no commit was made. The launcher must commit on exit; recheck the landing queue after that commit before requesting another landing. Stage-2 `--fake` post-kill acceptance remains an orchestrator run.

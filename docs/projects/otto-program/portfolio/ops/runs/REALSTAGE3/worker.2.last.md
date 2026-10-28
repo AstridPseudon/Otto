@@ -1,0 +1,7 @@
+I resolved the conflict markers in [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REALSTAGE3/ops/bootstrap/perch.sh), [test_fleet_custody.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REALSTAGE3/tests/test_fleet_custody.py), and [facade.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REALSTAGE3/src/herzchen/fleet/tools/facade.py). The facade merge preserves canon’s safe error handling and REALSTAGE3’s owner call audit. No conflict markers remain.
+
+I inspected the full nine-file rebased diff. It adds the stage 3 canary, real owner route, owner-recorded lab, facade, runner and landing evidence, a stage 3 report helper, and doctored-evidence tests. It preserves the stage 2 setup and admission behavior. `ops/bootstrap/perch_report.py` and `tests/test_perch_report.py` are untouched.
+
+**Checks:** `git diff --check` and shell syntax passed. The 14 stage 3 focused tests passed. The exact brief command finished with **88 passed, 143 subtests passed, 15 failed**; all failures stem from the sandbox denying `ps` in existing census and fake-run tests.
+
+**Remaining:** Run `bash ops/bootstrap/perch.sh 3` outside the sandbox to verify the real Haiku owner run and its report. The conflict content is resolved, but Git still shows `UU` for `facade.py` because this sandbox cannot write the Git index; the launcher must stage that file before committing. I did not commit or push.

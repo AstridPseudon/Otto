@@ -1,0 +1,3 @@
+Restored the deferred-activation continuation check in [test_act_activation.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACTIVATEWHILE/tests/test_act_activation.py). It now verifies that B’s request has no terminal response while queued, then resumes after B’s custody clears, returns `prepared` for the same token, and invokes the handler only once. The cross-project execution and callback regression remains in place.
+
+The focused suite passed: **11 tests**. `git diff --check` passed. Only the requested test file changed; no commit or push was made.

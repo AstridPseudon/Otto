@@ -1,0 +1,5 @@
+Repaired the three remaining `NEW failure` entries. All three landing traces failed because the pause guard in [execution_host.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ASK/src/otto/portfolio/execution_host.py:533) expected `operations.reader`; those admission paths provide the authoritative reader as `operations._owner_reader`. The guard now uses that reader, while still refusing paused tasks.
+
+The three exact selectors passed (**3 passed**). The affected test files, paused admission tests, ASK focused checks, and Herzchen boundary test passed together (**55 passed, 3 subtests passed**). `git diff --check` passed.
+
+A Luna sub-agent made the repair; I reviewed it and had the agent simplify the reader adapter. Only `execution_host.py` changed. I did not touch COMPOSEFLEET’s file, commit, or attempt a landing. The log’s separately marked baseline failures and unreproduced capacity flake remain outside this repair.

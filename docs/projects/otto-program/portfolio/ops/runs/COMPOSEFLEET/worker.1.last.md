@@ -1,0 +1,5 @@
+I stopped because the brief conflicts with the current worker path. [ManagerJourneyService._execution](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/src/otto/portfolio/manager_journey_service.py:181) requires every worker adapter to use the project workspace, while this brief requires the assignment’s lab. Owner composition cannot change that safely. `LandingService.done` also needs exact assessment candidate and input pins that the current owner view does not provide.
+
+The owner composition and landing bridge remain **unfinished and uncommitted**. Seven new tests were red against `canon/main` and green locally, including a real landing test, but they do not prove the live worker path. The full check and staging perch have not run.
+
+May I extend the row to the portfolio worker workspace binding and the owner’s assessment preparation, with their tests? That appears necessary to meet the lab confinement and `done` requirements.

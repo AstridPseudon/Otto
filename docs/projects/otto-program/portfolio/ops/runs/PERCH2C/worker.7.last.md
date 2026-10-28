@@ -1,0 +1,5 @@
+The three stage-2 waits in [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2C/ops/bootstrap/perch.sh:351) now keep their `sleep 0.25` polling cadence without local deadlines. They stop when the required evidence appears or the recorded owner exits; an owner exit names the missing evidence. [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2C/tests/test_perch.py:1300) adds owner-free regressions for all three exit paths. The exact seeded-failure tests, real temporary Store capture, retained C lab evidence, and ORPHANWORKER census lines remain intact.
+
+**Checks:** 67 passed and 74 subtests passed with 5 tests deselected. The broader owner-free run had one sandbox-only failure: `ps` was denied in the census test. Python compilation, `bash -n`, and `git diff --check` passed. I did not run the exact full check because it starts a staging owner.
+
+**Unfinished:** `git rebase canon/main` could not create rebase state in the external worktree `.git` directory (`Operation not permitted`). I left commit `bd58eb7` and the two changed files uncommitted and did not work around that permission failure.

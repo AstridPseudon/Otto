@@ -1,0 +1,3 @@
+I verified the checkout is at the corrected `cc716ec`, but the acceptance contract still isn’t available: `ops/brief.md` does not exist in this lab. I also found that `owner_bootstrap.py` is under `src/otto/portfolio/`, not `src/otto/hostctl/`.
+
+I made no edits and ran no tests or real-Mac probe; there is no new commit. I’ve requested the contract’s path or contents. Once it’s available, I can implement against its seven acceptance items.

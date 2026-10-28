@@ -1,0 +1,7 @@
+Repaired all **28 `NEW failure` entries** recorded before the landing was interrupted. The 26 capacity failures and the drain failure shared one cause: `admit_execution` crashed when a lightweight Due had no `host_state`. The paused guard now accepts an absent field while still refusing recorded pauses and authoritative paused tasks. The socket failure was a shutdown race; the listener now waits for admitted connection workers to record their receipts before exiting. Both changes are in [execution_host.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ASK/src/otto/portfolio/execution_host.py).
+
+The affected tests passed together: **68 passed, 10 subtests**. The original ASK check command passed: **15 passed**. `git diff --check` passed. The exact asking-session resume and paused-task tests are included in the affected run.
+
+The log also records **31 failures reproduced on BASE** across five other test files. I left those outside this repair. I did not attempt a landing, so gate files after the signal remain unverified.
+
+Luna subagents handled the two fixes. I accepted the guard fix; I corrected the socket agent’s initial unbounded connection tracking and a shutdown snapshot race during review. No commit was made in the Codex lab.

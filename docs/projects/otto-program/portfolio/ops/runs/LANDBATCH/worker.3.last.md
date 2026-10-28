@@ -1,0 +1,9 @@
+Applied all seven items in the orchestrator ruling. The gate now uses a no-deadline heavy lease, judges contained tasks, sweeps each task’s changed files, attributes imports with AST, pushes the tested candidate before moving local canon, reports unknown push outcomes, prints its final result after lease cleanup, and accepts up to 40 tasks. The old push rollback path was removed.
+
+**Changed files:** [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/ops/bootstrap/land.sh) and [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/tests/test_bootstrap_gate.py); [heavy.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/src/otto/hostctl/heavy.py) and [test_heavy_lease.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/tests/test_heavy_lease.py) were directly required for the no-deadline option. The existing staging assertion at [line 503](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LANDBATCH/tests/test_bootstrap_gate.py:503) now checks the tested candidate SHA, as the ruling requires.
+
+- Required check: **76 passed in 490.31s**. Nine ruling regressions failed against an archived `canon/main` bootstrap snapshot.
+- Full heavy-lease file: **14 passed, 5 failed**. The five detached-process cleanup tests require `ps` enumeration denied by this sandbox; the new no-deadline test passed. They remain for the landing gate outside the sandbox.
+- `git diff --check` and `bash -n` passed.
+
+A Luna sub-agent made the edits and ran the checks; I corrected its AST regression fixture and reviewed the result and custody paths. No real landing, commit, or push was run.

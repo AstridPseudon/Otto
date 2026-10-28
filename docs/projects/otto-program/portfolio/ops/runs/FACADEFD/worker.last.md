@@ -1,0 +1,7 @@
+Implemented lazy socket activation for command facades, bounded the command-port audit to the newest 256 entries, and reused owner-owned limit and operation services. Each assessment still gets its own actor and evidence-grant issuer. I also changed [hostctl/owner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/FACADEFD/src/otto/hostctl/owner.py), an additional file needed to close the bridge socket when a routed host session ends.
+
+**Regression evidence:** Forcing the former eager-binding behavior in a test process made 200 assessments fail the +3 descriptor limit (49→849). With the fix, 200 budget reads stayed at 10→10, 200 assessments at 9→9, and 200 routed host reads at 14→14. All 5 new regression tests and 3 transport lifecycle tests passed. A subprocess successfully called an activated facade socket; a PA01 evidence grant rejected PA06 and foreign-authority use; audit retention kept the newest 256 records.
+
+The specified four-file check remains **42 passed, 19 skipped, 2 failed**. Both manager assessment IPC failures were present in the initial check and remained unchanged after the fix. In-process facades still retain registry entries and temporary directories until owner exit, although they hold no listening socket.
+
+No commit was made, as instructed. The lab’s current HEAD is `eb9b6cd`; the launcher will commit the changes on exit.

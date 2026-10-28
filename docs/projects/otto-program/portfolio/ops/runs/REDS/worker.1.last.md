@@ -1,0 +1,5 @@
+Reproduced the failure at commit `b60477daa58a3d490451ecd3dbd3453c30f9ccec`. Native trace timestamps are whole epoch seconds, while owner admission retains fractions. Near a second boundary, comparing admission only with the start second incorrectly rejects a turn whose recorded interval includes the admission second.
+
+Updated [manager_capture_reconciliation.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/REDS/src/otto/agents/manager_capture_reconciliation.py) to compare the admission second against the exact turn’s start-to-terminal interval. This adds no tolerance and does not change assertions.
+
+The requested abort test now passes: **1 passed**. `git diff --check` also passed. The full focused suite was started but stopped after the 30-second foreground window, so it has no complete result. The referenced `ops/runs/REDS/land.log` and `.gate/check.txt` files are absent from this checkout. No commit was created; the branch remains at the refused commit with this fix uncommitted.

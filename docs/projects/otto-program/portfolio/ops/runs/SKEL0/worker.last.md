@@ -1,0 +1,9 @@
+## Incomplete: stage 4 is not proven
+
+I extended the canary with a happy-path task and a passing-check landing conflict, plus report assertions for conflict refusal and lab deletion. The fake worker’s conflict, refusal, and cleanup path passed its focused integration test.
+
+The stage 4 **owner-driven path is still unimplemented**: no staging run admitted or automatically dispatched a task through Otto, and no real Claude worker ran. The existing program tasklist already names DISPATCH as a SKEL0 dependency; I did not add a task row because that tasklist is outside this lab. There is no stage 4 perch report. No new commit was made; the lab remains on `lab/SKEL0` at base `fe17d49`.
+
+**Checks:** the five focused stage 4 tests passed, including synthetic seeded-fault red/green assertions. The requested suite ended with 49 passed and 18 failed (plus 42 passing subtests). Its census, perch, and staging startup failures hit `PermissionError: Operation not permitted` when launching `ps`. That prevented the stage 4 fake perch run from completing, so its end-to-end seeded-fault proof is also incomplete. I did not attempt the real staging run after the fake perch was blocked.
+
+Changed files: [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SKEL0/ops/bootstrap/perch.sh), [perch_report.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SKEL0/ops/bootstrap/perch_report.py), [project.json](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SKEL0/ops/bootstrap/canary/project.json), the canary math module, and [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SKEL0/tests/test_perch.py) and [test_perch_stage1.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SKEL0/tests/test_perch_stage1.py). Bash syntax, canary JSON, and `git diff --check` passed.

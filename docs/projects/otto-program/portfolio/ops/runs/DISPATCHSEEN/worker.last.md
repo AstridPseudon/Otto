@@ -1,0 +1,5 @@
+Implemented in the lab. Early child exits now remain `unknown`, with the exit status and stderr tail in the adapter outcome and retained owner evidence. `project status` preserves an explicit unknown report and its reason; dispatched tasks still project as launched.
+
+The three focused regressions failed on `canon/main` and passed in the lab. The requested test file finished with **8 passed, 1 failed**: the existing macOS fence test hit `sandbox_apply: Operation not permitted`. The brief says to leave that test for a sandboxed landing gate.
+
+Changed files: [claude_cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DISPATCHSEEN/src/otto/agents/claude_cli.py), [claude_adapter.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DISPATCHSEEN/src/otto/agents/claude_adapter.py), [cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DISPATCHSEEN/src/otto/hostctl/cli.py) for status projection, and [test_claude_manager_admission.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DISPATCHSEEN/tests/test_claude_manager_admission.py). `git diff --check` passed. No commit made.

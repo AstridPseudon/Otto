@@ -1,0 +1,5 @@
+Removed the task roster from project setup-content comparison in [owner_readers.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ROSTERPIN/src/otto/portfolio/owner_readers.py:51). The comparison still checks exact retained revisions for the remaining fields; individual task and adopted-content pins remain in place.
+
+Added [test_rosterpin.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ROSTERPIN/tests/test_rosterpin.py:1) to cover A launching after unrelated D is added through the project sheet, D being refused, and changed instructions, mandate, and acceptance each being refused before another provider call. The change deletes the `tasks` field entry and its identity-only normalization block; existing test expectations were unchanged.
+
+**Focused check:** 8 passed using the requested command. No blocker. No commit was created, as instructed; the lab remains on base commit `97f5f97` for the launcher to commit.

@@ -1,0 +1,5 @@
+Automatic worker preparation now calls `WorkAssignments.dispatch` **before queuing the worker start**. The domain gate refuses an unadmitted task revision, and the dispatch event is recorded under the assignment’s Store stream.
+
+The new real-owner regressions failed on canon for the missing event and missing refusal, then passed after the fix. The requested check passed: **32 tests**. I did not run Stage 2 `--fake`; the brief reserves that owner-starting check for the landing gate.
+
+Changed [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/AUTODISPATCHREC/src/otto/portfolio/manager_journey_service.py) and [test_fleet_dispatch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/AUTODISPATCHREC/tests/test_fleet_dispatch.py). No other files changed. `ops/brief-template.md` was absent from this lab.

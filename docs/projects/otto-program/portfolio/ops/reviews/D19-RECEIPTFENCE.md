@@ -1,0 +1,5 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_manager_reentrant_ipc.py
+
+Decision: LAND
+
+- `tests/test_manager_reentrant_ipc.py`: The exact Restore is applied at `tests/test_manager_reentrant_ipc.py:143`: direct JSON read replaces the added wait, satisfying `ops/requests.md:1778`. The former pending-file-absence assertion now checks claimed, processing, nonterminal state, exact request ID and response path, and retry false (`tests/test_manager_reentrant_ipc.py:144–149`). This matches the row’s receipt-only retry behavior: a durable claim precedes handler entry (`src/otto/portfolio/execution_host.py:1756`, `src/otto/portfolio/execution_host.py:1768`). Missing or incorrect claim data fails directly at the checkpoint; expected values are independent of product computations. Outstanding-response, successful-completion, provider-count, and queued-restart replay protections remain intact (`tests/test_manager_reentrant_ipc.py:142`, `tests/test_manager_reentrant_ipc.py:155–156`, `tests/test_manager_reentrant_ipc.py:222–225`). No other existing assertion changed, and the revised diff adds no timer or product-method patch.

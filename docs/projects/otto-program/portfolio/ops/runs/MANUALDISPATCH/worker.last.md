@@ -1,0 +1,7 @@
+Implemented occurrence keyed dispatch through `WorkAssignments.dispatch` at the worker launch boundary, with answer continuations using a stable key for their exact answer request. Automatic workers still dispatch before queueing; the launch boundary reuses that receipt. Removed the automatic-only duplicate behavior and deleted [successor_entry.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/MANUALDISPATCH/src/otto/portfolio/successor_entry.py) and [successor_runner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/MANUALDISPATCH/src/otto/portfolio/successor_runner.py).
+
+The base test failed on the new assertion because the worker had no dispatch event. After the fix, the requested check passed: **81 passed, 19 skipped, 5 subtests passed**. The retained-child owner test also passed and verifies replay adds no event. `git diff --check` is clean.
+
+There are no references to the deleted module names in `src`, `tests`, or `ops`. The literal `grep -rn successor_ src tests ops` check is **not empty**: it finds unrelated host-supervision, kernel-migration, observability, and retired-task references. I left those untouched. I also updated `src/otto/portfolio/tests/test_worker_occurrences.py` to cover retained-child dispatch and replay.
+
+No commit, push, staging, or Stage-2 `--fake` run.

@@ -1,0 +1,3 @@
+**D14 is resolved in the lab:** I changed the Layer declaration in [.brief.md](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/FAILEDFENCE/.brief.md:9) to `Otto product`. The landing log refused the earlier Herzchen label because the candidate adds Otto code and no Herzchen code. I reviewed the current lab changes and found no new generic Herzchen mechanism to move. No code or tests were changed in this resume.
+
+Checks: `tests/test_herzchen_boundary.py` **5 passed**; `tests/test_capacity_holds.py` **15 passed**; `git diff --check` passed. The landing gate has not been rerun. `.brief.md` is git-ignored but is read directly by the gate, so `git status` is clean. The lab tip remains `8219e1d`; I did not commit or push.

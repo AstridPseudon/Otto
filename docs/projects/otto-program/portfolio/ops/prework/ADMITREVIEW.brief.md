@@ -1,0 +1,12 @@
+You are a senior engineer (Sol, extra-high reasoning) writing the implementation design for one task of the Otto program, before a worker builds it. Read-only: never edit, create or delete files, never commit, never run tests, never start an owner or `ottoctl`, never pass `--help` to an Otto command, never read ~/.otto, ~/.otto-clients, ~/.codex or ~/Documents/Codex. Hand the legwork (reading, finding callers, checking line numbers) to as many parallel Luna sub-agents as it splits into: every sub-agent is `spawn_agent` with `model: "gpt-6-luna"`; check their claims yourself.
+
+Code: ${TRANSFER_ROOT}/source/otto at `canon/main` (read with `git -C ${TRANSFER_ROOT}/source/otto show canon/main:<path>`, `git grep`). Rules the program follows: tests are meaningful, not timed (only a hang fails); no test or harness patches a product method except to stand in for a person or a model; prefer deleting a duplicate path over adding a mechanism; a change to an existing test's assertion needs a written decision.
+
+Answer, at most ~120 lines: 1. The design: each change as `file:line` (on canon/main now) → what to change, in order. 2. The failing test to write first: its file, name and full code. 3. What to delete. 4. The plausible mistake and how the test catches it. 5. Existing tests whose expectations change, and why (they need a D19 decision). 6. Anything in the row that is wrong or stale on canon now.
+
+The task row:
+
+id ADMITREVIEW, route normal, deps —
+Outcome: **An admission stamps only a review revision that exists.** PINS audit, finding 2 (checked on canon/main): the owner lane checks only that `review_ref` is local and has a revision (`src/otto/hostctl/service.py:469-471`). `WorkGraph.admit` looks the review up by identity and drops the revision, though its error says "the review must name an exact stored revision" (`src/herzchen/domains/work/module.py:535-536`), then stamps the supplied ref (:553; `admission.py:184-189`). Dispatch compares the stamp only as opaque data (`assignments.py:1075-1095`). So an admission can record a review revision that was never stored. • Resolve the exact review revision before stamping, and refuse a missing one.
+Acceptance: unit test on the real domain: an existing review ID with a nonexistent revision is refused and no stamp is written (it admits before the fix); an exact retained revision admits, also when the review has a later head
+Xhard: —

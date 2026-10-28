@@ -1,0 +1,3 @@
+The Restore section is implemented in the PARITYFIX lab. The lifecycle test derives `source_inventory_identity` by hashing the recorded canonical preimage with each checkout’s root, then compares the complete provenance record. The recorder verifies that preimage against pinned Astrid at two roots. The original fixture digests are preserved, and neither helper copies live `authoring.py`.
+
+The full requested test passed (**10 passed**), and `git diff --check` passed. Changes remain uncommitted for the launcher.

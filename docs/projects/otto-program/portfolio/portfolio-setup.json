@@ -1,0 +1,107 @@
+{
+ "schema": "otto.portfolio-setup.v1",
+ "portfolio": {
+  "name": "otto-program",
+  "root_project_id": "otto-program",
+  "root": "."
+ },
+ "external_prerequisites": [],
+ "projects": [
+  {
+   "id": "PROGRAM",
+   "folder": "program",
+   "run_id": "otto-program",
+   "dependencies": []
+  },
+  {
+   "id": "SLIM",
+   "folder": "slim",
+   "run_id": "otto-program-slim",
+   "dependencies": [
+    {
+     "on": "PROGRAM",
+     "gate": "edition-1",
+     "milestone": "edition-1"
+    }
+   ]
+  },
+  {
+   "id": "EFFECTS",
+   "folder": "effects",
+   "run_id": "otto-program-effects",
+   "dependencies": [
+    {
+     "on": "PROGRAM",
+     "gate": "edition-1",
+     "milestone": "edition-1"
+    }
+   ]
+  },
+  {
+   "id": "PACKS",
+   "folder": "packs",
+   "run_id": "otto-program-packs",
+   "dependencies": [
+    {
+     "on": "PROGRAM",
+     "gate": "edition-1",
+     "milestone": "edition-1"
+    }
+   ]
+  },
+  {
+   "id": "HARNESS3",
+   "folder": "harness3",
+   "run_id": "otto-program-harness3",
+   "dependencies": [
+    {
+     "on": "PROGRAM",
+     "gate": "edition-1",
+     "milestone": "edition-1"
+    }
+   ]
+  },
+  {
+   "id": "THROUGHPUT",
+   "folder": "throughput",
+   "run_id": "otto-program-throughput",
+   "dependencies": [
+    {
+     "on": "PROGRAM",
+     "gate": "edition-1",
+     "milestone": "edition-1"
+    }
+   ]
+  },
+  {
+   "id": "ASTRIDFLEET",
+   "folder": "astrid-fleet",
+   "run_id": "otto-program-astrid-fleet",
+   "dependencies": [
+    {
+     "on": "PROGRAM",
+     "gate": "edition-1",
+     "milestone": "edition-1"
+    }
+   ]
+  },
+  {
+   "id": "PROCLIFE",
+   "folder": "process-lifecycle",
+   "run_id": "otto-program-process-lifecycle",
+   "dependencies": []
+  }
+ ],
+ "gates": [
+  {
+   "project": "PROGRAM",
+   "id": "edition-1",
+   "milestone": "edition-1",
+   "title": "PROGRAM#edition-1: edition 1 installed, imported and reviewed",
+   "owner": "orchestrator",
+   "co_reviewers": [],
+   "proof": "projects/program/evidence/edition-1.md"
+  }
+ ],
+ "dependencies": []
+}

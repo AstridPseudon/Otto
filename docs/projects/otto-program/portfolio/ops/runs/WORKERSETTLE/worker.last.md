@@ -1,0 +1,7 @@
+Worker settlement now tolerates project lifecycle revisions and task revisions whose authored content still matches the pinned task. Assignment and mandate snapshots remain exact, and an external task content edit still settles unknown.
+
+The new real-owner cases in [test_fresh_worker_admission.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/WORKERSETTLE/tests/test_fresh_worker_admission.py:27) cover completed settlement, assignment and mandate changes, and external task edits. On canon, the completed case failed with `canonical project changed after instruction preparation` (1 failed, 3 passed). After the change, the requested suite passed **16/16**; `test_herzchen_boundary.py` passed **4/4**. The assignment assertion now checks its top-level CAS conflict; no files were deleted.
+
+I changed [owner_bootstrap.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/WORKERSETTLE/src/otto/portfolio/owner_bootstrap.py:18) in addition to the owned files because result publication otherwise rejected the same content-stable project and task revisions. The three files remain **uncommitted** for the launcher.
+
+The stage-2 `--fake` journey remains unverified; the landing gate must run it outside this worker sandbox. `ops/brief-template.md` was absent from the checkout, so I followed the working rules in the provided brief.

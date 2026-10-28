@@ -1,0 +1,5 @@
+Fixed the five confirmed new regressions without changing assertions. The advisor path now uses the sealed packet-domain handler; the cached editor host refreshes owner-scoped facades for each HostSession while retaining its buffers and leases; and the fresh-view test fixture uses the owner assessment API.
+
+**Focused check:** 75 passed, 13 subtests passed across the affected selectors, open/release file, execution application file, and root-direction file. A final standalone root-direction run passed **10 tests in 9.04 seconds**. The gate’s 23-minute slowdown did not reproduce locally, so its cause remains unconfirmed.
+
+`git diff --check` and compilation pass. The CLI check’s resource census passed; its only two failures were sandbox preflight refusals. The full hostctl-serve file likewise had three sandbox preflight failures. An outside check-run is still required before landing. Changes remain uncommitted in the lab.

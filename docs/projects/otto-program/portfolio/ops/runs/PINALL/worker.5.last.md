@@ -1,0 +1,5 @@
+Updated [test_capacity_holds.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINALL/tests/test_capacity_holds.py): after SIGKILL and reap, `PermissionError` now means “unproven, keep polling.” The helper returns only on `ProcessLookupError`, so it still requires proof that the group is gone. All custody assertions and D19 changes remain intact.
+
+The focused test passed. The first full check had 81 passed and 3 failed, including two intermittent capacity-pool failures; a second full check had **83 passed, 1 failed**. Its sole failure was the macOS fence preflight: this sandbox denies `sandbox-exec` with `sandbox_apply: Operation not permitted`. I could not run outside the sandbox. `git diff --check` passed.
+
+A Luna sub-agent made the one-file edit and ran the checks; I reviewed the diff and made no corrections. The change is uncommitted for the launcher; this task was not landed individually.

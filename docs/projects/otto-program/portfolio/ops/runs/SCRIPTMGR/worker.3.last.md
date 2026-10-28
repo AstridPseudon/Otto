@@ -1,0 +1,5 @@
+I could not reproduce the reported at-rest failure, so I made no code change. The current `lab/SCRIPTMGR` branch is already based on the six-task `canon/main` tip. A filesystem check confirmed that the seeded `c-leftover.sock` is recorded and makes `staging-at-rest-clean` fail. The cited test output now shows a passing run; the saved bisect traceback fails on a later `census` preflight, after the `atrest` subtest passed.
+
+I ran all of `tests/test_perch.py` as requested: **74 passed, 15 failed, 87 subtests passed**. The failures stem from this sandbox denying `ps`, so this run cannot verify the staging-owner tests. A Luna sub-agent traced the fault path and ran the checks; I reviewed its findings. No rebase was needed, and there was no change to commit.
+
+Please provide the original failing run’s `assertions.json` and `at-rest.json`, or its unmodified pytest output. The cited output has been overwritten, and the available evidence does not identify a code defect to fix.

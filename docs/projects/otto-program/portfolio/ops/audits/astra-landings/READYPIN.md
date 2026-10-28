@@ -1,0 +1,9 @@
+SOUND — READYPIN fixes both named paths on `canon/main` (`eb9b6cd`); no concrete product defect or over-engineering found.
+
+- **Outcome:** [owner_readers.py:210](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/owner_readers.py:210) resolves the exact completion predecessor and compares its content and the delivered snapshot against the delivered pin. Receipt, assignment, manager, native-turn and digest checks remain. [owner_bootstrap.py:1249](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/owner_bootstrap.py:1249) applies the same content-equivalence rule to historical setup pins.
+
+- **Tests:** The admission → completion → B-start regression at [test_completed_occurrence_readiness.py:56](${TRANSFER_ROOT}/source/otto/tests/test_completed_occurrence_readiness.py:56), and the historical D02 readiness case, would fail under the previous exact-revision checks. The additions contain no product-method patches, timer waits, or circular expected-result assertions. Digest calculations construct admission data and tampered inputs.
+
+- **Low-priority coverage follow-up — normal:** [test_completed_occurrence_readiness.py:35](${TRANSFER_ROOT}/source/otto/tests/test_completed_occurrence_readiness.py:35) tests a forged snapshot, but not an authentic completion whose predecessor contains changed instructions. That scenario is covered only through historical setup. Add a reader regression: deliver A, change its authored content, complete the changed revision through accepted evidence, then require settled readiness to reject it. It should fail if the predecessor-content comparison at `owner_readers.py:221` is removed. This is a coverage gap, not an observed product failure.
+
+No deletion or simplification is warranted. The landing log records focused checks, a sweep and `perch --fake` passing; it does not explicitly establish the separate stage-2-past-B acceptance run. Review was read-only; no tests were run.

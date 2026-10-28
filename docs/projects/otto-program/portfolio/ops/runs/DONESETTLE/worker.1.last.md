@@ -1,0 +1,5 @@
+The reusable settlement wrapper now lives in [Herzchen’s facade](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DONESETTLE/src/herzchen/fleet/tools/facade.py) and is exported through [tools](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DONESETTLE/src/herzchen/fleet/tools/__init__.py). [Otto’s product service](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DONESETTLE/src/otto/hostctl/product_service.py) retains an import alias for its wiring and staging hook. No new gate was added.
+
+The strengthened regression in [test_fleet_custody.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/DONESETTLE/tests/test_fleet_custody.py) queues `check` with a grant captured before landing finishes. Against the pre-patch owner-port class from `HEAD^`, it **failed** because `check` ran. In the lab, it and the staging-hook test **passed (2 passed)**.
+
+The brief’s full check completed: **22 passed, 8 failed**. Those eight failures involve host restrictions on sandbox execution, process census, and launching `ps`. `git diff --check` passed.

@@ -1,0 +1,9 @@
+The stage-2 landing check failed on the shipped product's asynchronous dispatch status protocol.
+
+Evidence: `${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/perch/2/20261017T085653Z/raw/stage2-dispatch-A.json` has `outcome: pending`, a `request_id`, and `next_action: ottoctl request-status --request-id …`. Admission of A ran; product status shows `dispatch: {state: admitted, reason: null}` for repo `toy`, branch `canon/main` (`raw/stage2-project-status.json`). The owner was processing; the retained request is nonterminal. `stage2_status_task` currently treats anything but `outcome: read` as missing state.
+
+Follow the shipped lane's pending protocol in the harness: when the dispatch poll says pending, read the retained request until it is terminal, then check its status. Never resend it. Treat pending as “not yet,” not as missing state. Keep waiting bounded by the stage's existing poll budget; do not add a new timer. Add a unit test for pending followed by read. Do not change product code, synthesize green observations, or weaken assertions. Preserve `home/run/operator-admission.jsonl` and its at-rest allowance. The previous harness cleanup already removed owner setup/rebind stand-ins; keep that intact.
+
+No other task is running, so no task-owned files are excluded. The brief's standing exclusions still apply: production/, any Store, ~/.otto or ~/.codex, Codex projects/vision/Native5, and anything outside this lab.
+
+Run focused unit tests in the lab. Do not run `bash ops/bootstrap/perch.sh 2 --fake` in the worker sandbox; the landing gate runs it outside and returns its result. Leave changes for the launcher to commit and report what changed and what remains. Follow the existing brief's Codex xhard rules, including Luna subagents if any and long test timeouts.

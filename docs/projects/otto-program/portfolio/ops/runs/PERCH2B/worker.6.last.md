@@ -1,0 +1,5 @@
+`staging.sh restart` preserves `home/run/operator-admission.jsonl`: `down` removes the pidfile and status JSON, then restart syncs the tree and starts the owner. I removed the audit-log deletion from [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/bootstrap/perch.sh). The stage-2 [at-rest assertion](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/bootstrap/perch_report.py) now allows that filename alongside the existing entries; unexpected files, sockets, Store holders, and canary scratch still fail. The dispatch-status read, fake presence path, and distinct stored review-document behavior remain in place.
+
+**Focused checks:** 36 unit tests passed. The new stub cases pass with the audit log present and fail with an unexpected run file; socket, Store-holder, and canary-scratch fault cases also fail as expected. Syntax and `git diff --check` passed.
+
+Changes are uncommitted in `lab/PERCH2B` (HEAD `4c805bf`). I did not run the full stage or the prohibited staging tests; end-to-end verification remains with the landing gate. The audit log’s long-term location is a product decision and was not changed here.

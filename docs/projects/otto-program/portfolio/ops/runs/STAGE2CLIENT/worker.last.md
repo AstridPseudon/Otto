@@ -1,0 +1,7 @@
+The lab changes are ready for the launcher to commit. A fresh install now delivers the executable `bin/ottoctl` that registration advertises, and registration refuses a missing or changed entrypoint. The stage-2 marker wait now exits on a retained terminal manager failure even while the owner is alive; a successful first manager turn still allows B to dispatch.
+
+The owner-started fake manager tests invoked the delivered client and passed. The marker failure tests passed. In the broader worker-sandbox run, 115 tests passed; three environment-dependent tests could not pass here because this sandbox blocks `sandbox-exec` or `ps`.
+
+A fresh-install A/B-before-C stage-2 regression is added in [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2CLIENT/tests/test_perch.py:2427). It is reserved for the manager’s post-commit outside-sandbox check and has **not** been run here.
+
+Extra paths changed: [service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2CLIENT/src/otto/hostctl/service.py:636) delivers the client to admitted client homes; [perch_report.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2CLIENT/ops/bootstrap/perch_report.py:372) classifies retained manager replies; [test_hostctl_serve.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2CLIENT/tests/test_hostctl_serve.py:863) verifies an owner-started turn uses the delivered client. No commit was made.

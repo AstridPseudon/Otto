@@ -1,0 +1,5 @@
+The paused rebase is **still unmerged**. The working-tree versions of [owner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/hostctl/owner.py) and [owner_bootstrap.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/portfolio/owner_bootstrap.py) already preserve the current canon behavior and SESSIONFD cleanup. I reviewed the Luna subagent’s inspection: both files have no conflict markers, and `git diff --check` passes.
+
+The subagent attempted to mark **only those two paths** resolved with `git add`, but Git could not create the worktree’s `index.lock` (`Operation not permitted`). Both therefore remain `UU`. CLIARGS-owned [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/portfolio/manager_journey_service.py:655) remains untouched and `UU`; its content hash and three index stages are unchanged.
+
+Status is `HEAD (no branch)` with the rebase paused. No tests were rerun, and nothing was committed or pushed. The launcher will need to mark the two owned files resolved when it has index access, then complete integration after CLIARGS resolves its file.

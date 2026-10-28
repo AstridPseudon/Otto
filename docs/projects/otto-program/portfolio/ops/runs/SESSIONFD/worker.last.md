@@ -1,0 +1,5 @@
+I closed the transport handler’s socket stream explicitly and added a regression test. That test fails with the original `HEAD` handler and passes with the fix. The 200-call socket census, resident project-status census, and manager-assessment descriptor check pass.
+
+**The requested check is still blocked.** The CLIARGS-owned [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/portfolio/manager_journey_service.py:655) contains unresolved merge markers. They prevent the manager-status, document, assessment, and reviewed-pool census from running. I left that file untouched as instructed. Two other `test_hostctl_cli.py` failures are sandbox preflight refusals (`sandbox_apply: Operation not permitted`). The reviewed-activation test file also fails at a `_admit` call already present in `HEAD`.
+
+The directly required extra file I changed is [test_command_ports_lifecycle.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/tests/test_command_ports_lifecycle.py:23). No commit was made. The CLIARGS owner needs to resolve its conflict before the full SESSIONFD check can be completed.

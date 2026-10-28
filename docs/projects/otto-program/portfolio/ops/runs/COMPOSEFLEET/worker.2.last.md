@@ -1,0 +1,9 @@
+COMPOSEFLEET remains on `lab/COMPOSEFLEET` at commit `9471c6a`. The new changes are **uncommitted for the launcher**; no `install/controller/` lines changed. Three Luna sub-agents implemented the owner binding, worker workspace and recovery path, and assessment adapter.
+
+The owner now caches a `LabFleet` and `LandingService` per `(repo, branch)` and uses one owner result store. Worker launch and recovery resolve the assignment’s lab from the exact Due, dispatch record, and admitted task plan. The worker’s old project-workspace fallback was removed; the manager and retained non-worker help recipients keep that workspace. The tool facade ignores worker-supplied lab, line, and assessment pins.
+
+New tests were red on `canon/main` and green locally. The feature selection passed **9/9**, including a fake worker’s `done` landing only its bound lab, feedback-only `check`, and foreign-token refusal. Landing tests passed **14/14**; manager journey tests passed **13**, with **16 skipped**. The exact requested row finished **37 passed, 4 skipped, 10 failed**: three failures stopped at `sandbox-exec`, and seven process-custody failures need `ps` or process permissions. The gate sandbox is needed for those checks.
+
+**Full staging proof is unfinished.** I did not run the perch because its script starts a background worker and waits, contrary to this row’s working rules; it also uses its own git path rather than the composed owner. I did not write or verify an actual staging-home repo map outside the lab. Production `done` currently refuses a standard required assessment scope because that scope requires separate review evidence; it will not advance the line by treating a check as review.
+
+Should a verified fleet check be allowed an owner-declared scope that permits acceptance without separate review, or must `done` await a manager review?

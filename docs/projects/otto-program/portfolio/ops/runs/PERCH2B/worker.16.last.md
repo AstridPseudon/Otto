@@ -1,0 +1,7 @@
+The 12:15Z run failed because [A’s retained admission read](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/perch/2/20261017T121523Z/raw/stage2-admit-A-retained-1.json) called `request-status` from the service home, which has no admitted host.
+
+There is a lane distinction in the shipped CLI: operator `service admit` retains requests on the **owner lane**, while `request-status` from an admitted client home reads that host’s **client lane**. Switching only the home would read the wrong request. I changed [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/bootstrap/perch.sh:160) to read the exact operator token with the product’s retained owner-lane reader. Project status still uses client-home `request-status`; request keys, ordering, and poll budgets are unchanged.
+
+I audited the stage-2 calls: repo mapping, `admit-host`, operator admissions, and owner status use the service home as required by their CLI paths; project registration, plan save, activation, status, and retained project-status reads use the admitted client home. A [focused test](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/tests/test_perch.py:1048) seeds conflicting owner- and host-lane responses and confirms the operator read takes the owner-lane result. Three focused tests, `bash -n`, and `git diff --check` pass.
+
+Changes are uncommitted. I did not run stage 2 in the sandbox; the landing gate must verify the full scenario.

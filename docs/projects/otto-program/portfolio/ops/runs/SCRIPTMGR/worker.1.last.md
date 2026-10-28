@@ -1,0 +1,5 @@
+The D19 timer correction is in place. [perch_fake_claude.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SCRIPTMGR/ops/bootstrap/perch_fake_claude.py) no longer sets a command timeout or manager-journey deadlines. [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SCRIPTMGR/ops/bootstrap/perch.sh) waits for C’s kill evidence and recovery boundary, polling every 0.25 seconds and failing if the owner exits. The scan widening was left unchanged.
+
+A Luna sub-agent made the edits and ran the checks; I reviewed its diff. `bash -n` passed, as did the timer-focused tests (3 tests, 10 subtests). The requested test files, with staging-owner cases excluded, finished with **83 passed, 1 failed, 6 deselected, 87 subtests passed**. The sole failure was a sandbox denial of `ps` in a process-census test; the landing gate must run that check outside the sandbox. No stage or landing was run.
+
+The working copy of `perch.sh` has no conflict markers, but Git still reports its index as `UU` because this sandbox cannot stage the resolution. The launcher must stage it before committing.

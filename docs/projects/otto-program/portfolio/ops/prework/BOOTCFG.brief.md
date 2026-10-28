@@ -1,0 +1,12 @@
+You are a senior engineer (Sol, extra-high reasoning) writing the implementation design for one task of the Otto program, before a worker builds it. Read-only: never edit, create or delete files, never commit, never run tests, never start an owner or `ottoctl`, never pass `--help` to an Otto command, never read ~/.otto, ~/.otto-clients, ~/.codex or ~/Documents/Codex. Hand the legwork (reading, finding callers, checking line numbers) to as many parallel Luna sub-agents as it splits into: every sub-agent is `spawn_agent` with `model: "gpt-6-luna"`; check their claims yourself.
+
+Code: ${TRANSFER_ROOT}/source/otto at `canon/main` (read with `git -C ${TRANSFER_ROOT}/source/otto show canon/main:<path>`, `git grep`). Rules the program follows: tests are meaningful, not timed (only a hang fails); no test or harness patches a product method except to stand in for a person or a model; prefer deleting a duplicate path over adding a mechanism; a change to an existing test's assertion needs a written decision.
+
+Answer, at most ~120 lines: 1. The design: each change as `file:line` (on canon/main now) → what to change, in order. 2. The failing test to write first: its file, name and full code. 3. What to delete. 4. The plausible mistake and how the test catches it. 5. Existing tests whose expectations change, and why (they need a D19 decision). 6. Anything in the row that is wrong or stale on canon now.
+
+The task row:
+
+id BOOTCFG, route xhard, deps OWNERCLAIM
+Outcome: **A fresh installation has a managed launch for its qualified product edition.**<br>Evidence: `src/otto/hostctl/config.py:86–100`, `src/otto/hostctl/supervision.py:290–314`, `:317–323`; INSTALLCUTOVER 4. COMPOSE’s product launcher exists, but installation does not select/configure it.<br>• Populate the product composition through the supported install path, including exact interpreter, source, home, cwd and logs. • Use the existing product launch definition; retire reliance on hand-edited configuration or the old wrapper.
+Acceptance: A fresh installation, with no hand edits, generates a valid product launch definition; before the fix it refuses. Launch and recovery checks verify the same intended home/source and one owner after an unsuccessful exit, while an explicit stop stays stopped.
+Xhard: Invariant: Managed recovery starts the same qualified product edition against the same installation. Plausible mistake: Generating a valid launch definition that resolves another source tree or the retired wrapper. Surfaces: CUTOVER restarts unqualified code or the wrong owner.

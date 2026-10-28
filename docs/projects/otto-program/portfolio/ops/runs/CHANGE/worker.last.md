@@ -1,0 +1,9 @@
+Implemented the CHANGE admission path in the lab. An approved, project-user `work.policy` decision can permit specific new task keys. Only tasks classified as new receive a policy admission stamp; edits to existing tasks require the user to admit the exact revised work. Dispatch checks retained content and stamp provenance, while unchanged tasks remain dispatchable and completed tasks remain protected. No second ledger was added.
+
+**Checks:** New regressions were red on a `canon/main` archive for permitted additions, body-only edits, and forged authoring stamps. In the lab, the fresh admission, existing admission, and Herzchen boundary suites passed together (**28 passed**); revision tests also passed (**12 passed**). `git diff --check` is clean.
+
+The exact requested check remains **2 failed, 17 passed**. Both worker-occurrence failures also occur on clean `canon/main` (**2 failed, 5 passed**): a lost-reply handle mismatch and a native resume returning `unknown`. I left existing assertions intact. A one-line test import fix lets that file collect under the prescribed command.
+
+**Handover:** No commit was made; the launcher will commit the five modified lab files. No files were deleted (14 existing lines were replaced). `worker_occurrences.py` needed no change because task-specific admission is enforced at dispatch.
+
+Sub-agents: `admission_scout` and `otto_scout` mapped the existing paths without correction; `regression_tests` added regressions and baseline checks, which I strengthened for admission state and forgery; `admission_impl` added policy stamping, with replay and digest fixes after review; `assignment_guard` added historical-content and provenance checks, strengthened after review.

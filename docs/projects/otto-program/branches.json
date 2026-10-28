@@ -1,0 +1,184 @@
+[
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "canon/installed",
+    "sha": "bbd9b6db9da238098c96f0b8115ae25b30cfdbb3",
+    "remote_branch": "transfer/20261028/canon/installed",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/canon/installed"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "canon/main",
+    "sha": "a70b3f2685c6d373c064e495fd803179e723b704",
+    "remote_branch": "transfer/20261028/canon/main",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/canon/main"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "fix/portfolio-draft-sync",
+    "sha": "b834793faf20e586753ed25d22946a069d3b358c",
+    "remote_branch": "transfer/20261028/fix/portfolio-draft-sync",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/fix/portfolio-draft-sync"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/BOOTCFG",
+    "sha": "b1227aac860de128de63971a8cc607f8aa1d5f2d",
+    "remote_branch": "transfer/20261028/lab/BOOTCFG",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/BOOTCFG"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/BOOTLAND",
+    "sha": "0c5a4c3972fe3dae6d5d2a885c6361ba49997c70",
+    "remote_branch": "transfer/20261028/lab/BOOTLAND",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/BOOTLAND"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/CLIARGS",
+    "sha": "88b7a4295f8d5b56e288025eca0079011012329a",
+    "remote_branch": "transfer/20261028/lab/CLIARGS",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/CLIARGS"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/DISTURB",
+    "sha": "72ffd631712ceca34441d1a581d65fb2f5e7c198",
+    "remote_branch": "transfer/20261028/lab/DISTURB",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/DISTURB"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/INTEG-PROCLIFE-PL3",
+    "sha": "4ea1ad02a14b084386d04314c4179f840fc0eda6",
+    "remote_branch": "transfer/20261028/lab/INTEG-PROCLIFE-PL3",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/INTEG-PROCLIFE-PL3"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/LABPIN",
+    "sha": "416ab8096db37653ed6920f4cc299fe5a05a29f2",
+    "remote_branch": "transfer/20261028/lab/LABPIN",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/LABPIN"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/LANDBATCH",
+    "sha": "0a409e791c351561fb27673d9d7c9843295e34ae",
+    "remote_branch": "transfer/20261028/lab/LANDBATCH",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/LANDBATCH"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/LANDPROOF",
+    "sha": "03efa57d421e67b6099e3a2a3397d3a04a98ee84",
+    "remote_branch": "transfer/20261028/lab/LANDPROOF",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/LANDPROOF"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/OBSOWNER",
+    "sha": "50d46a3d024257147e2babe9442c18c52bd74165",
+    "remote_branch": "transfer/20261028/lab/OBSOWNER",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/OBSOWNER"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/PROOFDOC",
+    "sha": "673d3b8b12b8d1a17fc0e57bd81c31d43e7dd03e",
+    "remote_branch": "transfer/20261028/lab/PROOFDOC",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/PROOFDOC"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/REALSTAGE3",
+    "sha": "f296dd411da76a56485e7ef6376c69e806a3990e",
+    "remote_branch": "transfer/20261028/lab/REALSTAGE3",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/REALSTAGE3"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/ROLEIDS",
+    "sha": "6454654cb9e8bae744651d419ad27547f246d5ec",
+    "remote_branch": "transfer/20261028/lab/ROLEIDS",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/ROLEIDS"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/ROOTFILE",
+    "sha": "a4144acac97ae163aaf17491ae589ed72ae7b64a",
+    "remote_branch": "transfer/20261028/lab/ROOTFILE",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/ROOTFILE"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/STAGE2CLIENT",
+    "sha": "874e92052f784d329130d3210b0e3537e1de3f35",
+    "remote_branch": "transfer/20261028/lab/STAGE2CLIENT",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/STAGE2CLIENT"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/TESTPATCH",
+    "sha": "73703868a5259748f5f343c4860c60f1e6b8d449",
+    "remote_branch": "transfer/20261028/lab/TESTPATCH",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/TESTPATCH"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-claude-host/otto",
+    "original_branch": "lab/XFERMAP",
+    "sha": "ef7577b4112645254c40868040b221bba78204a7",
+    "remote_branch": "transfer/20261028/lab/XFERMAP",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/lab/XFERMAP"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/astridfleet",
+    "original_branch": "proj/astridfleet",
+    "sha": "f8d46ee24f069e99c23c6226497e48ec2e6e615f",
+    "remote_branch": "transfer/20261028/proj/astridfleet",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/astridfleet"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/effects",
+    "original_branch": "proj/effects",
+    "sha": "17da237d9faf3f6fb852485565d7ce25b5880464",
+    "remote_branch": "transfer/20261028/proj/effects",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/effects"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/harness3",
+    "original_branch": "proj/harness3",
+    "sha": "6e4a14b7ff2a1c2da721b557800d8b106af25855",
+    "remote_branch": "transfer/20261028/proj/harness3",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/harness3"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/packs",
+    "original_branch": "proj/packs",
+    "sha": "403182e6afaedd4aa5d2a1e99ee44bfb58ae2750",
+    "remote_branch": "transfer/20261028/proj/packs",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/packs"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/proclife",
+    "original_branch": "proj/proclife",
+    "sha": "abe13f15090d92b45dcd762cecb118444a1ef4dc",
+    "remote_branch": "transfer/20261028/proj/proclife",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/proclife"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/slim",
+    "original_branch": "proj/slim",
+    "sha": "2df7571759d5ab583afcc33192537861bb52ae8e",
+    "remote_branch": "transfer/20261028/proj/slim",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/slim"
+  },
+  {
+    "source": "${ORIGINAL_HOME}/Developer/otto-projects/throughput",
+    "original_branch": "proj/throughput",
+    "sha": "8e2a97c4023d71f255bacc868a2299c1827aebca",
+    "remote_branch": "transfer/20261028/proj/throughput",
+    "url": "https://github.com/AstridPseudon/Otto/tree/transfer/20261028/proj/throughput"
+  }
+]

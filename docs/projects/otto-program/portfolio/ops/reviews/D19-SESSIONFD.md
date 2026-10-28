@@ -1,0 +1,5 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_hostctl_serve.py
+
+Decision: LAND
+
+- `tests/test_hostctl_serve.py`: All nine assertion calls remain unchanged. The fixture supplies the same assessment double through `owner.assessment` (`tests/test_hostctl_serve.py:148`, `tests/test_hostctl_serve.py:157`), replacing constructor patches to match the row’s intended owner-scoped facade reuse (`src/otto/hostctl/serve.py:281`, `src/otto/portfolio/owner_bootstrap.py:820`). Exact current task and criterion expectations remain (`tests/test_hostctl_serve.py:169`, `tests/test_hostctl_serve.py:174`), alongside changed-policy rejection and state preservation (`tests/test_hostctl_serve.py:182`, `tests/test_hostctl_serve.py:184`), the default review mode (`tests/test_hostctl_serve.py:192`), and unknown-criterion rejection (`tests/test_hostctl_serve.py:198`). Stale task pins, accepted policy changes, mutated trusted state, or accepted unknown criteria would still fail these checks. No timer, product-method patch, or implementation-derived expected result is introduced.

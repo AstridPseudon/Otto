@@ -1,0 +1,19 @@
+**Verdict: the proposal is directionally right, but its end state still has too many mechanisms.** Keep one process-group abstraction, one owner for each long-lived host, and the narrow containment needed for helpers that leave the group. Defer OS-specific backends and recovery machinery until a supported platform actually requires them.
+
+The smallest design that meets G1/G2 **as written** needs two ways to find a task’s processes: a fresh process group for ordinary descendants, plus a unique per-container tag for descendants that detach but retain their environment. Signal the group as a unit; signal tagged processes individually only after checking that they belong to the current container, have a start time after its creation, and run as the current user. Keep the leader unreaped until cleanup finishes, then reap it. This keeps PID-reuse protection where it matters without tracking every descendant and repeatedly reconciling ancestry.
+
+That tag sweep is necessary because the threat model excludes only a process that both detaches and clears its environment. Drop the sweep only if the guarantee is weakened to cover group members alone. A final census can report whether cleanup succeeded; it should not turn transient observation failures into a permanent host-wide latch.
+
+| Proposal piece | Recommendation |
+|---|---|
+| Tag sweep | Keep for the stated threat model, but make it one narrowly scoped fallback, not continuous descendant custody. |
+| Start-time checks | Keep for individually signalled tag matches. Omit per-descendant birth tracking for group signals. |
+| Per-platform backends | Defer cgroups and Windows Job Objects. Keep a small backend seam; use the available process-group mechanism first. Treat RunPod/container ownership as the outer container’s job. |
+| Host owner, socket, lifeline | Keep the single-owner idea for long-lived hosts and engines. First ask whether the pack host itself can own them; add a separate resident owner only if host lifetime actually outlasts its caller. |
+| Exit record, resolve command | Defer. Return a cleanup report with survivors and retry; add durable recovery only if real crashes leave owners that cannot recover. |
+| Validation narrowing | Keep: validate the render context when needed, not 223 worker contexts at host startup. Defer digest caching until measurements show it is needed. |
+| Gate | Keep a normally loaded end-to-end render as the acceptance check, but don’t make one machine’s film journey a permanent universal gate. |
+
+**Delete first:** remove the per-descendant observer/reconciliation path and its short correctness deadlines from ordinary command execution. Today `popen_owned_process` starts an observer and inventory owner, while `observe_tree` serializes census work and can mark the tree uncertain ([process_group.py:210](${ORIGINAL_HOME}/Developer/astrid-video/astrid-local/main-20261015/Astrid/astrid/core/execution/process_group.py:210), [process_group.py:391](${ORIGINAL_HOME}/Developer/astrid-video/astrid-local/main-20261015/Astrid/astrid/core/execution/process_group.py:391)). Preserve the simple launch/stop boundary already used for task commands in `generic_host.py` ([generic_host.py:8065](${ORIGINAL_HOME}/Developer/astrid-video/astrid-local/main-20261015/Astrid/astrid/core/execution/generic_host.py:8065)), then remove the cleanup-uncertain latch where a failed census currently blocks later admissions ([generic_host.py:5287](${ORIGINAL_HOME}/Developer/astrid-video/astrid-local/main-20261015/Astrid/astrid/core/execution/generic_host.py:5287)). Keep containment failure visible to the owning task.
+
+The proposal’s deletion case is credible: the custody broker is 3,933 lines, and the existing task path already has a single `popen_owned_group` boundary. Avoid replacing those lines with a new cross-platform framework before the simpler group-plus-tag design has passed a loaded-machine render.

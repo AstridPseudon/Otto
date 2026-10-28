@@ -1,0 +1,5 @@
+OWNERCLAIM is implemented in the lab and left uncommitted for the launcher. The base commit is `b635c93`; there were no design departures.
+
+The change adds a home lock around product startup and cleanup, deletes the early `runner_core.start()`, and keeps `pump()` inert until `start()`. The retained-queue regression failed on canon (`settled` instead of `queued`) and passed after the fix. The required `tests/test_compose.py` check passed: **22 tests**. It covers held then normal restart and two starters with distinct valid Stores.
+
+The only additional file changed is [tests/test_runner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/OWNERCLAIM/tests/test_runner.py), for a direct pre-start `submit()`/`pump()` check. A broader runner suite still has four failures; two representative failures reproduced with the original canon runner. No blocker remains for the requested compose check.

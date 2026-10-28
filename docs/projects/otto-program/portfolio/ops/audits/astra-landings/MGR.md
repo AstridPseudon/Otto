@@ -1,0 +1,21 @@
+DEFECTS — MGR only partially delivers its row; four gaps remain on `canon/main` at `eb9b6cd`.
+
+1. **Both new CLI `route` operations fail before doing work. Introduced by MGR.**  
+   [manager_journey_client.py:508](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/manager_journey_client.py:508) gives omitted options `None` defaults; [manager_client.py:69](${TRANSFER_ROOT}/source/otto/src/otto/hostctl/manager_client.py:69) forwards them unchanged. The exact-key checks at [manager_journey_service.py:366](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/manager_journey_service.py:366) reject `schedule_id=None` for reroute and the four irrelevant fields for retry.  
+   **Fix — normal:** suppress absent route arguments and validate required fields per operation. Add client-to-service tests for both actual CLI forms, asserting canonical reroute/resume effects.
+
+2. **A worker’s `ask` bypasses its project manager. Existing path left unmet by MGR.**  
+   [issue_loop.py:736](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/issue_loop.py:736) selects the operational-help supervisor; [owner_issue_loop.py:82](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/owner_issue_loop.py:82) requires that recipient to be an orchestrator. Delivery goes to that recipient at [issue_loop.py:790](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/issue_loop.py:790). A worker asking for project judgment therefore pauses awaiting the orchestrator without waking its manager, contrary to `manager_woken_on_ask_not_on_routine`.  
+   **Fix — xhard:** route worker questions through the current project manager and existing retained wake machinery, preserving escalation and exact asking-session custody. Test that one worker ask queues one manager continuation, while routine progress queues none.
+
+3. **The promised manager MCP tools are absent. MGR added CLI commands only.**  
+   The manager profile has `calls: ()` at [claude_adapter.py:37](${TRANSFER_ROOT}/source/otto/src/otto/agents/claude_adapter.py:37). [serve.py:479](${TRANSFER_ROOT}/source/otto/src/otto/hostctl/serve.py:479) grants MCP only to worker occurrences; [claude_cli.py:70](${TRANSFER_ROOT}/source/otto/src/otto/agents/claude_cli.py:70) defines only `task`, `check`, and `done`. An activated manager cannot discover the seven tools required “on the same MCP facade.”  
+   **Fix — xhard:** extend the existing facade and role-bound grant construction with manager schemas and authenticated dispatch. Test manager tool discovery, tool-minted mutation keys, successful own-project calls, and foreign-project rejection.
+
+4. **`effective-context` never returns the composed manager brief. Existing interception left incompatible with MGR.**  
+   [execution_host.py:1256](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/execution_host.py:1256) treats it as an identity read and returns only `caller_context` at line 1281. That context contains identity and directions, not the effective brief. Consequently, saving a note then requesting `effective-context` cannot show it; saved-note composition occurs separately at [manager_journey_service.py:597](${TRANSFER_ROOT}/source/otto/src/otto/portfolio/manager_journey_service.py:597).  
+   **Fix — normal:** preserve authenticated identity while returning the owner-composed manager context through this command. Add a socket-path test asserting base guidance, project mandate, and a saved note unconditionally.
+
+**Tests:** By source inspection, the new tests would fail before MGR because their fields/actions were absent; none were executed. However, [test_manager_journey_service.py:164](${TRANSFER_ROOT}/source/otto/tests/test_manager_journey_service.py:164) patches `_help`, `_submit_worker`, and `_execution_control`, missing real action failures. Its brief assertion at line 146 is conditional and passes when the brief is missing. Replace these weaknesses with the regression tests above. No added timer waits or substantive self-computed expected results were found.
+
+No evidence-backed over-engineering finding. All checks were read-only; Luna findings were independently checked against current code.

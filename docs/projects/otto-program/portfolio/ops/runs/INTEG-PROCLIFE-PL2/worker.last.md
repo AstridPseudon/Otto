@@ -1,0 +1,5 @@
+Implemented PL2 recovery accounting in [runner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/INTEG-PROCLIFE-PL2/src/herzchen/fleet/runner/runner.py). Unresolved scopes retain pool claims: verified ancestry charges the root once; missing or unverifiable ancestry gives each surviving child its own claim. [Recovery regressions](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/INTEG-PROCLIFE-PL2/tests/test_runner.py) cover both paths, deeper nesting, repeated recovery, and blocked unrelated work. No paths were added or commits made.
+
+**Checks:** Before the runner change, the suite had 7 failed and 14 passed, including three new recovery failures. Afterward, the focused recovery tests passed (5 passed), and the full suite completed with **19 passed, 4 failed**. The four remaining process and custody failures were also present at baseline. `git diff --check` passed.
+
+The `eec2b98` commit object was unavailable in this lab, so the behavior was implemented directly from the brief.

@@ -1,0 +1,3 @@
+I stopped on a confirmed wiring conflict. The listed files define `check` and `done`, but no production code constructs their `ToolFacade`, issues assignment-bound tokens, or grants the worker MCP server. The host lane cannot safely infer a worker assignment from request arguments.
+
+I’ve asked to expand ownership to the worker MCP launch path and its owner-side assignment resolver. The Luna agents are paused. [landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LAND/src/herzchen/fleet/landing.py) is an untracked, **unverified partial draft**; no tests ran, no commit was made, and nothing was pushed.

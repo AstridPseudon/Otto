@@ -1,0 +1,5 @@
+Implemented the dispatch change in [execution.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ASKDISP/src/otto/portfolio/execution.py) and added the replay regression in [test_ask_integration.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ASKDISP/tests/test_ask_integration.py). Worker continuations now rely on the shared start boundary for dispatch; non-worker continuations retain their existing dispatch behavior.
+
+**Checks:** Baseline was green (2 passed). An initial run of the new test was red because its fixture’s write profile conflicted with its mandate; after aligning the fixture to read-only, the requested command passed (3 passed). `git diff --check` also passed.
+
+The referenced `ops/prework/ASKDISP.md` was absent from the lab. No additional files were changed, and the non-worker behavior is preserved, so this scope needs no further role decision.

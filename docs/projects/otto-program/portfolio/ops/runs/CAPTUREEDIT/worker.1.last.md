@@ -1,0 +1,7 @@
+The gate failure came from [claude_adapter.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/CAPTUREEDIT/src/otto/agents/claude_adapter.py:79): it required a landing checkpoint even when a manager-dispatched worker had only written in a fresh Git lab. That held the first worker result, preventing the manager’s next dispatch and resume.
+
+I changed only that file and [test_landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/CAPTUREEDIT/tests/test_landing.py:445). A fresh, unlanded lab can use the existing no-follow `Write` byte verification; landed work still takes bytes from the pre-rebase checkpoint. The new regression was red before the fix and now passes, including rejection when live bytes differ from the successful `Write` input. The delegated Luna agent made the edits; I corrected its initial upstream assumption to match Otto’s no-upstream lab branches.
+
+**Checks:** `tests/test_landing.py` passed **22/22**. The requested combined command ran to completion: **33 passed, 4 skipped, 3 failed**. All three manager journeys, including the target, stopped before capture because this worker sandbox rejects `sandbox-exec` with `Operation not permitted`. The target’s original 185-second dispatch timeout therefore still needs the unsandboxed landing gate to verify the fix. No assertions were weakened, and the BASE-only `test_owner_failure_is_generic` failure was not touched.
+
+No commit or push was made. Current HEAD is `67af2ae9e26998f068a96f172b14e32399b085bc`; the launcher commits on exit.

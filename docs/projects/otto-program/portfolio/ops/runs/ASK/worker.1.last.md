@@ -1,0 +1,9 @@
+ASK is implemented in `lab/ASK`. Answers are retained against the asking assignment, generation, native session, and Due occurrence. `otto wait` returns on the matching Herzchen event, and `admit_execution` refuses a paused task. A pending answer request remains on disk across host restart and resumes the same session after its original occurrence settles.
+
+**Checks:** The five regression files were red against an isolated `canon/main` archive (14 failures and 1 pass; the runner test also failed collection) and green in the lab (**18 passed, 11 subtests**). The required three-file check passed (**15**), `test_herzchen_boundary.py` passed (**4**), and the existing help-routing file passed on its final full run (**28 passed, 13 subtests**). Earlier help-routing runs hit varying callback timeouts; focused reruns and a full `canon/main` run passed. `git diff --check` passed. No existing test assertions changed.
+
+The temporary in-memory ASK callback and retry-marker path was removed; one durable, session-bound continuation remains. An edit to `owner_issue_loop.py` was also removed to keep the diff within the authorized files.
+
+Subagents: `herzchen_wait`, `recovery_cursor`, and `otto_ask` made early exploratory passes that were superseded after the scope clarification. `kernel_wait` implemented Herzchen wait and session fencing; I reviewed its design. `socket_wait_guard` implemented CLI, socket, and paused admission work; I redirected its handoff to the existing authenticated socket and later narrowed a legacy receipt change. `otto_route` implemented answer routing; I directed its task-scope validation into `issue_loop.py`. `prod_resume` implemented session continuation and fixed restart retention after my review. `ask_integration_test` added owner-backed coverage and replaced its new polling loop with an event signal.
+
+**Commit:** none from Codex; the launcher will commit the lab changes. Nothing was pushed.

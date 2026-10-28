@@ -1,0 +1,5 @@
+# REWORKWIRE resume 3
+
+The required outside-sandbox check-run after your last resume failed in `tests/test_reworkwire.py`: `test_conflicting_done_reworks_exact_worker`, `test_second_refusal_exhausts_rework_bound`, and `test_unresolved_conflict_markers_do_not_land` (3 failed, 5 passed). The full check output is in `${TRANSFER_ROOT}/portfolio/ops/runs/REWORKWIRE/check.out`. The mandatory fresh canon rebase has completed successfully (effect 770; lab branch is up to date). Continue in your existing lab and same worker session, fix these regressions without weakening assertions, and run the focused check from `.brief.md`. Do not land until the outside-sandbox check passes.
+
+TESTPATCH is active and owns `tests/test_hostctl_serve.py`, `src/otto/hostctl/serve.py`, `tests/test_ask_socket_wait.py`, `src/otto/portfolio/tests/test_execution_continuity.py`, `tests/test_hostctl_portfolio.py`, and `tests/test_fleet_custody.py`; do not edit those paths. Preserve the original exclusions and task invariant. Follow all instructions in the lab's `.brief.md`; keep tests running to completion.

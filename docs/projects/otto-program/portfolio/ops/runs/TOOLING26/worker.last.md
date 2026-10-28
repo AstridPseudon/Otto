@@ -1,0 +1,3 @@
+Updated the D19 gate to accept verdicts only from the first explicit `Decision:` line, with exact `LAND` or `SEND BACK` verdicts. Added coverage for a `BOOTLAND` heading with `SEND BACK`, a heading without a decision (including the review file path in the refusal), and accepted `LAND`.
+
+The focused suite passed: **54 passed** with the specified pytest command. Only `ops/bootstrap/land.sh` and `tests/test_bootstrap_gate.py` are modified.

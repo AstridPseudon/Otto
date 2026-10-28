@@ -1,0 +1,5 @@
+Implemented content-aware task pins in [admission.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINCONTENT/src/herzchen/domains/work/admission.py:94) and connected the shared helper to admission, mandate, and owner dispatch checks. The new regressions cover **activate → admit → dispatch succeeding**, refusal after a content edit, and forged admission metadata failing to hide changed content.
+
+The requested test command reports **37 passed, 1 failed**. The failure is an unchanged fresh-manager recovery check: the retained result says “completed role result,” while [owner_runtime.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PINCONTENT/src/otto/agents/owner_runtime.py:1138) requires “completed manager result.” I left that separate recovery behavior and its test intact. The other focused and supplemental checks passed; `git diff --check` is clean.
+
+`ops/bootstrap/perch_stage2_owner.py` and `ops/brief-template.md` are absent from this lab checkout, so I could not remove the PERCH2B rebind or read that template. I did not run `perch.sh`; staging still needs the external landing gate.

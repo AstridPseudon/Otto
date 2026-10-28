@@ -1,0 +1,5 @@
+Updated [custody.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/INTEG-PROCLIFE-PL1/src/herzchen/fleet/custody.py:73) to use the macOS kernel start timestamp for process birth identity. Unreadable identities and old display-time latches retain uncertainty. Added [regressions](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/INTEG-PROCLIFE-PL1/tests/test_fleet_custody.py:1303) for same-second PID reuse, escapee signalling, and latch recovery. Only the two owned files changed.
+
+The focused regressions pass, and `git diff --check` is clean. The required full command finished **28 passed, 8 failed**: this sandbox denies `ps` and `sandbox-exec`, which the live-process tests require. The launcher’s outside-sandbox gate still needs to run.
+
+I could not inspect or integrate `964120e`: it is absent from this lab’s Git objects, and the GitHub patch URL returned 404. Please provide its diff if it contains changes beyond this implementation.

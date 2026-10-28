@@ -1,0 +1,7 @@
+Implemented the policy pin fix in the lab and left it uncommitted.
+
+- The **Luna policy agent** updated [local_assessment_policy.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/POLICYPIN/src/otto/portfolio/local_assessment_policy.py:122). I reviewed and tightened it: current project and task identities are required, metadata-only revisions can retain the binding, authored task changes refuse through the existing admission matcher, and criterion revisions remain exact.
+- The **Luna facade agent** updated [facade.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/POLICYPIN/src/herzchen/fleet/tools/facade.py:218) to return the underlying error code and message.
+- I updated [fleet_landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/POLICYPIN/src/otto/hostctl/fleet_landing.py:181) to issue commands against validated current refs. I also edited the additional file [product_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/POLICYPIN/src/otto/hostctl/product_service.py:402) because dispatch lookup was returning the task’s older project ref.
+
+The requested test command completed with **21 passed, 8 failed**. All eight failures are process or sandbox tests blocked by this environment (`sandbox-exec` and `ps` return “Operation not permitted”); the policy, landing, dispatch, and facade regressions passed. `git diff --check` passed. `ops/brief-template.md` was absent from the lab, so I followed the supplied brief’s rules.

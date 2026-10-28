@@ -1,0 +1,5 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_hostctl_serve.py
+
+Decision: LAND
+
+- `tests/test_hostctl_serve.py`: Replaces the returned refusal and `"host lane"` message assertions with `PermissionError` for launched `respond-help` using only `OTTO_MANAGER_IPC` (`tests/test_hostctl_serve.py:720`). This follows the row’s required removal of manager access to the compatibility lane (`projects/program/tasklist.md:153`; `ops/requests.md:1398`): the launch grant is removed (`src/otto/hostctl/serve.py:440`) and the client rejects owner-only commands locally (`src/otto/hostctl/manager_client.py:77`). Restoring the old submission path would fail the exception assertion. Protection against forged replies remains: the relay must reject them (`tests/test_hostctl_serve.py:725`), legitimate owner replies must succeed (`tests/test_hostctl_serve.py:729`), and the manager must apply “Use design A” while excluding forged “Use design B” (`tests/test_hostctl_serve.py:736`).

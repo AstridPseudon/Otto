@@ -1,0 +1,9 @@
+Implemented the Stage 2 kill timing change on `lab/STAGE2C`. `HEAD` and `canon/main` were both `9c131d3` before the edits.
+
+- The regression assertions failed against the unchanged code: C’s `unknown` state was rejected, and A/B’s reason wasn’t reached.
+- B now returns when its own lifecycle completes, even if C occupies capacity. Perch kills C during B’s wait; the following C wait accepts its `unknown` dispatch state.
+- Tests confirm A/B `unknown` states fail with their retained reason, C’s `unknown` state is accepted, and the B wait triggers the C kill while capacity remains occupied.
+
+**Verification:** Focused Stage 2 tests and `tests/test_herzchen_boundary.py` passed: 8 passed, 2 subtests passed. Shell syntax, Python compilation, and `git diff --check` passed. The requested full `test_perch.py` command was run before the product changes: 50 passed and 18 failed, including the intended regressions and sandbox-blocked census/fake-run cases. I did not rerun the full suite or run Stage 2 `--fake`, since those include staging or owner-starting tests.
+
+Changed files: [perch.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2C/ops/bootstrap/perch.sh), [perch_report.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2C/ops/bootstrap/perch_report.py), [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STAGE2C/tests/test_perch.py). No other files changed. The old capacity-zero wait was replaced with a task-lifecycle check; the later best-effort kill call was removed. No commit was made. The referenced `ops/brief-template.md` is absent from this checkout.

@@ -1,0 +1,5 @@
+# Resume: OWNERCOMPLETION
+
+The Orchestrator stopped your landing after `tests/test_host_neutral_defaults.py` hung for 16 minutes at 0% CPU; the same file passes 15 tests in 2.2 seconds on canon. Diagnose and fix the OWNERCOMPLETION change that deadlocks this file. The suspected path is a completion deferred through `after_owner` that never settles when no owner thread runs it; confirm the cause in code before editing. Add a regression that would hang before the fix only when the test's own structure can bound it (do not add a timeout). Run `tests/test_host_neutral_defaults.py` to completion and report the diagnosis, changed files, test result, and diff check. Do not run a landing or stage 2.
+
+Continue the original OWNERCOMPLETION brief's outcome and scope. Do not touch `tests/test_manager_service_continuation.py`, READYPIN-owned files, production/, any Store, `~/.otto`, `~/.codex`, Codex project configuration, or anything outside this lab. The OWNERCOMPLETION landing is held until this fix is reported. Do not commit or push; the launcher handles commits. Keep long tests running to completion. Any sub-agent must use `spawn_agent` with `model: "gpt-6-luna"`.

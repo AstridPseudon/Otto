@@ -1,0 +1,5 @@
+The canon check is red: **6 failed, 9 passed**. Each failure reaches assessment acceptance, where the manager’s read of private owner-maintained evidence is refused.
+
+The five-file boundary conflicts with the required fix. The owner’s grant and owner identity are held in [owner_bootstrap.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/EVREAD/src/otto/portfolio/owner_bootstrap.py:936), which constructs the assessment with only the manager actor. The owned [assessment module](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/EVREAD/src/herzchen/domains/assessment/module.py:975) receives no owner-issued evidence grant. Deriving owner read authority from the document’s maintainer would bypass the grant requirement.
+
+May I also edit `src/otto/portfolio/owner_bootstrap.py` to pass a grant scoped to the requested evidence? No files have changed; the green check remains unfinished.

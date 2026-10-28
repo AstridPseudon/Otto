@@ -1,0 +1,1 @@
+Please authorize `tests/test_host_neutral_defaults.py` so I can update the assertion that requires `Documents/Codex`, or direct me to keep that guidance. No files have been edited.

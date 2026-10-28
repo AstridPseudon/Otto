@@ -1,0 +1,5 @@
+Implemented fail-closed status validation in [service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATUSOBJ/src/otto/hostctl/service.py): malformed schema fields now return a sanitized unavailable result before PID probing or freshness checks. Valid live, stale, draining, and closed classifications remain; closed records may omit `in_flight`, while an explicit `null` is invalid.
+
+Added the requested malformed-record and live-status regression in [test_embedded_host_heartbeat.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATUSOBJ/tests/test_embedded_host_heartbeat.py), and completed the closed-status fixture in [test_hostctl_ownersafe.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/STATUSOBJ/tests/test_hostctl_ownersafe.py). No other files were changed.
+
+The focused command passed: **10 passed, 8 subtests passed**. `git diff --check` was clean. No substantive departures from the prework.

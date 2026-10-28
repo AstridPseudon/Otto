@@ -1,0 +1,3 @@
+I stopped before editing. Exposing the new manager actions requires `src/otto/portfolio/manager_journey_client.py` to add their parser entries and route them through the authenticated native-caller path, but that file isn’t on the owned list.
+
+I also found no active `hourly_sense_check` caller in this checkout; it is only defined and exported. Please add `src/otto/portfolio/manager_journey_client.py` to my owned files, or tell me which existing MCP facade should expose these actions. No files were changed.

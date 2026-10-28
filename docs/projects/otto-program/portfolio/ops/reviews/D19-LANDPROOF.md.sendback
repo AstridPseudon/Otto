@@ -1,0 +1,14 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_fleet_custody.py
+
+Decision: SEND BACK
+
+- `tests/test_fleet_custody.py`: The fixture refactor deletes the unchanged-line and no-assessment-decision assertions at merge-base `tests/test_fleet_custody.py:1018` and `tests/test_fleet_custody.py:1020`. The four-case test now checks only `LandingError` (`tests/test_fleet_custody.py:1094`); replacement checks cover only a failed exit (`tests/test_fleet_custody.py:1269`). Wrong-commit, missing-evidence, and unresolvable-evidence cases could therefore pass after improper acceptance or advancement followed by an exception. This weakens existing protection; the row requests completion proof and preservation of refusal (`projects/program/tasklist.md:152`), not relaxed rejection checks. The new completion-proof assertions fit that request (`tests/test_fleet_custody.py:1165`, `tests/test_fleet_custody.py:1178`). Separately, `tests/test_fleet_custody.py:1199` replaces the production proof writer defined at `src/otto/hostctl/fleet_landing.py:458`; exposing it as a callback does not exempt it from the product-patching prohibition (`PLAN.md:486`).
+
+Restore:
+In `test_done_refuses_failed_mismatched_or_unresolvable_check_evidence`, retain `pytest.raises(LandingError)` and, inside the fixture context afterward, restore both assertions for every parameter:
+```python
+assert case._run(case.line, "rev-parse", "refs/heads/main") == case.base
+assert not AssessmentModule(case.f.store, actor=case.f.actor).list_decisions(
+    parent_obligation=case.task_ref)
+```
+Add the local `AssessmentModule` import. Remove the `interrupted_proof` wrapper and `case.service.proof_writer` reassignment. Exercise a real post-merge process or storage interruption with the production proof writer unchanged; retain checks for absent proof before recovery, unchanged runner/acceptance counts, and exactly one retained proof afterward.

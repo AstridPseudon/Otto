@@ -1,0 +1,7 @@
+**CAPTUREEDIT is implemented** in [claude_adapter.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/CAPTUREEDIT/src/otto/agents/claude_adapter.py:78), with focused regressions in [test_landing.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/CAPTUREEDIT/tests/test_landing.py:420). These are the only files changed. Capture reconstructs bytes from successful `Write` and `Edit` calls, verifies them against the worker’s pre-rebase checkpoint, and retains path, symlink, and uncalled-file refusals.
+
+The new Edit-only and Write-then-Edit cases were red before the change. The requested landing check is now **21 passed**. Its real-owner/fake-stream cases verify completed settlement and lab removal for both, plus a Write whose landed bytes change through rebase auto-merge; that artifact retains the worker’s original bytes and digest.
+
+The separate Claude adapter suite finished **17 passed, 1 failed**. The failure is in the unchanged transport timeout-cleanup test. `git diff --check` passed. No real Claude invocation was run; the regressions use a fake stream. Edit-only capture requires an intact land checkpoint and reflog.
+
+**Commit:** none created, as instructed. Current base HEAD is `eb9b6cdf8860cd3b593dda5c365bf8eac695cfaf`; the launcher will commit on exit.

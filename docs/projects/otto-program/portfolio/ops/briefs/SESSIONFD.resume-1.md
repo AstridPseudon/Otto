@@ -1,0 +1,9 @@
+# SESSIONFD resume 1
+
+The prior worker made the lifecycle changes and focused checks passed, but run-task.sh could not commit because the paused rebase still has unmerged files. git diff --check found conflict markers in src/otto/portfolio/manager_journey_service.py, which is owned by CLIARGS. The lab status also reports src/otto/hostctl/owner.py unmerged. The prior report is ${TRANSFER_ROOT}/portfolio/ops/runs/SESSIONFD/worker.last.md; inspect current rebase state and resolve only what is required to finish SESSIONFD.
+
+Preserve CLIARGS ownership: do not carry SESSIONFD edits into src/otto/portfolio/manager_journey_service.py; resolve that rebase path to the current canon version so its unrelated CLIARGS changes remain intact. Resolve SESSIONFD-owned conflicts in src/otto/hostctl/owner.py and other SESSIONFD-owned paths, retaining the task outcome and the transport lifecycle fix. Do not edit any other task-owned content. The unresolved CLIARGS file is mentioned only because the launcher cannot commit while conflict markers remain.
+
+SCRIPTMGR is running and owns tests/test_perch.py; do not edit it. CMDTMPDIR is waiting for a resume and overlaps src/herzchen/command_ports.py; defer any work on that task until SESSIONFD exits. Do not touch production/, Stores, ~/.otto, ~/.codex, Codex project configuration, or anything outside this lab.
+
+Run the focused SESSIONFD checks you can safely run, including the original check command /opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_hostctl_cli.py; the check-run will handle sandbox-only restrictions. Leave changes for the launcher and report each conflict resolution, the exact checks and outcomes, and any remaining blocker. Follow the original brief's Codex rules word for word: never stash or switch commits, don't run ottoctl, and every sub-agent must use spawn_agent with model: "gpt-6-luna".

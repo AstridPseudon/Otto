@@ -1,0 +1,5 @@
+The brief conflicts with the code, so I stopped before editing. `src/otto/portfolio/project_service.py` does not exist. The attachment refusal is at [src/otto/hostctl/project_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACT/src/otto/hostctl/project_service.py:391), line 393; line 346 is heartbeat code.
+
+The existing caller and view modules are [src/otto/hostctl/service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACT/src/otto/hostctl/service.py:353), [src/otto/hostctl/product_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACT/src/otto/hostctl/product_service.py:363), and [src/otto/portfolio/project_services.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACT/src/otto/portfolio/project_services.py:16). No files changed or tests ran.
+
+May I edit the existing `src/otto/hostctl/project_service.py` and its caller modules to implement ACT?

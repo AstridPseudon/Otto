@@ -1,0 +1,15 @@
+2026-10-16T03:08:32Z POOL tests/test_external_owner_context.py::ExternalOwnerContextTests::test_native_wait_admits_only_exact_owner_reads_without_releasing_custody lab 2/3 base 2/3
+2026-10-16T03:40:37Z POOL tests/test_manager_reentrant_ipc.py::ManagerReentrantIPCTests::test_close_retains_child_responses_and_defers_second_dispatch_to_restart lab 1/3 base 0/3
+2026-10-16T03:42:51Z POOL tests/test_manager_reentrant_ipc.py::ManagerReentrantIPCTests::test_explicit_manager_commands_may_advance_bound_task_after_exact_admission lab 0/3 base 1/3
+2026-10-16T03:48:43Z POOL tests/test_missing_manager_capture.py::MissingManagerCaptureTests::test_aborted_manual_selector_allows_distinct_same_native_callback_start lab 0/3 base 0/3
+2026-10-16T14:26:26Z OWNERLANE tests/test_hostctl_cli.py::HostctlCliTest::test_project_status_matches_registered_bytes_and_roles lab 0/3 base 0/3
+2026-10-16T18:14:22Z SAVEFIX tests/test_supervisor_direction_client.py::SupervisorDirectionClientTests::test_in_flight_worker_survives_directive_and_delayed_terminal_callback lab 0/3 base 0/3
+2026-10-16T18:31:42Z SAVEFIX tests/test_supervisor_direction_client.py::SupervisorDirectionClientTests::test_in_flight_worker_survives_directive_and_delayed_terminal_callback lab 0/3 base 0/3
+2026-10-16T19:01:08Z ASK tests/test_bounded_project_host.py::BoundedProjectHostTests::test_five_projects_share_slots_and_A_settles_while_B_waits lab 1/3 base 0/3
+2026-10-16T21:03:08Z ASK tests/test_capacity_pool.py::WorkerPinTests::test_dead_worker_group_frees_its_reservation lab 0/3 base 0/3
+2026-10-17T13:46:53Z TOOLING23 tests/test_staging_startup.py::StagingCase::test_startup_on_empty_store lab 0/3 base 0/3
+2026-10-17T20:08:44Z OWNERCOMPLETION tests/test_capacity_holds.py::CapacityHoldTests::test_manager_recovery_releases_killed_unknown_worker_fence_capacity_case lab 0/3 base 0/3
+2026-10-17T23:01:58Z DRAINSETTLE tests/test_perch.py::SeededFaultRunTests::test_each_seeded_fault_fails_its_assertion_kind lab 0/3 base 0/3
+2026-10-17T23:56:39Z PINALL tests/test_perch.py::SeededFaultRunTests::test_each_seeded_fault_fails_its_assertion_kind lab 0/3 base 0/3
+2026-10-18T13:12:01Z HOLDSTATUS tests/test_fleet_custody.py::test_codex_timeout_kills_group lab 0/3 base 1/3
+2026-10-18T20:51:01Z INTEG-PROCLIFE-PL2 tests/test_runner.py::exit-1 lab 3/3 base 1/3

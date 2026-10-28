@@ -1,0 +1,7 @@
+**LABPIN is implemented in the lab and left uncommitted for the launcher.** Cleanup now binds a versioned landing marker to the exact Due occurrence, assignment generation, candidate commit, and lab incarnation. The fleet takes the exclusive lab lock before reading and validating the marker, then keeps that lock through removal. A durable deleting phase supports partial unlink recovery. Legacy two-line markers remain protected.
+
+The startup race regression failed on the original code because `mark_landed` lacked `occurrence=`, then passed with the change. Partial recovery, writer-lock, dirty-work, and retained-ref checks also passed. No existing test assertions changed. The required Herzchen boundary test passed **5/5**; the external owner file passed **9 tests and 16 subtests**.
+
+The requested full custody check completed with **25 passed, 8 sandbox-only failures** involving `sandbox-exec` or denied `ps`/process census. The landing gate must run those checks outside the worker sandbox. No files beyond the six owned files were changed; no commit or push was made.
+
+Three Luna agents handled execution: the regression agent added tests and fixtures (I corrected its external Due selection); the Herzchen agent implemented locked custody and recovery (I requested ref, marker, and orphan-sweep safeguards); the Otto agent wired exact Due and candidate validation (I requested active-Due matching and removal of a lookup fallback).

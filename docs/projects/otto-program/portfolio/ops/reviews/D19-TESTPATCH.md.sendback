@@ -1,0 +1,15 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_ask_socket_wait.py, tests/test_fleet_custody.py, tests/test_hostctl_serve.py
+
+Decision: SEND BACK
+
+- `tests/test_ask_socket_wait.py`: Replacing mocked authorization with real owner records and checking foreign-principal refusal follows the row (`tests/test_ask_socket_wait.py:119`). However, the exact cursor expectation became merely a nonempty-string check (`tests/test_ask_socket_wait.py:116`). An arbitrary invalid cursor now passes, losing protection of the resumable cursor returned by the drain path (`src/otto/portfolio/manager_journey_service.py:1903`).
+- `tests/test_fleet_custody.py`: Comparing exact owner refs instead of Python object identity is appropriate (`tests/test_fleet_custody.py:277`), as are expectations using real task and assignment IDs. But the previous assertion that another task’s `two.txt` was not landed was deleted. The replacement creates only the selected task’s artifact and checks its presence (`tests/test_fleet_custody.py:367`, `tests/test_fleet_custody.py:388`); it no longer detects landing another lab alongside the bound one. Removing that isolation protection is outside the row.
+- `tests/test_hostctl_serve.py`: Missing-scope refusal and preservation of trusted state are intended, but the canary introduces a nonexistent task revision (`tests/test_hostctl_serve.py:200`). Validation still reads that retained pin because `policy_state` omits the staged `task_refs` (`src/otto/hostctl/serve.py:371`). Even with the new scope guard removed, the missing revision produces the same expected refusal (`src/herzchen/domains/work/admission.py:128`, `src/otto/portfolio/local_assessment_policy.py:197`). Separately, the positive test removes independent exact-ref assertions and derives its expected task and criterion from the hydrated state itself (`tests/test_hostctl_serve.py:236`, `tests/test_hostctl_serve.py:240`), losing successful revision-refresh and alias-selection coverage.
+
+Restore:
+
+In `tests/test_ask_socket_wait.py`, replace the string-only cursor check with a real continuation check: consume the returned cursor through `EventCursorReader.page` on the expected assignment report stream and filter, and assert the expected event continuation without replay or omission. Keep real authorization and the zero-second drain request.
+
+In `tests/test_fleet_custody.py`, prepare a second real task lab containing `two.txt`; after the bound worker’s `done`, restore `assert not (line / "two.txt").exists()` alongside the existing bound-artifact assertion.
+
+In `tests/test_hostctl_serve.py`, replace the fabricated retained revision with a real historical revision whose content matches the current task, so missing scope alone causes refusal. Restore successful hydration from a prior task revision and exact task/criterion assertions against independently obtained owner records. In `src/otto/hostctl/serve.py`, include staged `task_refs` in `policy_state` before validation, retaining the commit-after-validation behavior.

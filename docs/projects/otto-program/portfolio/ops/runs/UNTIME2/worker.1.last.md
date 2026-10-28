@@ -1,0 +1,3 @@
+Restored the D19 status-read coverage in [test_embedded_host_heartbeat.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/UNTIME2/tests/test_embedded_host_heartbeat.py): the fixture logs `capacity_holds()` callers, and after `service.close()` the test asserts the log is nonempty and contains only the owner thread. The heartbeat state waits and frozen-projection assertions remain intact; the shared-lock regression was untouched.
+
+The specified check passed: **9 passed in 6.02s**. `git diff --check` passed. Only `tests/test_embedded_host_heartbeat.py` is modified.

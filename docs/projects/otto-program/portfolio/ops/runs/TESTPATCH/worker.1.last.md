@@ -1,0 +1,7 @@
+**The fleet test now exercises real owner state and the actual facade server.** It uses a disposable Store, a real admitted task and executor assignment, a live dispatch record, `LabFleet`, and worker check/done calls over the UNIX socket. Only the runner and assessment model remain stand-ins.
+
+- **Rebase conflict:** I removed the `FacadeServerStub` conflict and its markers. I could not mark the file resolved: `git add` was denied because this worktree’s Git index is outside the lab’s writable root. The rebase is still paused with `tests/test_fleet_custody.py` unmerged in the index; the launcher will need to stage the resolution and continue it.
+- **Checks:** The focused fleet regressions passed: **9 passed**. The full requested command finished with **67 passed, 11 failed, 4 skipped, and 7 subtests passed**. The failures were environment-bound: `sandbox-exec` was denied for host/worker checks, and `ps` was denied for custody checks.
+- **Canon red:** The T1/T2 scope canary was demonstrated failing on canon before the rebase, as designed. The foreign-asker test now exercises real authorization and verifies refusal.
+- **Assertion changes:** No new assertion expectations changed in this resume. Existing D19 expectation changes remain. I changed the missing-repo fixture input to an empty, schema-valid plan while retaining its existing `otto.plan.repo` assertion.
+- **Files:** No additional files were changed. I did not commit or push.

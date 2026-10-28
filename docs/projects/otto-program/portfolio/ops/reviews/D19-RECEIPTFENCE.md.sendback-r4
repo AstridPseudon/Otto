@@ -1,0 +1,8 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_manager_reentrant_ipc.py
+
+Decision: SEND BACK
+
+- `tests/test_manager_reentrant_ipc.py`: Replacing pending-file absence with claimed/processing/nonterminal, identity, response-path and retry assertions at `tests/test_manager_reentrant_ipc.py:143` matches the required claim before handler entry (`src/otto/portfolio/execution_host.py:1756`). However, the new `wait_file` invocation introduces a 30-second deadline through `tests/test_manager_reentrant_ipc.py:83`, contrary to `PLAN.md:486`. The child receipt has already been observed at `tests/test_manager_reentrant_ipc.py:139`; the claim must already exist, so waiting can conceal its absence at that checkpoint. The earlier restoration otherwise preserves outstanding-response, completion/provider-count and queued-replay checks (`tests/test_manager_reentrant_ipc.py:142`, `:155`, `:222`), and the bounded-host assertions are unchanged.
+
+Restore:
+Replace `pending = self.wait_file(self.directory / "pending-abc123.json")` with `pending = json.loads((self.directory / "pending-abc123.json").read_text())`. Retain all six marker assertions and the other existing protections. This removes the newly introduced deadline and makes a missing claim fail immediately at the established checkpoint.

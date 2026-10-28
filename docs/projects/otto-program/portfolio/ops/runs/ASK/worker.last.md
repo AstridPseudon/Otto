@@ -1,0 +1,5 @@
+I stopped because the brief’s file boundary prevents the requested behavior from being completed. The production response handler still schedules `manager-help-result` in [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ASK/src/otto/portfolio/manager_journey_service.py:1399), which calls the manager-only continuation in [execution.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ASK/src/otto/portfolio/execution.py:1768). Both are outside the owned files. The command parser also has no `otto wait` command, and task dispatch lives outside the owned files.
+
+The three Luna sub-agents inspected the Herzchen wait, event cursor, and Otto routing paths. I stopped their edits and removed one unfinished test; the lab is clean at `ac6153d`. No tests ran, no code was deleted, and there is no commit.
+
+**May I expand ownership to the production command and continuation files—and the task dispatch guard if needed—so I can replace the manager-only path and complete the red-then-green regressions?**

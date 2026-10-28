@@ -1,0 +1,7 @@
+# D19 decision (Astra for the orchestrator, 2026-10-17): tests/test_perch.py
+
+**Decision: SEND BACK.**
+
+- `tests/test_perch.py`: The independent A/B dependencies and capacity expectations (`tests/test_perch.py:496`), direct Store dispatch counts (`tests/test_perch.py:856`), exact seeded-failure sets (`tests/test_perch.py:983`), and C-dispatch kill check (`tests/test_perch.py:1438`) follow the row’s intended behavior. Doctored evidence still causes failures (`tests/test_perch.py:988`), and capture uses a real Store (`tests/test_perch.py:1060`). Deleting the two obsolete cleanup-patching tests is explicitly requested. However, the new polling regression introduces `subprocess.run(..., timeout=10)` at `tests/test_perch.py:1349`. This adds a time limit prohibited by `PLAN.md:486`. The orchestrator’s ruling at `ops/requests.md:1534` permits polling intervals without deadlines; it does not exempt unit-test subprocess timeouts.
+
+Restore: Remove `timeout=10` from `tests/test_perch.py:1349`, without substituting another deadline. Keep the deterministic owner-exit fixture and assertions at `tests/test_perch.py:1344`–`1352`, and retain the permitted untimed `sleep 0.25` polling. Hangs must be judged at the run level.

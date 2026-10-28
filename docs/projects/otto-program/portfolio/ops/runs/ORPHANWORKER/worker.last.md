@@ -1,0 +1,5 @@
+Implemented birth-checked worker group termination during owner startup and shutdown. PERCH now checks for workers across staging roots before startup and checks recorded groups after down.
+
+The required direct-caller change was [execution_host.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ORPHANWORKER/src/otto/portfolio/execution_host.py): it loads the existing records and invokes the cleanup helper in [claude_cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ORPHANWORKER/src/otto/agents/claude_cli.py). Capacity accounting and recovery reconciliation were left unchanged.
+
+The new regressions failed before implementation on the lab’s canon baseline (`HEAD` matched `canon/main`), then passed. The focused run finished with **65 passed**. I excluded the staging-owner PERCH cases as instructed, and one `ps`-dependent census test because this sandbox rejects `ps` with `PermissionError`. `bash -n` and `git diff --check` passed. I did not run Stage 2 `--fake` or commit; the changes are in the lab for `run-task.sh`.

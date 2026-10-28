@@ -1,0 +1,5 @@
+Implemented the transfer manifest and verifier in the four assigned files. Capture requires an explicit project selection, traverses the complete owner inventory, exports caller-selected tasks, documents, and links, and refuses incomplete records. Source verification recaptures current revisions; target verification independently reads the destination and compares project/task payloads, dependencies, linked document metadata, and bodies.
+
+Added regressions for 105 tasks, differing document revisions, inventory cursor traversal, missing records, changed bodies or dependencies, and source edits after capture. The seven follow-up identities remain caller supplied.
+
+The requested checks pass: **62 passed, 16 subtests passed**. `git diff --check` passes. The target readback comparator is implemented, but the affected tests do not exercise a full source-to-target verification flow. No additional files were changed.

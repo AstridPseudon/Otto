@@ -1,0 +1,10 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_bootstrap_gate.py
+
+Decision: SEND BACK
+
+- `tests/test_bootstrap_gate.py`: Existing assertions remain intact. Added assertions protect the requested single heavy lease (`tests/test_bootstrap_gate.py:155`), fail-fast reporting (`tests/test_bootstrap_gate.py:187`), ordered commits and one push (`tests/test_bootstrap_gate.py:555`), and all-or-nothing refusal (`tests/test_bootstrap_gate.py:581`), consistent with `projects/program/tasklist.md:207` and `ops/requests.md:1641`. However, the new signal-forwarding test introduces `time.sleep(600)` at `tests/test_bootstrap_gate.py:274` and `communicate(timeout=5)` with an expiry failure at `tests/test_bootstrap_gate.py:296`. That deadline makes elapsed time an acceptance condition, contrary to the orchestrator’s no-time-limits rule (`PLAN.md:486`).
+
+The requested gate output was absent; the branch diff identifies this as the sole changed test file. No tests were run.
+
+Restore:
+In `test_outer_pid_signal_is_forwarded_to_the_leased_gate`, replace `import time; time.sleep(600)` with `import signal; signal.pause()`. Replace the timeout/`TimeoutExpired`/SIGKILL block beginning at `tests/test_bootstrap_gate.py:295` with `out, err = proc.communicate()`. Retain the readiness wait, outer-PID SIGTERM, and all assertions at `tests/test_bootstrap_gate.py:301` through line 305. Let the run-level hang judgment detect failed termination.

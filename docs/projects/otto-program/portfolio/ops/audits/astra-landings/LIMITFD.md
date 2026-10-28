@@ -1,0 +1,8 @@
+SOUND — LIMITFD delivers its specified scope; no introduced defect or over-engineering found.
+
+Reviewed merge `9b33101` and current `canon/main` at `eb9b6cd`, with three parallel Luna reviews independently checked.
+
+- **Outcome:** `src/otto/portfolio/owner_bootstrap.py:681` constructs one owner-held `LimitService`. All three sites named by the row reuse it: assessment guard `:1049`, pool creation `:1092`, and role runtime `:1375`. No named constructor was missed.
+- **Test quality:** `tests/test_completed_occurrence_readiness.py:48–54` measures OS descriptors around 200 real `role_runtime()` calls and asserts growth ≤3. It patches no product method, reproduces no product computation, and uses no timer. Under normal socket-enabled operation, it should fail before this change: each constructor binds a listener retained by `_OWNER_SERVICES` (`src/herzchen/command_ports.py:342–347,480,630`). This is static verification; I ran no tests. `land.out` records passing checks.
+- **Remaining leak, already assigned:** repeated assessments still construct `AssessmentModule` (`src/otto/portfolio/owner_bootstrap.py:1073`), whose nested services are exported through socket-bearing transports (`src/herzchen/command_ports.py:640–644`). This predates LIMITFD and is explicitly covered by **FACADEFD**. Keep that **xhard** route: lazy transport binding in `command_ports.py`, verified by 200 assessments with descriptor growth ≤3 and a working cross-process consumer. No duplicate fix task needed.
+- **Simplicity:** one retained service and three substitutions directly implement the row. Nothing added warrants deletion.

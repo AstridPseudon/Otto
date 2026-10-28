@@ -1,0 +1,5 @@
+The landing failure came from `_start_owner_host` reading `hold_dispatch` on a minimal owner used by the landed-lab sweep test. I changed [product_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/OWNERCLAIM/src/otto/hostctl/product_service.py:53) to start a runner only when one is present, and to require owner-file custody before admitting it. The sweep still runs after the host claim; startup recovery and the early-start deletion remain intact.
+
+The failing test was red before the fix and passes now. The original brief’s check passed: **22 tests** in `tests/test_compose.py`. Both landed-lab tests pass. The full fleet-custody file had eight other failures caused by this environment denying `sandbox-exec` and `ps`.
+
+Only `product_service.py` changed. The lab is at `a926fc5`; I made no commit.

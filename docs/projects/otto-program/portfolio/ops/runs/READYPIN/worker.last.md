@@ -1,0 +1,7 @@
+READYPIN is implemented in the lab. Settled readiness now verifies the delivered task pin and snapshot against the exact committed completion predecessor using `task_content_matches`, while retaining the receipt, assignment, manager, native-turn, and digest checks. The real-owner regression delivers A, advances it through metadata-only admission, completes it from accepted evidence, then starts manager B; B reaches the fake provider. The historical setup test also refuses changed content and a foreign task. The additional file, [test_operating_setup.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/READYPIN/src/otto/portfolio/tests/test_operating_setup.py:718), covers that historical proof.
+
+**Red → green:** Before the fix, the new forged-brief test passed altered task content when both hashes were recomputed. The exact requested command now passes: **18 passed, 19 subtests passed**. The focused historical setup test passes; `git diff --check` is clean.
+
+**Commit:** None, per the worker rules. The lab’s base HEAD is `163925e`; the launcher commits on exit.
+
+**Limits:** The fixture needs an intermediate metadata revision before real admission, so its completion predecessor is rev-3. A is delivered before admission because the existing mandate guard refuses a rev-1 mandate after A advances. A broader setup-module run has one failure in an unchanged `manager_assessment` expectation about content-equivalent revisions.

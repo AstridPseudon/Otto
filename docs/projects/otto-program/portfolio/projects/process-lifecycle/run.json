@@ -1,0 +1,52 @@
+{
+ "run_id": "otto-program-process-lifecycle",
+ "portfolio": "otto-program",
+ "project": "PROCLIFE",
+ "control_root": "${TRANSFER_ROOT}/portfolio/projects/process-lifecycle",
+ "mode": "setup_not_activated",
+ "profile": "claude",
+ "profile_note": "Set up 15 Oct from the process-lifecycle proposal and Astra's verdict (evidence/). Same profile as the program.",
+ "roles": {
+  "coordinator": {
+   "model": "claude-haiku-5-5",
+   "reasoning": "medium",
+   "note": "after CUTOVER (PLAN.md D18); Claude (the orchestrator) coordinates the bootstrap"
+  },
+  "worker_normal": {
+   "model": "claude-haiku-5-5",
+   "reasoning": "high"
+  },
+  "worker_xhard": {
+   "model": "claude-sonnet-5-5",
+   "reasoning": "high"
+  },
+  "reviewer_normal": {
+   "model": "claude-sonnet-5-5",
+   "reasoning": "high",
+   "note": "acceptance is the task's check; no routine normal review"
+  },
+  "reviewer_xhard": {
+   "model": "claude-opus-5-5",
+   "reasoning": "high"
+  },
+  "oracle": {
+   "model": "gpt-6-astra",
+   "reasoning": "high",
+   "runner": "codex exec (read-only)",
+   "note": "The user's standing direction (12 Oct): Astra for reviews and judgment."
+  },
+  "final_reviewer": {
+   "model": "gpt-6-astra",
+   "reasoning": "high",
+   "runner": "codex exec (read-only)"
+  }
+ },
+ "oracle": {
+  "max_calls": 3
+ },
+ "review_stages": [],
+ "dependencies": [],
+ "external_prerequisites": [
+  "Codex agreement on the threat model and scope API (PL0); Codex owns custody source today"
+ ]
+}

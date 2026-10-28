@@ -1,0 +1,8 @@
+# Resume TESTPATCH (normal): D19 restore
+
+Read `${TRANSFER_ROOT}/portfolio/ops/reviews/D19-TESTPATCH.md.sendback` and implement its entire Restore section in the TESTPATCH lab. Restore the real `EventCursorReader.page` continuation check; prepare a second real task lab and assert its `two.txt` was not landed; fix the missing-scope canary to use a real historical revision; restore successful hydration from a prior revision with exact task/criterion expectations from independent owner records; and include staged `task_refs` in `policy_state` before validation while keeping commit-after-validation.
+
+The original brief and check command still govern. Do not weaken assertions. Run the brief's full check to completion, then `git diff --check`; report changed files and results. Leave changes for the launcher to commit. Do not touch files in other task labs, especially the running LANDBATCH lab.
+
+
+**On Codex** (Luna or Sol, the program's host since 16 Oct): you can't commit, because Codex's sandbox keeps `.git` read-only. Leave your work in the lab and `run-task.sh` commits it when you exit; don't work around the sandbox. **A long test runs to its end:** give the shell command a long timeout (for example `timeout_ms: 1800000`), or keep reading its session until it exits; never stop a test run because a window passed (REDS and DISPATCH stopped at "30 seconds", 16 Oct). A test that fails with `sandbox_apply: Operation not permitted` needs a sandbox of its own, which can't nest inside yours: list it in your report, and the landing gate runs it outside. **Any sub-agent you start is `spawn_agent` with `model: "gpt-6-luna"`.**

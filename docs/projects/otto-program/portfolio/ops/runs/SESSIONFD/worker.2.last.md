@@ -1,0 +1,6 @@
+The conflict markers are gone from the working tree, but **the rebase is still unmerged in Git’s index**. I could not stage the resolutions: `git add` failed with `index.lock: Operation not permitted`. The launcher must stage the three paths before continuing the rebase.
+
+- [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/portfolio/manager_journey_service.py) now matches current canon’s stage 2 byte for byte; no SESSIONFD edit was carried into the CLIARGS-owned file.
+- [owner.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/hostctl/owner.py) and [owner_bootstrap.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SESSIONFD/src/otto/portfolio/owner_bootstrap.py) retain the lifecycle changes and both sides of their merges. A Luna read-only review found no missing lifecycle change. The transport stream fix remains in place.
+
+`git diff --check` and compilation pass. The original `tests/test_hostctl_cli.py` check finished **19 passed, 2 failed**; both failures report sandbox preflight `sandbox_apply: Operation not permitted`. The lifecycle, facade, and service-routing files pass together (**18 passed**). A broader run including `test_manager_assessment_ipc.py` had **25 passed, 2 failed** in its native continuation and advisor decision tests; those failures remain for review.

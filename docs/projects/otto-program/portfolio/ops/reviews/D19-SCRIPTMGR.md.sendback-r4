@@ -1,0 +1,8 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_perch.py
+
+Decision: SEND BACK
+
+- `tests/test_perch.py`: Replacing completion-hook assertions with installed manager commands follows the row (`projects/program/tasklist.md:208`). However, the deleted test explicitly supplied a held completion and required `RuntimeError` (`canon/main` version, `tests/test_perch.py:1956`). Its replacement supplies only accepted review with pending completion (`tests/test_perch.py:1932`) and checks command arguments (`tests/test_perch.py:1945`). Removing the refusal guard at `ops/bootstrap/perch_fake_claude.py:149` would therefore leave these tests passing while the manager reports a held completion as reviewed. This loses existing refusal protection. The earlier missing-landing restoration is present (`tests/test_perch.py:1057`); deadline removal remains intact (`ops/bootstrap/perch_fake_claude.py:106`, `ops/bootstrap/perch_fake_claude.py:181`, `ops/bootstrap/perch.sh:598`). The seeded-fault expectation remains unchanged (`tests/test_perch.py:2310`, `tests/test_perch.py:2330`); its reported integration failure is not established as fixed.
+
+Restore:
+In `test_stage_two_manager_uses_installed_review_and_recovery_commands`, add an injected-client case returning `outcome: accepted`, nonempty `gate_refs`, and `completion: {outcome: held}` from `review-task`. Assert that `fake.scripted_manager_turn("A", client=...)` raises `RuntimeError` matching `review or finish was refused`. Preserve the accepted/pending case, restored missing-landing check, timer removal and existing patch-scan scope.

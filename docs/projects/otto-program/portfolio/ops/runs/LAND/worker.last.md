@@ -1,0 +1,3 @@
+I stopped before editing because the brief’s file scope conflicts with the production requirement. The facade defines `done` and `check`, but [claude_cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LAND/src/otto/agents/claude_cli.py:63) allows only `effective-context` through to the owner. The existing landing path is in [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/LAND/ops/bootstrap/land.sh:2). Both are outside the owned files.
+
+**Should I expand ownership to wire the production facade and retire the script, or keep the two-file scope and implement the landing core with an injected owner-port test?** No files were changed.

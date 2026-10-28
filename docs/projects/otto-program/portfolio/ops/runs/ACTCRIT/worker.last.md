@@ -1,0 +1,6 @@
+Implemented product-backed required assessment scopes and task dispatch status.
+
+- Activation now declares each registered task’s required scope from its proof criterion, using configured criterion aliases where available. Stable scope IDs and request keys make replay idempotent. `project status` exposes the persisted scope and criterion definitions in [register.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACTCRIT/src/otto/hostctl/register.py:384) and [cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACTCRIT/src/otto/hostctl/cli.py:518).
+- `project status` now projects task dispatch state and failure reason from retained assignment, dispatch, result, and report records. Added activation, replay, and dispatch projection coverage in [test_hostctl_cli.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/ACTCRIT/tests/test_hostctl_cli.py:294).
+
+The requested test command finished with **18 passed and 2 failed**. Both failures are environment-bound admission preflight tests: `sandbox-exec` reports `sandbox_apply: Operation not permitted`. The focused activation, dispatch projection, and `test_act_activation.py` checks passed (**5 passed**). No tests were weakened, and I left the changes uncommitted.

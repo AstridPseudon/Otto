@@ -1,0 +1,13 @@
+# D19 decision (Astra for the orchestrator, 2026-10-17): tests/test_manager_journey_service.py
+
+**Decision: SEND BACK.**
+
+- `tests/test_manager_journey_service.py`: The product-owner fixture, maintained caller, separate report assertion, and duplicate-worker expectation (`retained`, with the original handle and unchanged provider count) fit the row’s requested migration (`projects/program/tasklist.md:137`; test lines 111, 130, 357–362). Removing the retired baseline’s `project_scope_denied` expectation is justified: product lifecycle-read and foreign-project/task rejection remain at lines 630–636. However, the replacement starvation test drops the worker-success assertion: `tests/test_manager_journey_service.py:312` merely reads the response. The provider can time out while its release event remains unset (`tests/test_execution_application.py:78`), allowing the test to accept a failed worker after report starvation. Also, `tests/test_manager_journey_service.py:836` saves the review response and discards the finish response at line 837, so the pending-finish assertion at line 854 checks the wrong operation. Pre-existing product-method patches also remain despite the migration design’s explicit removal requirement.
+
+Restore:
+
+1. At `tests/test_manager_journey_service.py:312`, assert that the terminal worker response’s `outcome` equals `"succeeded"`. Keep the event-based assertion that the report commits before release; do not restore the elapsed-time starvation expectation.
+
+2. At `tests/test_manager_journey_service.py:836`, save the actual `finish-task` response into `review.json`. Keep the `"pending"` assertion at line 854 applied to that response, plus the subsequent completion and continuation assertions.
+
+3. Replace product-method substitutions in `tests/test_manager_journey_service.py`: exercise real answer/route operations instead of `_help`, `_submit_worker`, and `_execution_control` patches (234, 241, 248); inspect persisted Store/Due and budget effects instead of `save_due` and `_journal` wrappers (344, 468); seed historical acceptance and tampered-content fixtures instead of patching `_instruction_document`, `_retain_task_settlement`, and content `read` (509–510, 548–549, 587); persist the unsettled Due state instead of mocking `read_due` (643). Preserve the substantive refusal, retained-effect, budget, and no-repeat protections through those real paths.

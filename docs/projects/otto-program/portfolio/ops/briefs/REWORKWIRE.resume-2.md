@@ -1,0 +1,5 @@
+# REWORKWIRE resume 2
+
+The landing attempt at 2026-10-17T22:08:58Z refused while rebasing your lab onto canon/main: `src/otto/hostctl/product_service.py` has a content conflict. Resolve the conflict in your existing lab, preserving your outcome and the current canon changes. The earlier outside-sandbox check-run passed (46 tests, 23 subtests), and the landing refusal occurred during rebase before checks ran. Continue in the same session; run the task's focused check from `.brief.md`, report the resolution and results, and leave the commit to the launcher.
+
+Do not edit active workers' files: TESTPATCH owns `tests/test_hostctl_serve.py`, `src/otto/hostctl/serve.py`, `tests/test_ask_socket_wait.py`, `src/otto/portfolio/tests/test_execution_continuity.py`, `tests/test_hostctl_portfolio.py`, and `tests/test_fleet_custody.py`; DRAINSETTLE owns `src/otto/portfolio/execution_host.py` and directly required retained-request recovery code. Preserve the original exclusions and task invariant. Follow all instructions in the lab's `.brief.md`; do not run staging-owner tests in the worker sandbox. Keep long tests running to completion.

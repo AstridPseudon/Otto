@@ -1,0 +1,29 @@
+## Findings
+
+### 1. An unrelated plan save blocks completion after an accepted review
+
+**Evidence:** [manager_journey_command.py](/private/tmp/otto-audit-tree/src/otto/portfolio/manager_journey_command.py:827) calls `_completion_project` before `finish-task`. That method starts with the project revision retained by the accepted review, then permits a move to the current revision only through a supervision transfer with matching resource adoption ([lines 886–955](/private/tmp/otto-audit-tree/src/otto/portfolio/manager_journey_command.py:886)). An ordinary sheet save advances the project revision with a `work.project-sheet.applied` event ([batches.py](/private/tmp/otto-audit-tree/src/herzchen/domains/work/batches.py:193)); that event fails the bridge at line 947. The completion domain also requires the supplied project revision to be current ([assignments.py](/private/tmp/otto-audit-tree/src/herzchen/domains/work/assignments.py:668)).
+
+**Scenario:** A manager accepts the review for task A. Someone saves an edit to unrelated task B, advancing the project revision. The manager then calls `finish-task` for unchanged A with the accepted review. `_completion_project` raises “completion project changed beyond same-root resource refresh,” so A cannot complete. **Inference:** an unrelated B edit should leave A’s accepted judgment usable when A’s content, required policy, manager generation and evidence remain unchanged. This is a completion sibling of PROJECTPIN’s launch failure; its row does not cover this path.
+
+**Proposed fix row — xhard:** Allow the completion pin to advance across project writes proven irrelevant to A’s accepted review, while retaining exact task, policy, manager-generation and evidence fences. Files: `manager_journey_command.py`, its owner read/proof helper, and focused completion tests. **Acceptance:** accept A, save an edit to B, then finish A with the original accepted evidence; this fails before the fix. Editing A or its governing assessment policy must still refuse. A plausible identity-only bridge would let a changed policy inherit an old acceptance.
+
+### 2. Admission records a review revision it has never resolved
+
+**Evidence:** The owner lane accepts any local `review_ref` with a revision ([service.py](/private/tmp/otto-audit-tree/src/otto/hostctl/service.py:460)). `WorkGraph.admit` then discards that revision for its existence check and reads only the record identity ([module.py](/private/tmp/otto-audit-tree/src/herzchen/domains/work/module.py:535)); it stores the supplied ref in the admission stamp ([admission.py](/private/tmp/otto-audit-tree/src/herzchen/domains/work/admission.py:184)). Dispatch validates the task’s admission stamp and content, but the review-basis path checks the stamp’s write event, not the stamped review revision ([assignments.py](/private/tmp/otto-audit-tree/src/herzchen/domains/work/assignments.py:1075)).
+
+**Scenario:** After an ordinary write moves a local record’s head to `rev-2`, an operator-presence-approved admission supplies that record’s ID as `review_ref` with nonexistent `rev-999`. The identity read succeeds; admission and subsequent dispatch can carry `rev-999` as review provenance. Operator presence still applies, but the claimed exact stored review cannot be audited. This is separate from FAILCLOSED’s missing `reviewed_digest` row.
+
+**Proposed fix row — normal:** Resolve the supplied review’s **exact retained revision** before stamping it, and enforce the review kinds accepted by this admission path. Files: `work/module.py`, the owner-lane validation if needed, and focused admission tests. **Acceptance:** an existing ID with nonexistent revision is refused before a stamp is written; an allowed exact retained review revision succeeds, including when its record has a later head.
+
+## Checked and sound
+
+- Operating setup now accepts later project, assignment, mandate and task revisions only with owner-read content proof ([operating_brief.py](/private/tmp/otto-audit-tree/src/otto/portfolio/operating_brief.py:207), [owner_readers.py](/private/tmp/otto-audit-tree/src/otto/portfolio/owner_readers.py:80)). This covers PROJECTPIN’s comparator in this checkout.
+- Dispatch rereads the current task and project, checks admission, and fences the assignment generation; a worker grant also checks task content against its pin ([product_service.py](/private/tmp/otto-audit-tree/src/otto/hostctl/product_service.py:527), [line 744](/private/tmp/otto-audit-tree/src/otto/hostctl/product_service.py:744)).
+- Assessment coverage requires a current parent ref, while finding scopes by parent identity. Landing supplies a freshly read task ref and checks pinned task content ([assessment.py](/private/tmp/otto-audit-tree/src/otto/portfolio/assessment.py:127), [fleet_landing.py](/private/tmp/otto-audit-tree/src/otto/hostctl/fleet_landing.py:174)).
+- Adopted resource revisions and evidence responsibility refs remain exact because they identify the instruction or attempt being proved ([resource_sync.py](/private/tmp/otto-audit-tree/src/otto/portfolio/resource_sync.py:394), [line 586](/private/tmp/otto-audit-tree/src/otto/portfolio/resource_sync.py:586)).
+- Project view routing uses authority/kind/ID while its fixed binding retains assignment generation and workspace ([project_services.py](/private/tmp/otto-audit-tree/src/otto/portfolio/project_services.py:12)). Queue base revisions and completion’s *current-write* revision checks are valid concurrency fences; the completion finding is in how its caller bridges an earlier accepted review.
+
+## Not checked
+
+No tests or staging run were performed, as required. The findings are source-traced scenarios, not observed runtime failures. I did not establish a legitimate mutable review-record workflow; finding 2 uses the owner lane’s currently accepted local-ref input and its missing exact-revision check.

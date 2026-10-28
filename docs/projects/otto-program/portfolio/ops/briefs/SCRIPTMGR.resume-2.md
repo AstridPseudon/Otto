@@ -1,0 +1,11 @@
+Resume the existing SCRIPTMGR lab at `${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SCRIPTMGR` on its current branch. Preserve the existing implementation and continue from the culprit evidence in `${TRANSFER_ROOT}/portfolio/ops/integ/culprit-SCRIPTMGR.md`.
+
+**New integration failure:** On canon/main `3d91a35` after the six round-2 landings, `tests/test_perch.py::SeededFaultRunTests::test_each_seeded_fault_fails_its_assertion_kind` no longer catches the seeded `staging-at-rest-clean` fault: every assertion reports pass (test line 2330). See `${TRANSFER_ROOT}/portfolio/ops/integ/runs-head/test_perch.py.txt` and `${TRANSFER_ROOT}/portfolio/ops/integ/bisect-r2-perch.log`. Reproduce on your rebased lab, fix the harness so this seeded fault fails its own assertion kind, and retain all existing assertions. Do not add time limits or weaken the test.
+
+**Outcome and invariant:** Keep the scripted stage-2 manager journey through the installed client; completion and recovery must happen through the owner's own manager path. Do not restore a direct product completion call from the stand-in.
+
+**Files you own:** retain the file ownership list in `${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SCRIPTMGR/.brief.md` and the original task brief. Add any directly required caller or test files only when needed for this outcome; report each with its reason.
+
+**Do not touch:** no other workers are active at this wake. Do not touch `SESSIONFD`-owned files listed in the original brief, `LANDBATCH`-owned files, `production/`, Stores, `~/.otto`, `~/.codex`, or anything outside the lab. Do not change unrelated timer or scan behavior from the earlier D19 review.
+
+**Check:** demonstrate the seeded-fault regression fails on rebased canon before the fix, then run the task's own focused checks without weakening assertions. Do not run staging-owner tests in the worker sandbox; the outside gate runs those. Preserve the original `Check command:` from the lab brief: `/opt/homebrew/bin/python3.11 -m pytest -q -p no:cacheprovider tests/test_perch.py tests/test_worker_custody.py`. Keep long tests running to completion; never stop at a time window. Follow the Codex XHARD rules from `${TRANSFER_ROOT}/portfolio/ops/brief-template.md`; the launcher commits on exit.

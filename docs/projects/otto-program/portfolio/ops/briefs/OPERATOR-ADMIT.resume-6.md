@@ -1,0 +1,5 @@
+OPERATOR-ADMIT is the task being resumed. The Orchestrator's 2026-10-17T04:41Z direction supersedes the earlier wait for A6: `src/otto/hostctl/portfolio.py` is yours now; A6 will rebase onto your changes. Make `save_parser()`'s `--actor` optional and forward it only when given, so the bound CLI defaults it. Run these four test files separately, each alone: `tests/test_owner_lane.py`, `tests/test_admit.py`, `tests/test_operator_admission.py`, and `tests/test_perch_stage1.py`.
+
+Do not touch files owned by the running STAGESETUP worker: `src/otto/hostctl/config.py`, `src/otto/hostctl/register.py`, `src/otto/hostctl/cli.py`, `ops/bootstrap/staging.sh`, `tests/test_hostctl_cli.py`, `tests/test_hostctl_bundle.py`, and `tests/test_staging_startup.py`. The required `src/otto/hostctl/portfolio.py` change is disjoint from those files.
+
+On Codex, do not commit; leave the changes for `run-task.sh` to commit. Run tests in the foreground to completion with a long timeout. Never run `ottoctl` or pass it `--help`; never use git stash or check out another commit. Any sub-agent must be started with `spawn_agent` and `model: "gpt-6-luna"`.

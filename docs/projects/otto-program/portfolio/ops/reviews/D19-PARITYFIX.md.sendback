@@ -1,0 +1,8 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_evidence_lifecycle.py
+
+Decision: SEND BACK
+
+- `tests/test_evidence_lifecycle.py`: Relocated paths, a pack-only revision, comment invariance and cleanup checks fit the row (`projects/program/tasklist.md:172`; `tests/test_evidence_lifecycle.py:433`, `:459`, `:487`, `:495`). However, exact independently recorded inventory-identity equality becomes a hex-format check and comparisons between product outputs (`tests/test_evidence_lifecycle.py:449`, `:450`, `:463`). An incorrect identity hashing only the root would pass these assertions while violating inventory parity (`src/herzchen/packs/authoring.py:684`, `:716`). The helper also replaces immutable fixture bytes with the live production pack (`tests/test_evidence_lifecycle.py:116`), contrary to the row’s independence requirement. No production behavior changed to justify weakening the oracle.
+
+Restore:
+Restore the original immutable fixture pack bytes separately from production and copy those bytes into temporary checkouts in both the helper and recorder. Remove copying of live `authoring.py`; use its location hint. Preserve the original fixture manifest/tree digests and independently record the pack-only revision. Replace `inventory_identity_scope` with a canonical inventory preimage template verified against pinned Astrid at two roots; substitute each root and hash that recorded preimage independently. Include the resulting `source_inventory_identity` in the full expected-field equality assertions. Retain relocation, loader-comment invariance, failure cleanup and tamper-refusal coverage.

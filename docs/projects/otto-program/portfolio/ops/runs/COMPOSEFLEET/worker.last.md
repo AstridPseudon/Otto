@@ -1,0 +1,5 @@
+I stopped as the brief directs because the landing target conflicts with the code. [`otto.plan.lines`](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/src/otto/portfolio/plan_metadata.py:37) is a positive integer line count; [`LandingService`](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/src/herzchen/fleet/landing.py:35) requires a branch ref and fixes it for the service’s lifetime. An owner can also serve multiple projects, while one `LabFleet` fixes one repo.
+
+Should the landing line come from `otto.plan.branch` for the task’s `otto.plan.repo`? If projects can use different repos or branches, should “one fleet and landing service per owner” change to one per repo and line?
+
+The lab is clean at `812d06a`; the Luna agents made no retained changes. I did not run the check or staging perch, and there is no new commit.

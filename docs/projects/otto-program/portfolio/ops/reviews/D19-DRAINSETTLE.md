@@ -1,0 +1,5 @@
+# D19 decision (Astra for the orchestrator, 2026-10-17): tests/test_bounded_project_host.py
+
+Decision: LAND
+
+- `tests/test_bounded_project_host.py`: Replaces two “no response” assertions with a drain-held reply requiring `provider_called`, `effects_started`, and `retry` all false (`tests/test_bounded_project_host.py:334`), then requires that reply to remain unchanged after restart (`tests/test_bounded_project_host.py:355`). This follows the row’s requirement to answer queued, unstarted executions, implemented at `src/otto/portfolio/execution_host.py:941`. The response is independently read from disk (`tests/test_bounded_project_host.py:251`). Existing protections remain: recovered UNKNOWN capacity custody (`tests/test_bounded_project_host.py:345`), unchanged original gateway attempt (`tests/test_bounded_project_host.py:353`), exactly one native call (`tests/test_bounded_project_host.py:354`), and a retained, unattempted second Due (`tests/test_bounded_project_host.py:356`). Missing or incorrect replies, replay, lost custody, or discarded preparation would still fail. No timer or product-method patch is introduced.

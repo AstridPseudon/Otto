@@ -1,0 +1,3 @@
+Stage 0 failed during installation: the captured log says `install` requires `--operator`, and the staging startup call omitted it. STAGESETUP has since added a distinct staging operator in its owned [staging.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/OPERATOR-ADMIT/ops/bootstrap/staging.sh). I did not edit that file or change the existing `save_parser` behavior.
+
+The OPERATOR-ADMIT focused check passed (**34 passed, 1 skipped**), as did `tests/test_perch_stage1.py` (**19 passed, 20 subtests**). Startup still needs verification by the landing gate after the STAGESETUP edit is committed. The working tree shows only STAGESETUP’s uncommitted `staging.sh` edit; I made no commit.

@@ -1,0 +1,5 @@
+The owner now builds the presence prompt from the validated task ID and the first 12 characters of the revision. [LocalAuthenticationProver](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/OPERATOR-ADMIT/src/otto/hostctl/presence.py) passes that reason to Swift through an environment variable, replacing the generic prompt. A dedicated test confirms the injected prover receives it.
+
+The brief’s exact focused check passed: **32 passed, 1 skipped**. The earlier real-Mac acceptance-7 probe left Store bytes unchanged, but LocalAuthentication reported unavailable before showing a prompt; prompt and timeout behavior could not be verified on this machine.
+
+I resolved the `hostctl/cli.py` conflict in the working tree, but could not stage it: Git’s worktree index is outside the writable sandbox. The launcher must stage the files and finish the interrupted rebase. **No commit was made.**

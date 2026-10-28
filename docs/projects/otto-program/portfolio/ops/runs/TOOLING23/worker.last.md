@@ -1,0 +1,5 @@
+Implemented in the lab. Each landing now sets and cleans up a private short `TMPDIR`; the orphan census checks only homes under that root. Staging test roots inherit `TMPDIR`, and gate coverage checks own-root refusal and unrelated-root ignore.
+
+Both regression cases failed against `canon/main`; the focused gate suite passed: **50 passed**. `git diff --check` passed. I did not run the staging-owner tests, as instructed.
+
+Changed files: [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING23/ops/bootstrap/land.sh), [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING23/tests/test_bootstrap_gate.py), [test_staging_startup.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING23/tests/test_staging_startup.py), and [test_perch_staging.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/TOOLING23/tests/test_perch_staging.py). No other files changed.

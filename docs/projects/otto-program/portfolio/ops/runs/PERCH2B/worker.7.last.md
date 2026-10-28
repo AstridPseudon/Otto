@@ -1,0 +1,7 @@
+The gate failure came from admission advancing task A to rev-2 while the activated manager still held a rev-1 task pin. That stale pin blocked owner dispatch.
+
+I updated the [stage-2 owner bootstrap](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/bootstrap/perch_stage2_owner.py) to create a new manager mandate for the admitted revision and rebind the **unstarted** manager Due through its versioned port. Product readiness then validates the retained occurrence. Admissions for B and C leave the manager’s A pin alone. This bootstrap file is the one additional file edited because the repair belongs in the staging owner wrapper. The real operator admission route, distinct stored review document, and fake-only presence stub remain in place.
+
+Focused checks passed: 38 harness tests, 11 product composition tests, and `git diff --check`. The new tests show a stale task revision and an already-started manager going red; the normal rebind passes product readiness and a fixture manager start. I did **not** run `perch.sh` or the prohibited staging tests in the sandbox.
+
+Changes are uncommitted on `lab/PERCH2B` (HEAD `ac732d2`) for the launcher. The full stage-2 result remains gate-dependent; the last refused [report](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/PERCH2B/ops/perch/2/20261017T075816Z/report.md) predates this fix. `home/run/operator-admission.jsonl` remains restart-persistent and allowed at rest. Its long-term location is a product decision.

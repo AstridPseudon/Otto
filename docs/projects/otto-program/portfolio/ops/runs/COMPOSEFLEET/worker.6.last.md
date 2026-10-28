@@ -1,0 +1,5 @@
+All eight landing selectors now pass: **8 passed in 13.77s**.
+
+I updated only the three authorized fixtures: [bounded host](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/tests/test_bounded_project_host.py), [worker occurrences](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/src/otto/portfolio/tests/test_worker_occurrences.py), and [worker custody](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/COMPOSEFLEET/tests/test_worker_custody.py). Their synthetic services now supply task labs; retained workers resolve the lab from their Due record. The worker lab provider guard remains in place, and no assertions changed. The seventh selector passes on the rebased canon import without a test setup change.
+
+The row check ran to completion locally: **41 passed, 10 failed, 4 skipped**. Its failures report `sandbox-exec` or `ps` permission errors, so it needs the gate’s sandbox to pass here. `git diff --check` passes. Luna agents made and tested the fixture changes. Changes remain uncommitted on `41688b9`; no perch run was made.

@@ -1,0 +1,7 @@
+**SAVEFIX is incomplete** because the listed file boundary prevents wiring the required outcomes. First saves still use separate create and apply calls in `herzchen_binding.py`; invalid-file refusals are shaped in `intake.py`; and `otto show` drops criteria from its project output. I reverted my edits to `herzchen_binding.py`.
+
+I added Herzchen support for transactional create-and-apply, cycle checks that include retained tasks, `null` removal of metadata keys, criteria in the authored sheet view, and batch mappings in event effects. The save parser now names unsupported project and task fields. I added regression coverage for malformed first saves, retained-task cycles, and saved criteria.
+
+`py_compile` and `git diff --check` pass. The test run stops at Unix socket creation with `PermissionError: Operation not permitted`, so I could not verify green tests or run the required red-on-`canon/main` check. The history removal also conflicts with the existing assertion at [test_revisions.py:137](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/SAVEFIX/tests/test_revisions.py:137), which expects `batch_history` on the project payload; I left that assertion unchanged.
+
+May I include `src/otto/portfolio/herzchen_binding.py` and `src/otto/portfolio/intake.py` to finish the wiring and refusal/show responses?

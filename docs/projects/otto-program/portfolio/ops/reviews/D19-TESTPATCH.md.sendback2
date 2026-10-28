@@ -1,0 +1,15 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_ask_socket_wait.py, tests/test_fleet_custody.py, tests/test_hostctl_serve.py
+
+Decision: SEND BACK
+
+- `tests/test_ask_socket_wait.py`: The invented cursor expectation becomes real filtered continuation, checking the exact new report, exclusion of the earlier report, and no replay (`tests/test_ask_socket_wait.py:128`, `tests/test_ask_socket_wait.py:135`, `tests/test_ask_socket_wait.py:137`). Real foreign-principal refusal is checked at `tests/test_ask_socket_wait.py:140`. These changes follow the row and satisfy the prior restore.
+
+- `tests/test_fleet_custody.py`: Exact owner refs appropriately replace object identity (`tests/test_fleet_custody.py:277`); the second real lab and `two.txt` exclusion are restored (`tests/test_fleet_custody.py:425`, `tests/test_fleet_custody.py:449`). However, the fixed admitted-revision expectation now compares against `record.admitted_revision` (`tests/test_fleet_custody.py:280`). Dispatcher and registry compute both values through the same `admitted_revision` helper (`src/herzchen/fleet/dispatch.py:266`, `src/otto/hostctl/product_service.py:697`), so a shared wrong result passes. Also, the facade requests omit the former foreign lab/task arguments (`tests/test_fleet_custody.py:435`, `tests/test_fleet_custody.py:438`), losing the attempted-redirection check. Neither weakening is required by the row.
+
+- `tests/test_hostctl_serve.py`: The canary now uses a real historical task revision with matching content (`tests/test_hostctl_serve.py:160`), checks missing-scope refusal and retained pins (`tests/test_hostctl_serve.py:214`), and restores independent exact task/criterion expectations (`tests/test_hostctl_serve.py:267`, `tests/test_hostctl_serve.py:279`, `tests/test_hostctl_serve.py:287`). Freshness, default mode and unknown-alias checks remain. Staged task refs enter validation before trusted state is committed (`src/otto/hostctl/serve.py:365`, `src/otto/hostctl/serve.py:372`). These changes follow the row and satisfy the prior restore.
+
+Restore:
+
+In `tests/test_fleet_custody.py`, capture `task.ref.revision` immediately before creating the admission stamp at line 214. Return that independent expected revision from the fixture and compare `first["admitted_revision"]` against it instead of the dispatcher’s computed value.
+
+Before the successful facade calls, send `check` and `done` requests containing `lab_name` and `task_id` for the second real task. Assert `ok` is false and `error` is `bad_args`, as required by the real schema (`src/herzchen/fleet/tools/facade.py:224`), and that the line remains at `base`. Retain the subsequent successful calls and both artifact-isolation assertions.

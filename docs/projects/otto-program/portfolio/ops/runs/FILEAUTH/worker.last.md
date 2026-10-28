@@ -1,0 +1,5 @@
+Implemented FILEAUTH in the lab and left it uncommitted. Launched managers no longer receive the shared IPC write root or `OTTO_MANAGER_IPC`; their commands use the authenticated socket. `command-status` now checks the caller’s exact principal, assignment, generation, and project. Owner-retained file starts, callbacks, and recovery remain in place.
+
+The added tests cover cross-project retained starts, owner start/replay, socket receipt scope, and launched-client routing. The direct `respond-help` expectation was updated because launched clients no longer have a file transport.
+
+**Verification:** 25 passed with the sandbox-dependent cases excluded; 21 additional focused checks passed. The required full check had 4 failures, all because this runner denies `sandbox-exec` with `sandbox_apply: Operation not permitted`. That also prevented observing the requested real-fence red/green result: the test stops at preflight before its write probe. It remains intact for a macOS runner that permits `sandbox-exec`.

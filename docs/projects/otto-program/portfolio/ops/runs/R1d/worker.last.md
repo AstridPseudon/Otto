@@ -1,0 +1,3 @@
+**The brief conflicts with the lab contents, so I stopped before editing.** The Runtime request is built and submitted in [astrid/sdk/invocation.py](${ORIGINAL_HOME}/Developer/astrid-video/astrid-local/Astrid/astrid/sdk/invocation.py:2151), which is outside `labs/R1d`. This lab contains [capacity.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/R1d/src/herzchen/fleet/capacity.py), but no Astrid Runtime client.
+
+No files changed, no tests ran, and I started no sub-agent. There is no commit or retired path to report. Please provide a lab that includes the Astrid client, or revise the permitted scope.

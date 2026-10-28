@@ -1,0 +1,9 @@
+# D19 decision: BOOTLAND, tests/test_bootstrap_gate.py (Astra for the orchestrator, 2026-10-17)
+
+**Decision: SEND BACK.**
+
+- `tests/test_bootstrap_gate.py`: The reviewed diff adds 193 lines but changes no existing assertions. Lines 146 and 406 still require `land.lock` to disappear; the worker explicitly deferred their replacement (`ops/runs/BOOTLAND/worker.last.md:5`). Replacing disappearance with independent lock reacquisition matches the row’s crash-released exclusion requirement (`projects/program/tasklist.md:151`) and the persistent lock implementation (`ops/bootstrap/land.sh:30–42`). However, that replacement is absent, and the new crash tests add 600-second sleeps (`tests/test_bootstrap_gate.py:267`, `:314`), violating the stated no-timer rule. Preserve the live-exclusion and subsequent-success assertions at `:323–329`: they detect missing exclusion and failed recovery.
+
+The specified `ops/runs/BOOTLAND/land.out` is missing; the file named above comes from the diff and worker report, not a verified gate line.
+
+Restore: Replace only the two obsolete disappearance assertions with checks that the persistent lock is a regular file and can be independently acquired using nonblocking exclusive `fcntl.lockf`, then released. Preserve the existing publication, cleanup, signal-result and unchanged-main assertions. Replace the two newly added sleeps with deterministic pipe/FIFO synchronization, retaining readiness signaling and crash/recovery assertions. Present the resulting assertion diff and gate output for review.

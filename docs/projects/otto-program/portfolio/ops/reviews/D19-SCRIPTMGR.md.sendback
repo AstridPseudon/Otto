@@ -1,0 +1,8 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_perch.py
+
+Decision: SEND BACK
+
+- `tests/test_perch.py`: Replacing completion-hook assertions with installed-client review/recovery checks matches the row (`tests/test_perch.py:1906`, `tests/test_perch.py:1964`); falsified-evidence cases strengthen manager ownership, citations and recovery (`tests/test_perch.py:1056`, `tests/test_perch.py:1077`). However, insertion of the new tests accidentally moved the missing-landing mutation and assertion into the recovery test (`tests/test_perch.py:1084`). It therefore no longer runs with the final status snapshot absent, as the original test required (`tests/test_perch.py:1048`). A regression suppressing Store-event diagnostics after reporting missing final status could now pass. This weakens an existing check unrelated to the requested behaviour. The timer correction satisfies the binding ruling: commands have no timeout, and waits retain polling without deadlines (`ops/bootstrap/perch_fake_claude.py:106`, `ops/bootstrap/perch_fake_claude.py:181`, `ops/bootstrap/perch.sh:598`; `ops/requests.md:1612`).
+
+Restore:
+Move the five-line mutation, recomputation and assertion block at `tests/test_perch.py:1084` back into `test_stage_two_missing_final_status_keeps_store_completion_observations`, immediately after its current last assertion at line 1054. It must use the same fixture whose final status snapshot was deleted at line 1050. Preserve the new recovery assertions, installed-client checks and timer removal. Keep the patch-scan scope unchanged.

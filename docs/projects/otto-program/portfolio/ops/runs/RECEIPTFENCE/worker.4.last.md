@@ -1,0 +1,3 @@
+Applied the exact r4 Restore in [test_manager_reentrant_ipc.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/RECEIPTFENCE/tests/test_manager_reentrant_ipc.py:143): the pending marker is now read directly with `json.loads(...read_text())`, so a missing claim fails immediately. All six marker assertions and other protections remain unchanged. No other file changed.
+
+The focused receipt check passed (5 tests, 2 subtests); the manager IPC suite passed (8 tests); `git diff --check` passed. A Luna agent ran the checks, and I accepted its result without correction. The lab is uncommitted for the launcher.

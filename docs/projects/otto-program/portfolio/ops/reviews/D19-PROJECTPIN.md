@@ -1,0 +1,8 @@
+# D19 decision: PROJECTPIN, tests/test_manager_service_continuation.py, tests/test_operating_setup_pin_content.py, tests/test_fresh_worker_admission.py (the orchestrator, 17 Oct 2026)
+
+**Decision: LAND.** No Opus call was made.
+
+- `tests/test_manager_service_continuation.py`: the old test asserted the defect itself. After a lifecycle-only project change (set ACTIVE, the project revision moves), `start` failed with "project does not match the pinned canonical reference" and needed `recover` to re-pin. The row makes the operating setup bind the project by its authored content (`owner_readers.py` `_project_setup_content`: protocol, resources, criteria, custom, fields, task identities, metadata, documents; task revision pointers are roster links, not content), so a lifecycle-only change no longer blocks `start`. The test now starts directly and still asserts the due's pinned project ref moves to the new revision. The intent is unchanged: the setup follows the project's current revision when its content is unchanged.
+- `tests/test_operating_setup_pin_content.py` (new): activate, edit a task, launch another admitted task; a change to the setup's content is refused naming the field and `operating-setup activate`.
+- `tests/test_fresh_worker_admission.py`: new cases for the assignment and mandate pins (ordinary starts and dispatches don't move their revisions).
+- Evidence on the real flow: stage 2 on a throwaway merge with PERCH2C (ea61276, orchestrator run 19:09Z): after C's instruction edit (project rev-5 → rev-6), the owner dispatched A and A's fake worker ran, where before PROJECTPIN every start failed at the operating setup. The run failed later for a harness reason (PERCH2C's manager marker dirtied the canary line), not this row's.

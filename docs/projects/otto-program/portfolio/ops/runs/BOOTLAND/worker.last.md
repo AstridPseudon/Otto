@@ -1,0 +1,7 @@
+The BOOTLAND changes are in the lab, uncommitted. [land.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/BOOTLAND/ops/bootstrap/land.sh) now locks before lab checks, retains `TESTED_SHA`, merges that exact commit, and reconciles the remote after a push error or crash. [otto-lab.sh](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/BOOTLAND/ops/bootstrap/otto-lab.sh) can repeat cleanup and deletes a branch only when it matches the published merge’s checked parent. The disposable repository regressions in [test_bootstrap_gate.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/BOOTLAND/tests/test_bootstrap_gate.py) are red on canon/main and green in the lab.
+
+I made two safety additions beyond the design: later labs are refused if they descend from a recorded rejected merge, and remote main must equal `BASE` before merging. The Python lock wrapper owns the lock while Bash runs, so test children cannot keep it held after the gate dies.
+
+**D19 decision needed:** The last exact check finished **59 passed, 2 failed**. Both failures are the existing assertions in `tests/test_bootstrap_gate.py` that require `land.lock` to disappear. The BOOTLAND design requires written D19 approval before replacing them with lock reacquisition assertions. I left those assertions unchanged. The subsequently added remote-behind regression passed its focused lab check; syntax and whitespace checks are clean.
+
+Please approve or decline that specific D19 assertion change. No commit or push was made.

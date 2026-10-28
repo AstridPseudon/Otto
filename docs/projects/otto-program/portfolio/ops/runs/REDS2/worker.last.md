@@ -1,0 +1,5 @@
+I stopped at a contradiction in `tests/test_project_folder_scale.py`, as the brief instructs. Its fixture configures a 256 MiB request limit, but the tests expect a 21 KiB aggregate to use bounded requests, a 16.3 KiB single document to be rejected, and 25 KiB documents to import successfully under that same configuration. The production code currently treats the configured limit as applying to both the aggregate and each child request.
+
+Which behavior should production preserve for the configured 256 MiB owner lane? In particular, what should allow a 25 KiB document while rejecting a 16.3 KiB one?
+
+I reverted my exploratory edit; the lab is clean at `5f8a728`. The canon baseline sweep completed, but also showed sandbox process-launch failures and file-descriptor exhaustion, so its other failures need the gate’s BASE comparison. `otto-heavy` was unavailable, so I used the checkout’s lease runner.

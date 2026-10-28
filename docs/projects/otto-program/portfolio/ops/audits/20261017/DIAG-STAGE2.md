@@ -1,0 +1,25 @@
+## 1. Findings
+
+**1. B’s start rejects A’s valid completion; C never reaches its second admission — product, xhard.**
+
+- **A:** The Store records A’s dispatch at 19:26:41.779Z (event 54), landing result at 19:26:48.462Z (event 71), and accepted completion at 19:26:49.939Z (event 80). The completion receipt is committed against A `rev-2`, producing completed `rev-3`. A did settle.
+- **B:** The Store records B’s dispatch at 19:26:51.242Z (event 96), but [the retained owner response](/private/tmp/stm/home/shared-host/response-863ae867fc1db9307317d36050a1d1057d471911e49adb74665bf25fec61b985.json:1) says `outcome: partial`, `effects_started: false`, `provider_called: false`, and `OwnerRoleRuntimeError: settled readiness lacks exact delivered completion predecessor` for role `manager`. The manager occurrence targets A `rev-1`; A’s committed completion names `rev-2`. At **`c81c9a6:src/otto/portfolio/owner_readers.py:170,188,192,200`**, the readiness guard requires the completion and receipt target to equal the occurrence’s `rev-1` reference. Those two comparisons necessarily fail here. The harness’s completion hook deliberately reads the current task revision at **`ops/bootstrap/perch_stage2_owner.py:54-70`**. **Inference:** the later historical-setup guard at **`src/otto/portfolio/owner_bootstrap.py:1249-1258`** may need the same revision treatment; this run stopped at the earlier guard.
+- **C:** The first admission is logged at [operator-admission.jsonl:1](/private/tmp/stm/home/run/operator-admission.jsonl:1). The harness then edits C, creating `rev-3` without a current admission. Its intended second admission occurs only after the capacity turn (**`ops/bootstrap/perch.sh:437-454`**). That turn waits for B’s fake-worker marker (**`:388-412`**); [stage2-setup-errors.txt:1](/private/tmp/claude-501/-Users-hannahomalley/b7b4b79f-1b09-4eac-81c2-b56066d5593f/scratchpad/stage2/2/20261017T192629Z/raw/stage2-setup-errors.txt:1) says `owner never started the worker-B fake turn`. C also depends on B (**`ops/bootstrap/canary/project.json:69-72`**). Its non-dispatch is the harness’s intended gate following B’s product failure, with no separate C fix.
+
+This stops the scenario at **`perch.sh:777-792`**, which records “admitted tasks did not dispatch and settle”; the later checks skip. In real use, an admission metadata revision can strand subsequent work after a valid completion. **Fix row:** accept the exact committed completion predecessor when its revision differs from the delivered task pin only by a verified, content-equivalent transition. Update `owner_readers.py` and the corresponding historical-setup proof in `owner_bootstrap.py`, retaining the receipt, assignment, manager, native-turn and digest checks. **Acceptance check that fails now:** prepare a manager occurrence for A `rev-1`, admit A to `rev-2`, complete A from accepted evidence, then start B; B must reach its provider. A changed instruction or a foreign completion must still be refused. **Route: xhard.** A plausible bad fix is to compare task identity alone, letting completion of changed instructions satisfy an older delivered brief.
+
+**2. The report falsely says A lacks completed product status — harness, normal.**
+
+[report.md:15](/private/tmp/claude-501/-Users-hannahomalley/b7b4b79f-1b09-4eac-81c2-b56066d5593f/scratchpad/stage2/2/20261017T192629Z/report.md:15) says A has no landed and completed status, despite Store event 80 and A’s current `lifecycle: completed`. **`c81c9a6:ops/bootstrap/perch_report.py:1375-1392`** treats a missing `stage2-dispatch-status.json` as an empty status; **`perch.sh:784-787`** writes that snapshot only after the scenario succeeds. This did not stop the run, but it misdirects diagnosis. **Fix row:** report “final status snapshot unavailable” when absent, while retaining the Store’s A completion observation; change `perch_report.py`. **Acceptance check that fails now:** abort after A completes but before final status capture; the report must name the unavailable snapshot without claiming A is incomplete. **Route: normal.**
+
+## 2. Checked and sound
+
+- The one-worker capacity setting reached the owner: [staging.log:30](/private/tmp/stm/run/staging.log:30) records `turn_units: 1` and `worker_units: 1`.
+- A’s accepted completion has a committed receipt, verified evidence and no assessment blockers (Store event 80).
+- C’s edited revision was not readmitted or dispatched before the failed capacity turn. No evidence shows a capacity refusal for C.
+- The owner shut down cleanly ([staging.log:61](/private/tmp/stm/run/staging.log:61)); the task-specific error is in the retained response, not `staging.log`.
+
+## 3. Not checked
+
+- The later kill, descriptor and recovery checks: the scenario stopped before reaching them.
+- A rerun or tests: the brief required read-only inspection and prohibited tests.

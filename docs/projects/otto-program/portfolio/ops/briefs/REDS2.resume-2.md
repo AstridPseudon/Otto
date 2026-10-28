@@ -1,0 +1,7 @@
+Resume the existing REDS2 rebase and finish this task. The orchestrator's 05:32Z decision is explicit in the previous resume brief and `ops/requests.md`: production behavior stays unchanged; the scale subclass must exclude the two inherited live-bound proofs by assigning each to `None`, with the existing explanatory comment. The scale tests and release proof checks already passed twice/once as recorded in `worker.4.last.md`.
+
+Your last report says conflict markers are cleared in four portfolio files, but Git still reports them `UU` because they were not formally staged. Inspect and resolve the current rebase state, preserving both canon and REDS2 behavior. Do not alter `manager_journey_service.py` unless required to resolve the existing conflict, and do not lose its combined canon/REDS2 behavior. Ensure the two added test overrides remain. Finish the rebase/launcher handoff without committing yourself.
+
+Do not touch files owned by running STAGESETUP: `src/otto/hostctl/cli.py`, `tests/test_hostctl_cli.py`, config/register, staging bootstrap, or related tests. A6 has exited and its landing is active; avoid A6-owned changes if not required for the existing rebase.
+
+Run `git diff --check`; verify no conflict markers remain and report the final status plus checks already completed. Do not rerun broad unrelated tests. The launcher's Check command will be narrowed to this task's own test files before landing.

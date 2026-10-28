@@ -1,0 +1,8 @@
+# D19 decision (Astra for the orchestrator, 2026-10-18): tests/test_fleet_custody.py
+
+Decision: SEND BACK
+
+- `tests/test_fleet_custody.py`: No existing assertion expression changed; the removed assert-bearing lines contain the fixture member `assert_assessment_policy_current`. Updated occurrence/Due fixtures and filesystem fault injection preserve the cleanup/retry assertions (`tests/test_fleet_custody.py:471–489`). New assertions protect uncaptured B’s HEAD and bytes until capture (`tests/test_fleet_custody.py:642–649`), matching the row’s intended behavior and locked validation (`src/herzchen/fleet/labs.py:446–476`). These checks would fail if B were prematurely removed. However, five new ten-second deadlines (`tests/test_fleet_custody.py:586`, `:627`, `:639`, `:746`, `:752`) violate `PLAN.md:486`: “no time limits (only a hang fails, judged at the run level).”
+
+Restore:
+In `tests/test_fleet_custody.py`, use unconditional `b_landed.wait()` at line 586 and `start_writer.wait()` at line 627; remove the timeout failure branch at line 628. Use `thread.join()` at lines 639 and 752. Replace `acquired_in_time = acquired.wait(timeout=10)` with `acquired.wait()` at line 746 and remove its deadline assertion at line 748. Remove the now-redundant post-join liveness assertions at lines 640 and 753. Preserve `release.set()` in `finally`, worker-error checks, and all occurrence, custody, HEAD, content, recovery, dirty-work and retained-ref assertions.

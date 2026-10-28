@@ -1,0 +1,196 @@
+{
+ "run_id": "otto-program",
+ "portfolio": "otto-program",
+ "project": "PROGRAM",
+ "control_root": "${TRANSFER_ROOT}/portfolio/projects/program",
+ "mode": "setup_not_activated",
+ "profile": "claude",
+ "profile_note": "Captain: Claude (14 Oct). Normal tasks Haiku high; XHARD a Sonnet high lead delegating execution to Haiku sub-agents (15 Oct, evening). Opus budget 15 calls (the user, 15 Oct): 9 stage reviews on the staging Otto, 1 final review, 5 reserve (re-reviews, D19 decisions, second failures). Plus 5 Astra calls (the user, 15 Oct, late): gpt-6-astra through Codex with Luna helpers, at ASTRA0-ASTRA4 (PLAN.md §16). Every premium call goes through ops/launch_review.sh. No per-task reviews; acceptance is each task's check plus the landing gate (PLAN.md D19). During the bootstrap Claude coordinates separate claude -p sessions in labs (RUNBOOK).",
+ "roles": {
+  "coordinator": {
+   "model": "claude-haiku-5-5",
+   "reasoning": "high",
+   "note": "The project's manager (the user, 15 Oct: Haiku high). In the bootstrap it runs as a separate claude -p session by ops/manager-bootstrap-brief.md."
+  },
+  "worker_normal": {
+   "model": "claude-haiku-5-5",
+   "reasoning": "high"
+  },
+  "worker_xhard": {
+   "model": "claude-sonnet-5-5",
+   "reasoning": "high",
+   "note": "Sonnet lead; almost all execution delegated to the haiku-worker sub-agent (Haiku 5.5 high), after the 15 Oct POOL rerun (PLAN.md §16)."
+  },
+  "reviewer_normal": {
+   "model": "claude-sonnet-5-5",
+   "reasoning": "high",
+   "note": "acceptance is the task's check; no routine normal review"
+  },
+  "reviewer_xhard": {
+   "model": "claude-opus-5-5",
+   "reasoning": "high",
+   "note": "no per-task reviews; Opus examines stages (review_stages)"
+  },
+  "oracle": {
+   "model": "claude-opus-5-5",
+   "reasoning": "high",
+   "note": "Opus is the oracle. Its decisions come from the 5-call reserve of the 15-call Opus budget: D19 decisions on changed test expectations, second failures, contested findings, and re-reviews of failed stages."
+  },
+  "final_reviewer": {
+   "model": "claude-opus-5-5",
+   "reasoning": "high",
+   "note": "Fresh Opus sessions with Haiku helpers (haiku-worker): one review per stage of PLAN.md §16, and the final review of edition 1."
+  }
+ },
+ "oracle": {
+  "max_calls": 5
+ },
+ "review_stages": [
+  {
+   "id": "STAGE0",
+   "status": "proposed",
+   "trigger": "STAGE and PERCH landed (with POOL, HOSTKIT, GREEN)",
+   "scope": "Boots: an empty instance starts, stops, is killed and restarts; status truthful; nothing left over (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE1",
+   "status": "proposed",
+   "trigger": "A1, TYPE, A2 landed",
+   "scope": "Holds plans: the canary saved, edited and re-saved as typed records; nothing runs; a stale save refused (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE2",
+   "status": "proposed",
+   "trigger": "ADMIT, DISPATCH, CUSTODY landed",
+   "scope": "Dispatches: only admitted, ready tasks start in dependency order; the pool and manager reserve hold; a killed worker frees its slot without leaks (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE3",
+   "status": "proposed",
+   "trigger": "LAB, RUNNER, TOOLS, EVIDENCE landed",
+   "scope": "Works: real Haiku workers in their own labs; checks through the runner within heavy units; task/check/ask/done; evidence verifies (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE4",
+   "status": "proposed",
+   "trigger": "LAND landed; SKEL0 is the run",
+   "scope": "Lands: one landing per task, checked on the exact merged commit; labs deleted; nothing left over (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE5",
+   "status": "proposed",
+   "trigger": "MGR, ASK, REWORK, CHANGE, ACT, LANEFIX, LIVENESS landed",
+   "scope": "Manages: failure resumes the same session; manager wakes only for judgment; answers reach the asker; a second project activates while the first runs (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE6",
+   "status": "proposed",
+   "trigger": "A3, A4, RETIRE, A6, CONV landed",
+   "scope": "Dogfood: the program saved into staging; two real program tasks dispatched and landed by Otto (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE7",
+   "status": "proposed",
+   "trigger": "CUTOVER done",
+   "scope": "Switch-over: every upcoming project present by diff; clients on the new owner; the old paths unreferenced; disk freed (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "STAGE8",
+   "status": "proposed",
+   "trigger": "SKEL, MANY, R1d landed",
+   "scope": "Many: cold Claude and Codex journeys; sustainable concurrency; heavy seconds per accepted task; renders without deadlock (PLAN.md §16; perch report ops/perch/<stage>/)",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "FINAL",
+   "status": "proposed",
+   "trigger": "MANY done and STAGE8 reviewed (the end of edition 1, before PROGRAM#edition-1)",
+   "scope": "edition 1 against PLAN.md section 1, read with every stage perch report: the end state works, nothing leaks, every invariant in the XHARD column holds",
+   "reviewer": "final_reviewer",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "ASTRA0",
+   "status": "proposed",
+   "trigger": "before work resumes (RUNBOOK §0)",
+   "scope": "Can this be run as written: ambiguities a Haiku manager would hit, checks that pass while the outcome is wrong, rows inviting fleet code into src/otto, process to cut (PLAN.md §16)",
+   "reviewer": "astra",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "ASTRA1",
+   "status": "proposed",
+   "trigger": "with STAGE1 (A1, TYPE, A2 landed)",
+   "scope": "The model's shape: one source of truth per fact, the smallest schema for the end state, follow-ups and superseded projects without special cases, Store growth (PLAN.md §16)",
+   "reviewer": "astra",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "ASTRA2",
+   "status": "proposed",
+   "trigger": "with STAGE4 (SKEL0's run)",
+   "scope": "Layering and over-engineering: herzchen/fleet usable by a second product unchanged, two mechanisms for one purpose, what the skeleton doesn't need, the agent's journey (PLAN.md §16)",
+   "reviewer": "astra",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "ASTRA3",
+   "status": "proposed",
+   "trigger": "CUTOVER, before its delete step",
+   "scope": "What else depends on the old Store or its run folders beyond the saved projects; what would be regretted; is the rollback real until the delete (PLAN.md §16)",
+   "reviewer": "astra",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  },
+  {
+   "id": "ASTRA4",
+   "status": "proposed",
+   "trigger": "with STAGE8 and FINAL",
+   "scope": "A cold Codex journey on staging (--write), and the end state against PLAN.md section 1; what a third host would need (PLAN.md §16)",
+   "reviewer": "astra",
+   "max_calls": 1,
+   "repeat_allowance": 0
+  }
+ ],
+ "dependencies": [],
+ "external_prerequisites": [],
+ "review_note": "Opus budget: 15 calls = 9 stage reviews + 1 final + 5 reserve (oracle.max_calls). Re-reviews of a failed stage come from the reserve. Astra budget: 5 calls, all scheduled (ASTRA0-ASTRA4). Both counted in ops/STATUS.log by ops/launch_review.sh.",
+ "astra": {
+  "model": "gpt-6-astra",
+  "reasoning": "high",
+  "adapter": "codex",
+  "helpers": "gpt-6-luna",
+  "max_calls": 5,
+  "note": "A second model family (the user, 15 Oct, late). Opus judges whether it works; Astra judges the shape. Each runs alongside its stage's Opus review, independently. All five are scheduled; no reserve. Launched with ops/launch_review.sh ID astra."
+ }
+}

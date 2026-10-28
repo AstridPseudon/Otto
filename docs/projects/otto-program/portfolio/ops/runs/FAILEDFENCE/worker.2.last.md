@@ -1,0 +1,5 @@
+Fixed the NEW landing failure in [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/FAILEDFENCE/src/otto/portfolio/manager_journey_service.py:1599). Execution-control `read` now requests recovery status only for an active worker with a retained `failed` result. Ordinary reads no longer require that method. The existing failing test supplied the regression coverage, so I changed no tests.
+
+The test failed locally before the fix, then the full `test_manager_journey_service.py` passed (**21 passed, 19 skipped**). The required `test_capacity_holds.py` check passed (**15 passed**), and `git diff --check` passed. The BASE failures in `test_perch.py` and `test_review_input_contract.py` were left untouched.
+
+Only the service file is modified. The missing TRIAGE worker-turn value remains unresolved; `claude_adapter.py` was not changed. No commit or push was made.

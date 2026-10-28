@@ -1,0 +1,5 @@
+I could not complete the six-invariant gate because neither `PLAN.md` §17.2 nor the task row with the six claims and required observations is available in this lab. Please provide that section or a readable path so I can implement the checks without inventing their criteria.
+
+I left two uncommitted, fail-closed changes in [perch_report.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/INVARIANTS/ops/bootstrap/perch_report.py) and [test_perch.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/INVARIANTS/tests/test_perch.py): stage-2 checks no longer skip after setup failure, and a “ran” note alone cannot pass without owner and Store evidence. The focused stage-2 tests pass: **28 tests, 47 subtests**.
+
+I ran the requested full test command. It reports **69 passed and 15 failed**; the failures arise when this sandbox denies `ps`, including the process census used by fake journeys. The six per-step invariant checks remain outstanding.

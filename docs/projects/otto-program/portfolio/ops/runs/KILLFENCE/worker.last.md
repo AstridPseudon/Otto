@@ -1,0 +1,9 @@
+Implemented the recovery path in the lab and left it uncommitted. An explicit manager `execution-control recover` now uses the existing qualified worker release, records a durable disposition, preserves the original UNKNOWN attempt, and clears the fence through `restore_execution`. A retained fence blocks new workers in its own project while an unrelated project can activate. Shared session and workspace conflicts still apply.
+
+On canon, the new tests failed at the expected points: manager recovery returned `unknown`, and project B activation hit the global hold. After the changes, the requested focused command reports **15 passed**; two related caller tests also pass, and `git diff --check` is clean.
+
+The required direct caller edits were [manager_journey_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/KILLFENCE/src/otto/portfolio/manager_journey_service.py:1567) for the manager action and [project_service.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/KILLFENCE/src/otto/hostctl/project_service.py:63) for activation scoping. The main changes are in [execution_host.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/KILLFENCE/src/otto/portfolio/execution_host.py:413) and [project_services.py](${ORIGINAL_HOME}/Developer/otto-claude-host/labs/KILLFENCE/src/otto/portfolio/project_services.py:70).
+
+Luna agents handled the recovery wiring, real-owner test, and project-scope test. In review, I corrected initializer-release replay handling, preserved shared physical conflict checks, added run-ID alias handling and activation-queue coverage, and verified recovery replay writes no second disposition. The scope agent’s later follow-up failed; I completed that coverage myself.
+
+**Limit:** a bare SIGKILL without the existing exact terminal capacity-failure proof remains UNKNOWN and held. Process exit alone does not settle it. Stage 2 `--fake` with its post-kill assertion requires the orchestrator run; I did not start a staging Otto.
