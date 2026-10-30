@@ -20,6 +20,18 @@
 - [ ] Recovery: `--resume <exact file>` plus an identity check; the interrupted prompt; the worktree kept; a supervisor that dies while its child survives.
 - [ ] Stop vs cancel vs replace.
 
+## 2b. The harness boundary: oh-my-pi behind one interface (M2)
+All oh-my-pi-specific code lives in **one module**, `src/otto/runtime/harness/omp.py`. **Nothing else imports `omp-rpc` or knows omp's frames.** That keeps a different harness possible later, as an adapter rather than a rewrite.
+- [ ] **The interface**, with types and an example for each call:
+  - `start(launch)` → a session handle. `launch` holds the resolved model role or override, the config overlay, the skills, the instructions and the working directory;
+  - `prompt(handle, text, op_key)` → admitted, or refused;
+  - `events(handle)`: outcome (yield, error or abort), settled, sub-agent events;
+  - `resume(session_ref)` → a handle with its identity checked, or a failure;
+  - `stop(handle)`;
+  - `login_status()` → which providers are signed in (for `doctor`), never reading tokens.
+- [ ] **Which of omp's details leak through, deliberately:** the session file reference, the model-role names and the profile. Nothing else.
+- [ ] **One fake behind the same interface,** used by the acceptance tests (the fake RPC process in D3), plus the real omp adapter tested against the installed binary.
+
 ## 3. The CLI and launch (M1 registers the commands; owners supply the handlers)
 - [ ] Commands and arguments, the operation-key flag, and the `--json` fields for status, tasks, inbox and schedules.
 - [ ] Identity lookup (`--as`, then `OTTO_AGENT`, then `.otto/agent`) and the binding-id check.
