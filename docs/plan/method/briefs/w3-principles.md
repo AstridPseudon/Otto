@@ -1,0 +1,8 @@
+# Your task: draft document "Principles and runbook"
+**Do only this task. Ignore the `briefs/` folder and any other task descriptions in the workspace; they belong to other analysts.**
+
+## Inputs
+All lens reports `out/w2-*.md` (read all) and the chronological ledgers `out/w1-chunk-*.md`. Check raw sources (`data/`, `/home/user/repo/astrid-install/`) when a claim is load-bearing or the lenses disagree. Where lenses conflict, say so and resolve with evidence.
+
+Generalise the evidence into a **runbook for running orchestrator → manager → worker programs**. Organise by lifecycle stage: (1) intake and kickoff (questions to ask of a new project, exploration/probing, feasibility checks against other tools, codebase best-practice discovery), (2) planning (plan contents, decisions, Done-when), (3) second opinions and simplification (when, who, what to ask; over-engineering vs robustness), (4) task breakdown and difficulty/model assignment, (5) deploying a manager (brief contents, what to leave out), (6) supervision (cadence: hourly vs 15-minute for intense iteration; the check-in question list; intervention triggers with thresholds; handoff/replacement protocol; context hygiene), (7) verification (test classification, evidence rules), (8) delivery and owner communication, (9) closing (reviews, elegance pass, bigger-issues list, retrospective).
+For every principle: the rule, when it applies, why (evidence with timestamp), confidence (high/medium/low by how often it was tested), and a counter-indication (when NOT to apply it). Separate **core principles** (≤12, the ones that matter most) from **detailed practices**. Max ~4,500 words.

@@ -1,0 +1,11 @@
+# Tasks: delivery (copied from 14-plan.md §4; if they ever differ, raise it, see START-HERE.md)
+
+| ID | Task | Tier | Days | Depends on | Done when |
+|---|---|---|---:|---|---|
+| D1 | **omp install** for the Mac and Linux, using Astrid's recipe *pattern* with the latest pin, its hashes and Bun ≥1.4.4; **a login guide** (one profile, device code, paste-redirect, the broker optional; choosing models in `/model`) | Normal | 1.5 | S0 | Install smoke tests pass on a fresh Mac and a fresh Linux box |
+| D1b | **OS service units** (launchd, systemd) for `otto run`, and `doctor`-green | Normal | 0.5 | D1, C2, R1 | Both fresh machines reach `otto doctor` green and survive a reboot |
+| D2 | **Landing:** rebase → check that exact commit → refuse if the target moved → fast-forward only (the sequence from Otto's `landing.py`, without its assessments; **not** `tools/land.sh`); the task is marked done only after landing, and a restart reconciles the recorded commit against Git | X-hard | 3 | L0, C4 | A failed check, a conflict or a moving target leaves the target unchanged; a crash between landing and recording is reconciled correctly |
+| D3 | **Acceptance harness** (spec §B7):<br>• a tiny fake omp RPC process;<br>• crash hooks at the L0 crash points;<br>• a loopback scripted provider for the real omp binary;<br>• tests for §B6 1–11, the three invariants and three bridging tests;<br>• one credential-free CI job | X-hard | 3 | L0 (finishes after all mapped tasks) | All of §B6 is green in about 3–5 minutes, with no models used and no leaked processes. Also, **one credential-free journey test** passes, using the installed wheel and the pinned omp binary. It covers init, project import, manager dispatch, a specialist worker and a native helper, a spec amendment mid-work, a crash and replay during delivery, submission and checked landing, both advisor paths, and truthful status at every checkpoint (spec §B7) |
+| D4 | **Docs:** README, the pack format, the schema notes, **moving machines** (the state bundle and a restore) | Normal | 0.5 | P1, C1 | A cold reader can set it up and restore it on another machine |
+| D5 | **Pilot** (§6) | X-hard | 3 | All pre-pilot tasks | Every scenario's observable outcome is logged |
+| D6 | **Contingency:** pilot fixes and a re-run | — | 2 | D5 | The pilot re-runs clean |

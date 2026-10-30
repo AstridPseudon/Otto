@@ -1,0 +1,9 @@
+# Your task: draft document "Minimal structure for a platform"
+**Do only this task. Ignore the `briefs/` folder and any other task descriptions in the workspace; they belong to other analysts.**
+
+## Inputs
+All lens reports `out/w2-*.md` (read all) and the chronological ledgers `out/w1-chunk-*.md`. Check raw sources (`data/`, `/home/user/repo/astrid-install/`) when a claim is load-bearing or the lenses disagree. Where lenses conflict, say so and resolve with evidence.
+
+Design the **minimal structure** that would make the working practices automatic and prevent the observed failures, for a flexible platform where an orchestrator deploys and balances managers, which deploy workers, and results are merged. Ground every element in a specific observed need or failure (cite it); drop anything you can't ground.
+Cover: (a) **identities/roles** (orchestrator, manager, worker, reviewer, owner) with responsibilities, permissions and what each must never do; (b) **entities and their fields** (program, project, task with difficulty score and model tier, run, review, decision, escalation, check-in, handoff, evidence, cost); (c) **files or records** (show a concrete minimal schema, e.g. a task-list table header and a check-in record); (d) **loops and cadences** (check-in schedules and what triggers a faster cadence; what each check-in asks; intervention thresholds such as idle > N minutes, same failure twice, context > X tokens, stale snapshot > Y); (e) **a difficulty calculation** (inputs and formula, mapping to model tiers, escalation on failure); (f) **gates** (plan approved, Done-when approved, land, project done) and which are automatic vs owner decisions; (g) **v0 = files in a git repo plus a few scripts** (what exists today that to keep, what to delete) vs **v1 = platform features**. End with what NOT to build (things we tried that added overhead).
+Max ~4,000 words.

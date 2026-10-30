@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otto"
+version = "0.0.1"
+description = "A small tool that runs an organisation of AI agents on one machine"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+otto = "otto.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
