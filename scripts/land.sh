@@ -7,7 +7,10 @@ set -euo pipefail
 branch=${1:?usage: scripts/land.sh <branch> [target]}
 target=${2:-main}
 repo=$(git rev-parse --show-toplevel)
-git -C "$repo" fetch -q origin "$target" "$branch"
+# Explicit refspecs: in a single-branch or shallow clone, a plain "git fetch origin <name>"
+# does not update origin/<name>.
+fetch() { git fetch -q origin "+refs/heads/$1:refs/remotes/origin/$1"; }
+(cd "$repo" && fetch "$target" && fetch "$branch")
 base=$(git -C "$repo" rev-parse "origin/$target")
 wt=$(mktemp -d "${TMPDIR:-/tmp}/otto-land.XXXXXX")
 git -C "$repo" worktree add -q --detach "$wt" "origin/$branch"
@@ -23,7 +26,7 @@ if ! scripts/ci.sh; then
   echo "land: CI failed on $cand; target unchanged; worktree kept at $wt" >&2
   exit 1
 fi
-git fetch -q origin "$target"
+fetch "$target"
 now=$(git rev-parse "origin/$target")
 if [ "$now" != "$base" ]; then
   echo "land: $target moved (${base:0:9} -> ${now:0:9}) while checking; re-run to rebase and check again" >&2
